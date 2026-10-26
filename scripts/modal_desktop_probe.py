@@ -1,7 +1,12 @@
 """Prototype: Modal CPU sandbox with a virtual desktop, live noVNC view, screenshots,
 ffmpeg recording and xdotool commands. Touch ./STOP to terminate."""
 
-import base64, os, time, httpx, modal
+import base64
+import os
+import time
+
+import httpx
+import modal
 
 W, H = 1280, 720
 START = f"""
