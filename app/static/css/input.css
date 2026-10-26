@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .md { @apply prose prose-invert max-w-none prose-pre:bg-transparent prose-pre:p-0 prose-a:text-sky-400 prose-img:rounded-xl prose-img:my-3 prose-table:text-sm prose-th:text-left prose-code:before:content-none prose-code:after:content-none; }
+  .md :not(pre) > code { @apply rounded bg-white/10 px-1.5 py-0.5 text-[0.85em]; }
+  .md pre { @apply relative overflow-x-auto rounded-xl border border-white/10 bg-black/40 text-sm; }
+  .md pre code.hljs { @apply bg-transparent p-4 block; }
+  .md video, .md audio { @apply my-3 w-full max-w-xl rounded-xl border border-white/10 bg-black; }
+  .md audio { @apply bg-transparent border-0; }
+  .md img { @apply max-h-96 cursor-zoom-in; }
+  .md table { @apply block overflow-x-auto; }
+  .copy-btn { @apply absolute right-2 top-2 rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-300 opacity-0 transition hover:bg-white/20; }
+  .md pre:hover .copy-btn { @apply opacity-100; }
+  .scroll-thin { scrollbar-width: thin; scrollbar-color: rgb(63 63 70) transparent; }
+}

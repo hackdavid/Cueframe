@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block body %}
+<main>
+  <!-- Hero -->
+  <section class="relative overflow-hidden">
+    <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(56,189,248,0.18),transparent_60%)]"></div>
+    <div class="relative mx-auto max-w-6xl px-4 pb-20 pt-20 text-center sm:pt-28">
+      <p class="mx-auto inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300">
+        <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Learn software by watching it done for real
+      </p>
+      <h1 class="mx-auto mt-6 max-w-3xl text-4xl font-semibold tracking-tight sm:text-6xl">
+        Tell it your goal.<br><span class="bg-gradient-to-r from-fuchsia-400 to-sky-400 bg-clip-text text-transparent">Get a tutorial made by actually doing it.</span>
+      </h1>
+      <p class="mx-auto mt-6 max-w-2xl text-lg text-zinc-400">
+        Cueframe opens the real app in a sandbox, performs every step, checks that it worked, and stitches the recording into a short narrated video — personalised to your goal, your level and, if you want, your own files.
+      </p>
+      <div class="mt-8 flex flex-wrap justify-center gap-3">
+        <a href="/dashboard" class="rounded-xl bg-sky-600 px-5 py-3 font-medium text-white hover:bg-sky-500">Open the dashboard</a>
+        <a href="#why" class="rounded-xl border border-white/10 px-5 py-3 font-medium text-zinc-200 hover:bg-white/5">Why it matters</a>
+      </div>
+      <div class="mx-auto mt-14 max-w-3xl rounded-2xl border border-white/10 bg-zinc-900/70 p-4 text-left shadow-2xl">
+        <div class="flex justify-end"><div class="rounded-2xl bg-zinc-800 px-4 py-2.5 text-sm">I need a 30-second captioned vertical video from these 3 clips.</div></div>
+        <div class="mt-4 flex gap-3">
+          <div class="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-fuchsia-500 to-sky-500 text-xs font-bold">S</div>
+          <div class="flex-1 text-sm text-zinc-300">
+            <p>Using <b>Shotcut</b> (free, Linux). Plan: import clips → trim to 30 s → add captions → export 1080×1920.</p>
+            <div class="mt-3 grid grid-cols-4 gap-2 text-[11px]">
+              <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-300">Import clips<br><span class="text-emerald-400/70">verified</span></div>
+              <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-300">Trim to 30 s<br><span class="text-emerald-400/70">verified</span></div>
+              <div class="rounded-lg border border-sky-500/30 bg-sky-500/10 p-2 text-sky-300">Add captions<br><span class="animate-pulse text-sky-400/70">recording…</span></div>
+              <div class="rounded-lg border border-white/10 bg-white/5 p-2 text-zinc-400">Export vertical<br><span class="text-zinc-500">queued</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Why it matters -->
+  <section id="why" class="border-t border-white/10 bg-zinc-900/40">
+    <div class="mx-auto max-w-6xl px-4 py-20">
+      <h2 class="text-3xl font-semibold tracking-tight">Why it matters</h2>
+      <p class="mt-3 max-w-2xl text-zinc-400">Most people learn software from tutorials made for someone else, for another version, about a task that is almost — but not quite — theirs.</p>
+      <div class="mt-10 grid gap-5 md:grid-cols-3">
+        <div class="rounded-2xl border border-white/10 bg-zinc-950/60 p-6">
+          <div class="text-2xl">01</div>
+          <h3 class="mt-3 font-semibold">Tutorials go stale</h3>
+          <p class="mt-2 text-sm text-zinc-400">Menus move and options get renamed. Cueframe plans from the current official docs, then confirms every control against the real UI before recording.</p>
+        </div>
+        <div class="rounded-2xl border border-white/10 bg-zinc-950/60 p-6">
+          <div class="text-2xl">02</div>
+          <h3 class="mt-3 font-semibold">Generic isn't your goal</h3>
+          <p class="mt-2 text-sm text-zinc-400">You get only the minimum path to <em>your</em> outcome, at your level — or hand over your files and get the finished result plus how it was done.</p>
+        </div>
+        <div class="rounded-2xl border border-white/10 bg-zinc-950/60 p-6">
+          <div class="text-2xl">03</div>
+          <h3 class="mt-3 font-semibold">Nothing is invented</h3>
+          <p class="mt-2 text-sm text-zinc-400">Every step shown was executed and verified. Failed steps are labelled as failed, never faked — so you can trust what you're copying.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section id="how" class="border-t border-white/10">
+    <div class="mx-auto max-w-6xl px-4 py-20">
+      <h2 class="text-3xl font-semibold tracking-tight">How it works</h2>
+      <ol class="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {% for title, text in [
+          ("Intake", "Up to three questions: the outcome, your level and tool, and your files if it's doing the work for you."),
+          ("Research", "Official docs and the current app version, pinned in the plan with links."),
+          ("Plan", "4–8 milestones you'd name yourself, each split into small, checkable actions."),
+          ("Explore", "It looks around the real app first and maps the controls before recording anything."),
+          ("Execute & verify", "Each action is recorded with before/after snapshots and a check that it really worked."),
+          ("Stitch", "A background editor trims, narrates, highlights and captions clips into the final video."),
+        ] %}
+        <li class="rounded-2xl border border-white/10 bg-zinc-900/50 p-5">
+          <div class="text-xs font-semibold text-sky-400">STEP {{ loop.index }}</div>
+          <h3 class="mt-1 font-semibold">{{ title }}</h3>
+          <p class="mt-1.5 text-sm text-zinc-400">{{ text }}</p>
+        </li>
+        {% endfor %}
+      </ol>
+      <div class="mt-10 grid gap-5 md:grid-cols-2">
+        <div class="rounded-2xl border border-fuchsia-500/20 bg-fuchsia-500/5 p-6">
+          <h3 class="font-semibold">Teach me</h3>
+          <p class="mt-2 text-sm text-zinc-400">A tutorial on sample files with "your turn" pauses, option call-outs at decision points and a project file to follow along.</p>
+        </div>
+        <div class="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-6">
+          <h3 class="font-semibold">Do it for me</h3>
+          <p class="mt-2 text-sm text-zinc-400">Works on copies of your files, delivers the finished output with a before/after check — and you can change any step afterwards.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- API first -->
+  <section class="border-t border-white/10 bg-zinc-900/40">
+    <div class="mx-auto grid max-w-6xl gap-10 px-4 py-20 md:grid-cols-2 md:items-center">
+      <div>
+        <h2 class="text-3xl font-semibold tracking-tight">Built API-first</h2>
+        <p class="mt-3 text-zinc-400">The chat is just one client. Every input — messages, images, videos, files — goes through the same REST and WebSocket API, so the agent can be driven from Postman, scripts or MCP, and long jobs keep running when you close the tab.</p>
+        <a href="/docs" class="mt-6 inline-block rounded-xl border border-white/10 px-4 py-2 text-sm hover:bg-white/5">Browse the API</a>
+      </div>
+      <pre class="overflow-x-auto rounded-2xl border border-white/10 bg-black/50 p-5 text-xs leading-relaxed text-zinc-300"><span class="text-zinc-500"># log in, then send a goal with a file</span>
+curl -X POST /api/auth/login -d '{"username":"…","password":"…"}'
+curl -X POST /api/uploads -H "Authorization: Bearer $TOKEN" \
+     -F files=@clip.mp4
+curl -X POST /api/messages -H "Authorization: Bearer $TOKEN" \
+     -d '{"content":"30 s vertical video","attachment_ids":["u_…"]}'
+<span class="text-zinc-500"># → {"conversation": …, "message": …, "job": {"status": "queued"}}</span></pre>
+    </div>
+  </section>
+
+  <footer class="border-t border-white/10">
+    <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-8 text-sm text-zinc-500">
+      <span>Cueframe</span>
+      <a href="/dashboard" class="hover:text-white">Dashboard →</a>
+    </div>
+  </footer>
+</main>
+{% endblock %}

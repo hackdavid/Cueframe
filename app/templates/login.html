@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Log in · Cueframe{% endblock %}
+{% block body %}
+<main class="grid min-h-[calc(100vh-3.5rem)] place-items-center px-4">
+  <form id="login" class="w-full max-w-sm rounded-2xl border border-white/10 bg-zinc-900/70 p-6 shadow-2xl">
+    <h1 class="text-xl font-semibold">Log in to the dashboard</h1>
+    <p class="mt-1 text-sm text-zinc-400">Use the account configured on the server.</p>
+    <label class="mt-6 block text-sm text-zinc-300">Username
+      <input name="username" autocomplete="username" required autofocus class="mt-1 w-full rounded-lg border border-white/10 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-sky-500">
+    </label>
+    <label class="mt-4 block text-sm text-zinc-300">Password
+      <input name="password" type="password" autocomplete="current-password" required class="mt-1 w-full rounded-lg border border-white/10 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-sky-500">
+    </label>
+    <p id="login-error" class="mt-3 hidden text-sm text-red-400"></p>
+    <button class="mt-6 w-full rounded-lg bg-sky-600 py-2 text-sm font-medium text-white hover:bg-sky-500">Log in</button>
+  </form>
+</main>
+<script>
+  document.getElementById("login").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const form = new FormData(e.target);
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: form.get("username"), password: form.get("password") }),
+    });
+    if (res.ok) return location.assign({{ next | tojson }});
+    const err = document.getElementById("login-error");
+    err.textContent = (await res.json().catch(() => ({}))).detail || "Login failed";
+    err.classList.remove("hidden");
+  });
+</script>
+{% endblock %}
