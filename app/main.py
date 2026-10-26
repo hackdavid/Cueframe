@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 import app.handlers.demo  # noqa: F401  (registers job handlers)
 import app.handlers.research  # noqa: F401
+import app.handlers.sandbox_run  # noqa: F401
 from app import api, pages, ws
 from app.auth import hash_password, user_for_token
 from app.config import Settings, get_settings
@@ -16,6 +17,8 @@ from app.events import EventBus
 from app.jobs import JobManager
 from app.llm import MetaClient
 from app.log import setup_logging
+from app.sandbox.manager import SandboxManager
+from app.storage import Storage
 
 BASE = Path(__file__).parent
 
@@ -36,6 +39,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         jobs.llm = llm
         app.state.llm = llm
         jobs.recover()
+        jobs.storage = Storage(settings)
+        jobs.sandboxes = SandboxManager.from_settings(store, settings)
+        await jobs.sandboxes.reap()
+        app.state.sandboxes, app.state.storage = jobs.sandboxes, jobs.storage
         app.state.settings, app.state.store, app.state.bus, app.state.jobs = (
             settings,
             store,
@@ -44,6 +51,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         yield
         await jobs.shutdown()
+        await jobs.sandboxes.shutdown()
         await llm.aclose()
         store.close()
 
@@ -65,6 +73,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if user_for_token(request.app.state.store, token) is None:
                 return JSONResponse({"detail": "Not logged in"}, status_code=401)
         return await call_next(request)
+
+    @app.get("/media/r2/{key:path}", include_in_schema=False)
+    async def r2_media(key: str, request: Request):  # type: ignore[no-untyped-def]
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse(request.app.state.storage.presign(key), status_code=307)
 
     app.include_router(api.router)
     app.include_router(ws.router)

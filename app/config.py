@@ -28,6 +28,23 @@ class Settings:
     research_confidence: float = 0.7
     research_max_pages: int = 4
     research_max_rounds: int = 2
+    sandbox_provider: str = "modal"
+    modal_profile: str | None = None
+    modal_app: str = "cueframe-sandbox"
+    sandbox_cpu: float = 2
+    sandbox_memory_mb: int = 4096
+    sandbox_max_seconds: int = 900
+    sandbox_idle_seconds: int = 120
+    sandbox_width: int = 1280
+    sandbox_height: int = 720
+    sandbox_apt_extra: tuple[str, ...] = ()
+    sandbox_usd_per_hour: float = 0.11
+    ask_timeout_seconds: float = 900
+    r2_endpoint: str | None = None
+    r2_key_id: str | None = None
+    r2_secret: str | None = None
+    r2_bucket: str | None = None
+    r2_prefix: str = "cueframe"
 
     @property
     def db_path(self) -> Path:
@@ -59,4 +76,21 @@ def get_settings() -> Settings:
         research_confidence=_float("CUEFRAME_RESEARCH_CONFIDENCE", 0.7),
         research_max_pages=_int("CUEFRAME_RESEARCH_MAX_PAGES", 4),
         research_max_rounds=_int("CUEFRAME_RESEARCH_MAX_ROUNDS", 2),
+        sandbox_provider=os.environ.get("CUEFRAME_SANDBOX_PROVIDER", "modal"),
+        modal_profile=os.environ.get("CUEFRAME_MODAL_PROFILE") or None,
+        modal_app=os.environ.get("CUEFRAME_MODAL_APP", "cueframe-sandbox"),
+        sandbox_cpu=_float("CUEFRAME_SANDBOX_CPU", 2),
+        sandbox_memory_mb=_int("CUEFRAME_SANDBOX_MEMORY_MB", 4096),
+        sandbox_max_seconds=_int("CUEFRAME_SANDBOX_MAX_SECONDS", 900),
+        sandbox_idle_seconds=_int("CUEFRAME_SANDBOX_IDLE_SECONDS", 120),
+        sandbox_width=_int("CUEFRAME_SANDBOX_WIDTH", 1280),
+        sandbox_height=_int("CUEFRAME_SANDBOX_HEIGHT", 720),
+        sandbox_apt_extra=tuple(os.environ.get("CUEFRAME_SANDBOX_APT_EXTRA", "").split()),
+        sandbox_usd_per_hour=_float("CUEFRAME_SANDBOX_USD_PER_HOUR", 0.11),
+        ask_timeout_seconds=_float("CUEFRAME_ASK_TIMEOUT_SECONDS", 900),
+        r2_endpoint=os.environ.get("R2_ENDPOINT_URL") or None,
+        r2_key_id=os.environ.get("R2_ACCESS_KEY_ID") or None,
+        r2_secret=os.environ.get("R2_SECRET_ACCESS_KEY") or None,
+        r2_bucket=os.environ.get("R2_BUCKET_NAME") or None,
+        r2_prefix=os.environ.get("CUEFRAME_R2_PREFIX", "cueframe"),
     )

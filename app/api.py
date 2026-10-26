@@ -8,6 +8,7 @@ from app.agents.contracts import ResearchRequest, ResearchResult
 from app.agents.docs_research import DocsResearchAgent
 from app.auth import User
 from app.llm import LLMError
+from app.sandbox.contracts import Action, Answer
 from app.uploads import save_upload
 
 router = APIRouter(prefix="/api")
@@ -30,6 +31,7 @@ class MessageIn(BaseModel):
     content: str = ""
     attachment_ids: list[str] = []
     job_kind: str = services.DEFAULT_JOB
+    job_input: dict[str, Any] = {}
 
 
 ConnectionId = Annotated[
@@ -157,6 +159,7 @@ def _send(
         content=body.content,
         attachment_ids=body.attachment_ids,
         job_kind=body.job_kind,
+        job_input=body.job_input,
         source=(conn["client"] or "ws") if conn else "api",
         connection_id=conn["id"] if conn else None,
     )
@@ -227,3 +230,50 @@ async def research_steps(body: ResearchRequest, request: Request, user: User) ->
         return await DocsResearchAgent(state.llm, state.settings).run(body)
     except LLMError as exc:
         raise HTTPException(502, f"Model call failed: {exc}") from exc
+
+
+@router.post("/jobs/{jid}/answer", tags=["jobs"])
+async def answer_job(request: Request, jid: str, body: Answer, user: User) -> dict[str, Any]:
+    """Answer a job that is `waiting_input` (see its `pending_input`)."""
+    _job_or_404(request, jid, user)
+    return services.answer_job(_s(request), jid, body.input_id, body.value)
+
+
+# ---------- sandboxes ----------
+@router.get("/sandboxes", tags=["sandboxes"])
+def list_sandboxes(request: Request, user: User, active: bool = False) -> list[dict[str, Any]]:
+    return _s(request).store.list_sandboxes(active_only=active, user_id=user["id"])
+
+
+def _live_box(request: Request, jid: str, user: dict[str, Any]) -> tuple[str, Any]:
+    _job_or_404(request, jid, user)
+    live = _s(request).sandboxes.for_job(jid)
+    if live is None:
+        raise HTTPException(409, "This job has no running sandbox")
+    return live
+
+
+@router.post("/jobs/{jid}/sandbox/actions", tags=["sandboxes"])
+async def sandbox_action(request: Request, jid: str, body: Action, user: User) -> dict[str, Any]:
+    """Send one command to the job's live sandbox and get the timed result back."""
+    sid, box = _live_box(request, jid, user)
+    _s(request).sandboxes.touch(sid)
+    return (await box.run(-1, body)).model_dump()
+
+
+@router.get("/jobs/{jid}/sandbox/screenshot", tags=["sandboxes"])
+async def sandbox_screenshot(request: Request, jid: str, user: User) -> Response:
+    sid, box = _live_box(request, jid, user)
+    _s(request).sandboxes.touch(sid)
+    return Response(await box.screenshot(), media_type="image/png")
+
+
+@router.post("/sandboxes/{sid}/stop", tags=["sandboxes"])
+async def stop_sandbox(request: Request, sid: str, user: User) -> dict[str, Any]:
+    s = _s(request)
+    rec = s.store.get_sandbox(sid)
+    if rec is None or (rec["job_id"] and not s.store.get_job(rec["job_id"])):
+        raise HTTPException(404, "Sandbox not found")
+    if rec["job_id"]:
+        _job_or_404(request, rec["job_id"], user)
+    return await s.sandboxes.stop(sid, "stopped by user") or rec
