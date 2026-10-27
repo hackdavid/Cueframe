@@ -106,9 +106,10 @@ class ModalSandbox(Sandbox):
 
     async def exec(self, script: str, timeout: float = 60) -> ExecResult:
         t = time.monotonic()
-        p = await self._sb.exec.aio("bash", "-c", script, timeout=int(timeout))
-        out = await p.stdout.read.aio()
-        err = await p.stderr.read.aio()
+        # Bytes mode: `tail -c` can cut a multi-byte character (e.g. tree's box drawing).
+        p = await self._sb.exec.aio("bash", "-c", script, timeout=int(timeout), text=False)
+        out = (await p.stdout.read.aio()).decode(errors="replace")
+        err = (await p.stderr.read.aio()).decode(errors="replace")
         rc = await p.wait.aio()
         return ExecResult(
             returncode=rc, stdout=out, stderr=err, seconds=round(time.monotonic() - t, 3)
