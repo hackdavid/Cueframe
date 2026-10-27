@@ -33,6 +33,8 @@ class FakeSandbox(Sandbox):
         if self.terminated:
             raise RuntimeError("sandbox terminated")
         self.scripts.append(script)
+        if "http_code" in script:
+            return ExecResult(returncode=0, stdout="200")
         return ExecResult(returncode=0, stdout=f"{time.time()}\n")
 
     async def read_file(self, path: str) -> bytes:
