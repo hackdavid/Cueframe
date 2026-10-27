@@ -51,12 +51,9 @@ class ModalSandbox(Sandbox):
         self.provider_id = sb.object_id
         self.width, self.height = settings.sandbox_width, settings.sandbox_height
 
-    @classmethod
-    async def create(cls, settings: Settings, start_url: str = "about:blank") -> "ModalSandbox":
-        modal = modal_module(settings)
-        t0 = time.monotonic()
-        app = await modal.App.lookup.aio(settings.modal_app, create_if_missing=True)
-        sb = await modal.Sandbox.create.aio(
+    @staticmethod
+    async def _create_in(modal: Any, app: Any, settings: Settings, start_url: str) -> Any:
+        return await modal.Sandbox.create.aio(
             "/opt/cf/start.sh",
             app=app,
             image=desktop_image(modal, settings),
@@ -71,6 +68,22 @@ class ModalSandbox(Sandbox):
                 "CF_START_URL": start_url,
             },
         )
+
+    @classmethod
+    async def create(cls, settings: Settings, start_url: str = "about:blank") -> "ModalSandbox":
+        modal = modal_module(settings)
+        t0 = time.monotonic()
+        sb = None
+        for attempt in range(2):
+            # A fresh lookup per attempt: another worker may have just stopped the app.
+            app = await modal.App.lookup.aio(settings.modal_app, create_if_missing=True)
+            try:
+                sb = await cls._create_in(modal, app, settings, start_url)
+                break
+            except Exception:
+                if attempt:
+                    raise
+                log.warning("sandbox create failed; retrying with a fresh app lookup")
         box = cls(sb, settings)
         tunnels = await sb.tunnels.aio()
         box.live_url = tunnels[6080].url + "/vnc.html?autoconnect=1&resize=scale&view_only=1"
@@ -120,8 +133,18 @@ class ModalSandbox(Sandbox):
             app = await modal.App.lookup.aio(settings.modal_app)
         except modal.exception.NotFoundError:
             return
-        async for _ in modal.Sandbox.list.aio(app_id=app.app_id):
-            return  # another process still has a sandbox under this app
+        # Modal is the shared source of truth across workers. A just-terminated
+        # sandbox can still report running for a few seconds, so re-check briefly.
+        for _ in range(15):
+            running = [
+                sb async for sb in modal.Sandbox.list.aio(app_id=app.app_id)
+                if await sb.poll.aio() is None
+            ]  # fmt: skip
+            if not running:
+                break
+            await asyncio.sleep(1)
+        else:
+            return
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "modal", "app", "stop", "-y", settings.modal_app,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,

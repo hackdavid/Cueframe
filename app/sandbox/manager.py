@@ -125,8 +125,8 @@ class SandboxManager:
 
     async def _release_if_idle(self) -> None:
         async with self._app_lock:
-            # The DB is shared by all workers, so this also sees their live/starting rows.
-            if self._live or self._starting or self.store.list_sandboxes(active_only=True):
+            # Other workers are covered by the provider, which checks Modal itself.
+            if self._live or self._starting:
                 return
             try:
                 await self.provider.release(self.settings)

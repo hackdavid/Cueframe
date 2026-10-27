@@ -132,7 +132,7 @@ def test_provider_released_when_last_sandbox_stops(client, monkeypatch):
     assert calls and calls[-1] == 0
 
 
-def test_release_skipped_while_another_worker_has_a_sandbox(client, monkeypatch):
+def test_release_skipped_while_a_sandbox_is_starting(client, monkeypatch):
     mgr = client.app.state.sandboxes
     calls: list[int] = []
 
@@ -140,8 +140,10 @@ def test_release_skipped_while_another_worker_has_a_sandbox(client, monkeypatch)
         calls.append(1)
 
     monkeypatch.setattr(mgr.provider, "release", classmethod(release))
-    mgr.store.create_sandbox(None, None, "fake")  # row owned by "another worker"
+    mgr._starting = 1
     import asyncio
 
     asyncio.run(mgr._release_if_idle())
-    assert calls == []
+    mgr._starting = 0
+    asyncio.run(mgr._release_if_idle())
+    assert calls == [1]
