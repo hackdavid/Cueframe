@@ -19,7 +19,8 @@ from app.agents.docs_research import DocsResearchAgent
 from app.heal import Healer, short
 from app.jobs import JobContext
 from app.sandbox.base import ANSI, Sandbox
-from app.sandbox.contracts import Action, ActionRecord
+from app.sandbox.contracts import Action, ActionRecord, live_path
+from app.sandbox.manager import SandboxLimit
 from app.tutorial.build import COLS, PROMPT
 
 MAX_REPAIRS = 3
@@ -437,7 +438,7 @@ async def rehearse(ctx: JobContext, spec: dict[str, Any], heal: Healer | None = 
         try:
             return await _rehearse(ctx, spec, heal, state)
         except Exception as exc:
-            if attempt == SANDBOX_TRIES:
+            if attempt == SANDBOX_TRIES or isinstance(exc, SandboxLimit):
                 raise
             heal(f"The rehearsal sandbox broke ({short(exc)}); starting a fresh one")
     raise AssertionError("unreachable")
@@ -449,7 +450,7 @@ async def _rehearse(
     mgr = ctx._manager.sandboxes
     ctx.phase("rehearse", "Rehearsing every step in a private sandbox (not recorded)")
     async with mgr.session(ctx.id, ctx.conversation_id) as (sid, box):
-        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": box.live_url})
+        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
         i = 0
         while i < len(spec["steps"]):
             step = spec["steps"][i]

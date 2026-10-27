@@ -22,7 +22,8 @@ from pydantic import BaseModel, Field
 
 from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
-from app.sandbox.contracts import Action
+from app.sandbox.contracts import Action, live_path
+from app.sandbox.manager import SandboxLimit
 from app.tutorial import planner, qa, recipes
 from app.tutorial.build import build
 from app.tutorial.contracts import Tutorial
@@ -146,7 +147,7 @@ async def capture(
     steps = spec["steps"]
     ctx.phase("sandbox", "Starting a 1080p Linux desktop")
     async with mgr.session(ctx.id, ctx.conversation_id, "about:blank", settings=desk) as (sid, box):
-        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": box.live_url})
+        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
         await box.run(-1, Action(kind="terminal", command="clear", ask=False))
         t0 = await box.start_recording()
         await asyncio.sleep(LEAD * PACE)
@@ -211,7 +212,7 @@ async def record(
         try:
             cap = await capture(ctx, tid, spec, voice, hidden)
         except Exception as exc:
-            if last:
+            if last or isinstance(exc, SandboxLimit):
                 raise
             heal(f"The recording sandbox broke ({short(exc)}); recording again in a fresh one")
             continue

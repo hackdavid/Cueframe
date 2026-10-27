@@ -1,12 +1,24 @@
+import asyncio
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Header, HTTPException, Request, Response, UploadFile
+import httpx
+import websockets
+from fastapi import (
+    APIRouter,
+    File,
+    Header,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+    WebSocket,
+)
 from pydantic import BaseModel, Field
 
 from app import auth, services
 from app.agents.contracts import ResearchRequest, ResearchResult
 from app.agents.docs_research import DocsResearchAgent
-from app.auth import User
+from app.auth import User, websocket_user
 from app.llm import LLMError
 from app.sandbox.contracts import Action, Answer
 from app.tutorial.pipeline import StateEdit
@@ -260,6 +272,65 @@ async def sandbox_action(request: Request, jid: str, body: Action, user: User) -
     sid, box = _live_box(request, jid, user)
     async with _s(request).sandboxes.busy(sid):
         return (await box.run(-1, body)).model_dump()
+
+
+def _upstream(app: Any, jid: str) -> str:
+    live = app.state.sandboxes.for_job(jid)
+    if live is None or not live[1].live_url:
+        raise HTTPException(409, "This job has no running sandbox")
+    return live[1].live_url.split("/vnc.html")[0]
+
+
+@router.get("/jobs/{jid}/live/{path:path}", tags=["sandboxes"], include_in_schema=False)
+async def live_view(request: Request, jid: str, path: str, user: User) -> Response:
+    """The noVNC page and its assets for the job's live desktop (owner only)."""
+    _job_or_404(request, jid, user)
+    if ".." in path.split("/"):
+        raise HTTPException(404)
+    base = _upstream(request.app, jid)
+    async with httpx.AsyncClient(timeout=20) as http:
+        r = await http.get(f"{base}/{path}")
+    return Response(r.content, r.status_code, media_type=r.headers.get("content-type"),
+                    headers={"Cache-Control": "private, max-age=300"})  # fmt: skip
+
+
+@router.websocket("/jobs/{jid}/live/websockify")
+async def live_socket(ws: WebSocket, jid: str) -> None:
+    """Relay the view-only VNC stream so the provider address never reaches the browser."""
+    user = websocket_user(ws)
+    job = ws.app.state.store.get_job(jid)
+    if (
+        user is None
+        or job is None
+        or not ws.app.state.store.get_conversation(job["conversation_id"], user["id"])
+    ):
+        await ws.close(4404)
+        return
+    try:
+        base = _upstream(ws.app, jid)
+    except HTTPException:
+        await ws.close(4409)
+        return
+    proto = "binary" if "binary" in ws.scope.get("subprotocols", []) else None
+    await ws.accept(subprotocol=proto)
+    url = "ws" + base.removeprefix("http") + "/websockify"
+    async with websockets.connect(url, subprotocols=["binary"], max_size=None) as up:
+
+        async def down() -> None:
+            async for msg in up:
+                await (ws.send_bytes(msg) if isinstance(msg, bytes) else ws.send_text(msg))
+
+        async def upward() -> None:
+            while True:
+                m = await ws.receive()
+                if m["type"] == "websocket.disconnect":
+                    return
+                await up.send(m.get("bytes") or m.get("text") or b"")
+
+        tasks = [asyncio.create_task(down()), asyncio.create_task(upward())]
+        _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
 
 
 @router.get("/jobs/{jid}/sandbox/screenshot", tags=["sandboxes"])

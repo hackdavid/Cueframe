@@ -190,6 +190,29 @@ class Store:
         self._exec(f"UPDATE sandboxes SET {cols} WHERE id = ?", (*fields.values(), sid))
         return self.get_sandbox(sid)  # type: ignore[return-value]
 
+    def sandbox_usage(self, user_id: str | None, since: str) -> dict[str, float]:
+        """Running sandboxes (overall and the user's) and the user's billed seconds since."""
+        row = (
+            self._one(
+                "SELECT COUNT(*) AS active, COALESCE(SUM(CASE WHEN c.user_id = ? THEN 1 END), 0) "
+                "AS mine FROM sandboxes s LEFT JOIN conversations c ON c.id = s.conversation_id "
+                "WHERE s.status IN ('starting', 'running')",
+                (user_id,),
+            )
+            or {}
+        )
+        used = (
+            self._one(
+                "SELECT COALESCE(SUM(s.seconds), 0) AS seconds FROM sandboxes s "
+                "JOIN conversations c ON c.id = s.conversation_id "
+                "WHERE c.user_id = ? AND s.created_at >= ?",
+                (user_id, since),
+            )
+            or {}
+        )
+        return {"active": row.get("active", 0), "mine": row.get("mine", 0),
+                "seconds": used.get("seconds", 0)}  # fmt: skip
+
     def list_sandboxes(self, active_only: bool = False, user_id: str | None = None) -> list[dict]:
         sql = "SELECT s.* FROM sandboxes s LEFT JOIN conversations c ON c.id = s.conversation_id"
         sql += " WHERE 1=1"

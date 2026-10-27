@@ -1,6 +1,7 @@
 """Real interaction: element-targeted clicks/typing, desktop apps, checks after each step."""
 
 import asyncio
+import dataclasses
 
 from app.sandbox.base import MARK, _record, _script
 from app.sandbox.contracts import Action, ExecResult
@@ -112,3 +113,36 @@ def test_gui_tutorial_repairs_a_missing_element_from_what_is_visible(client, mon
     assert states["launch"]["app"] == "mousepad" and states["download"]["app"] == "browser"
     assert states["download"]["highlights"]  # zoomed onto the found element
     assert all(b["status"] == "terminated" for b in _sandboxes(client))
+
+
+def test_sandbox_limits_stop_new_sandboxes_before_any_cost(client, monkeypatch):
+    from app.sandbox.manager import SandboxLimit
+
+    mgr, store = client.app.state.sandboxes, client.app.state.store
+    _, jid = _send(client, "hello")
+    cid = store.get_job(jid)["conversation_id"]
+    base = mgr.settings
+    monkeypatch.setattr(mgr, "settings", dataclasses.replace(base, user_daily_sandbox_minutes=1))
+    sb = store.create_sandbox(jid, cid, "fake")
+    store.update_sandbox(sb["id"], status="terminated", seconds=61)
+    try:
+        mgr.check_limits(cid)
+        raise AssertionError("limit not enforced")
+    except SandboxLimit as exc:
+        assert "Daily sandbox limit" in str(exc)
+    monkeypatch.setattr(mgr, "settings", dataclasses.replace(base, user_max_sandboxes=1))
+    store.update_sandbox(store.create_sandbox(jid, cid, "fake")["id"], status="running")
+    try:
+        mgr.check_limits(cid)
+        raise AssertionError("limit not enforced")
+    except SandboxLimit as exc:
+        assert "limit 1" in str(exc)
+
+
+def test_live_view_is_behind_login_and_owner_only(client, anon):
+    _, jid = _send(client, "hello")
+    assert anon.get(f"/api/jobs/{jid}/live/vnc.html").status_code == 401
+    r = client.get(f"/api/jobs/{jid}/live/vnc.html", headers=_auth(client))
+    assert r.status_code == 409  # owner, but no sandbox running
+    assert pipeline.live_path(jid).startswith(f"/api/jobs/{jid}/live/vnc.html?")
+    assert f"path=api/jobs/{jid}/live/websockify" in pipeline.live_path(jid)

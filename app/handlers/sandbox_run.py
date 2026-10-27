@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from app.jobs import JobContext, JobFailed, job_handler
-from app.sandbox.contracts import Action, ActionRecord
+from app.sandbox.contracts import Action, ActionRecord, live_path
 
 SKIP = "Already installed - leave it out of the video"
 SHOW = "Not installed - show the install step"
@@ -44,7 +44,7 @@ async def sandbox_run(ctx: JobContext) -> dict[str, Any]:
     ctx.progress(0.05)
     records: list[ActionRecord] = []
     async with mgr.session(ctx.id, ctx.conversation_id, start) as (sid, box):
-        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": box.live_url})
+        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
         t0 = await box.start_recording()
         for i, a in enumerate(actions):
             ctx.phase("act", f"Step {i + 1}/{len(actions)}: {a.caption or a.kind}")

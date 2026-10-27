@@ -9,6 +9,13 @@ ActionKind = Literal[
 ]
 
 
+def live_path(job_id: str) -> str:
+    """The live desktop as users see it: proxied through Cueframe behind the login, so
+    the provider's own (unauthenticated) address is never sent to a browser."""
+    base = f"/api/jobs/{job_id}/live"
+    return f"{base}/vnc.html?autoconnect=1&resize=scale&view_only=1&path={base[1:]}/websockify"
+
+
 class Action(BaseModel):
     kind: ActionKind
     url: str | None = None
