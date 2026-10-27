@@ -26,6 +26,7 @@ class SandboxManager:
         self._started: dict[str, float] = {}
         self._touched: dict[str, float] = {}
         self._watchdogs: dict[str, asyncio.Task[None]] = {}
+        self._busy: dict[str, int] = {}
 
     @classmethod
     def from_settings(cls, store: Store, settings: Settings) -> "SandboxManager":
@@ -43,6 +44,16 @@ class SandboxManager:
 
     def touch(self, sid: str) -> None:
         self._touched[sid] = time.monotonic()
+
+    @contextlib.asynccontextmanager
+    async def busy(self, sid: str) -> AsyncIterator[None]:
+        """Mark an action in flight: idle shutdown is suspended (max lifetime still applies)."""
+        self._busy[sid] = self._busy.get(sid, 0) + 1
+        try:
+            yield
+        finally:
+            self._busy[sid] -= 1
+            self.touch(sid)
 
     @contextlib.asynccontextmanager
     async def session(
@@ -93,6 +104,7 @@ class SandboxManager:
             log.exception("terminate failed for %s", sid)
         secs = time.monotonic() - self._started.pop(sid, time.monotonic())
         self._touched.pop(sid, None)
+        self._busy.pop(sid, None)
         cost = round(secs / 3600 * self.settings.sandbox_usd_per_hour, 5)
         log.info("sandbox terminated", extra=fields(sandbox=sid, reason=reason, seconds=secs))
         return self.store.update_sandbox(
@@ -105,7 +117,9 @@ class SandboxManager:
             await asyncio.sleep(5)
             idle = time.monotonic() - self._touched.get(sid, 0)
             age = time.monotonic() - self._started.get(sid, 0)
-            if idle > self.settings.sandbox_idle_seconds:
+            if self._busy.get(sid):
+                self.touch(sid)
+            elif idle > self.settings.sandbox_idle_seconds:
                 await self.stop(sid, "idle timeout")
             elif age > self.settings.sandbox_max_seconds:
                 await self.stop(sid, "max lifetime")

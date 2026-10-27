@@ -57,6 +57,10 @@ def test_failed_step_marks_job_failed_and_still_terminates(client):
     jid = client.post("/api/messages", json=body, headers=_auth(client)).json()["job"]["id"]
     job = _wait(client, jid, {"succeeded", "failed"})
     assert job["status"] == "failed" and "Step 1 failed" in job["error"]
+    assert job["result"]["actions"][0]["ok"] is False and job["result"]["recording"]["url"]
+    assert (
+        client.get("/media/r2/cueframe/jobs/j_nope/x.png", headers=_auth(client)).status_code == 404
+    )
     sb = client.get("/api/sandboxes", headers=_auth(client)).json()[0]
     assert sb["status"] == "terminated" and sb["reason"] == "job failed"
 
@@ -76,3 +80,13 @@ def test_record_parsing_and_scripts():
     assert not bad.ok and bad.returncode == 7
     assert "xdotool type --delay 45 -- 'a b'" in _script(Action(kind="type", text="a b"))
     assert "--repeat 2 1" in _script(Action(kind="double_click", x=5, y=6))
+
+
+def test_waiting_jobs_do_not_hold_worker_slots(client):
+    spec = {"actions": [{"kind": "terminal", "command": "true"}]}
+    for _ in range(2):  # max_concurrent_jobs=2 in tests
+        body = {"content": "go", "job_kind": "sandbox.run", "job_input": spec}
+        jid = client.post("/api/messages", json=body, headers=_auth(client)).json()["job"]["id"]
+        _wait(client, jid, {"waiting_input"})
+    demo = client.post("/api/messages", json={"content": "hi"}, headers=_auth(client)).json()
+    assert _wait(client, demo["job"]["id"], {"succeeded", "failed"})["status"] == "succeeded"

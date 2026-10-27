@@ -257,8 +257,8 @@ def _live_box(request: Request, jid: str, user: dict[str, Any]) -> tuple[str, An
 async def sandbox_action(request: Request, jid: str, body: Action, user: User) -> dict[str, Any]:
     """Send one command to the job's live sandbox and get the timed result back."""
     sid, box = _live_box(request, jid, user)
-    _s(request).sandboxes.touch(sid)
-    return (await box.run(-1, body)).model_dump()
+    async with _s(request).sandboxes.busy(sid):
+        return (await box.run(-1, body)).model_dump()
 
 
 @router.get("/jobs/{jid}/sandbox/screenshot", tags=["sandboxes"])

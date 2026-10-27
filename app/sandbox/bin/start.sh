@@ -5,7 +5,7 @@ mkdir -p /tmp/cf; echo 0 > /tmp/cf/prompt_n
 Xvfb :99 -screen 0 ${W}x${H}x24 -nolisten tcp & sleep 1
 export DISPLAY=:99
 fluxbox >/dev/null 2>&1 &
-x11vnc -display :99 -forever -shared -nopw -quiet -rfbport 5900 >/dev/null 2>&1 &
+x11vnc -display :99 -forever -shared -viewonly -nopw -quiet -rfbport 5900 >/dev/null 2>&1 &
 websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 chromium --no-sandbox --test-type --disable-gpu --disable-dev-shm-usage --no-first-run \
   --no-default-browser-check --disable-infobars --window-size=${W},${H} --window-position=0,0 \

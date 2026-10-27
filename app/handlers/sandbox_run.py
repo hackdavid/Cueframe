@@ -5,7 +5,7 @@ timestamped action log (the raw material for per-state tutorial clips)."""
 import re
 from typing import Any
 
-from app.jobs import JobContext, job_handler
+from app.jobs import JobContext, JobFailed, job_handler
 from app.sandbox.contracts import Action, ActionRecord
 
 SKIP = "Already installed - leave it out of the video"
@@ -54,7 +54,8 @@ async def sandbox_run(ctx: JobContext) -> dict[str, Any]:
                 ctx.emit("sandbox.output", {"sandbox_id": sid, "step": i, "line": line})
 
             mgr.touch(sid)
-            rec = await box.run(i, a, out)
+            async with mgr.busy(sid):
+                rec = await box.run(i, a, out)
             mgr.touch(sid)
             rec.in_video = i not in hidden
             rec.t_in = max(0.0, rec.started - t0 - 0.3)
@@ -84,5 +85,5 @@ async def sandbox_run(ctx: JobContext) -> dict[str, Any]:
     )
     result = {"sandbox_id": sid, "recording": video, "actions": [r.model_dump() for r in records]}
     if failed:
-        raise RuntimeError(f"Step {failed.index + 1} failed: {failed.error}")
+        raise JobFailed(f"Step {failed.index + 1} failed: {failed.error}", result)
     return result

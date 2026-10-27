@@ -239,20 +239,32 @@
             ${ACTIVE.has(j.status) ? `<button data-cancel="${j.id}" class="text-[11px] text-zinc-400 hover:text-red-400">Cancel</button>` : ""}
           </div>
           <p class="mt-2 truncate text-xs text-zinc-300">${esc(j.error || j.label || "Waiting…")}</p>
-          ${j.live_url && ACTIVE.has(j.status) ? `<iframe src="${esc(j.live_url)}" title="Live sandbox" class="mt-2 aspect-video w-full rounded-lg border border-white/10 bg-black"></iframe><a href="${esc(j.live_url)}" target="_blank" rel="noopener" class="mt-1 block text-[10px] text-sky-400">Open live view</a>` : ""}
           <div class="mt-2 flex gap-1">${steps}</div>
           <div class="mt-2 flex justify-between text-[10px] text-zinc-500"><span>${pct}%</span><span>${duration(j)}</span></div>
         </div>`;
       })
       .join("");
+    renderLive();
   }
 
   $("#thread").addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-answer]");
     if (!btn) return;
     btn.parentElement.querySelectorAll("button").forEach((b) => (b.disabled = true));
-    await api(`/api/jobs/${btn.dataset.answer}/answer`, { method: "POST", body: JSON.stringify({ input_id: btn.dataset.input, value: btn.dataset.value }) });
+    await api(`/api/jobs/${btn.dataset.answer}/answer`, { method: "POST", body: { input_id: btn.dataset.input, value: btn.dataset.value } });
   });
+
+  // The live desktop lives outside #run-list so the 1 s run-panel refresh never reloads it.
+  function renderLive() {
+    const box = $("#live-view");
+    const j = [...state.jobs.values()].find((x) => x.live_url && ACTIVE.has(x.status));
+    const src = j ? j.live_url : "";
+    if (box.dataset.src === src) return;
+    box.dataset.src = src;
+    box.innerHTML = src
+      ? `<p class="mb-1 text-[11px] text-zinc-400">Live sandbox (view-only)</p><iframe src="${esc(src)}" title="Live sandbox" class="aspect-video w-full rounded-lg border border-white/10 bg-black"></iframe><a href="${esc(src)}" target="_blank" rel="noopener" class="mt-1 block text-[10px] text-sky-400">Open live view</a>`
+      : "";
+  }
 
   $("#run-list").addEventListener("click", async (e) => {
     const btn = e.target.closest("[data-cancel]");

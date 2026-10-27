@@ -1,4 +1,5 @@
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,7 +11,7 @@ import app.handlers.demo  # noqa: F401  (registers job handlers)
 import app.handlers.research  # noqa: F401
 import app.handlers.sandbox_run  # noqa: F401
 from app import api, pages, ws
-from app.auth import hash_password, user_for_token
+from app.auth import hash_password, optional_user, user_for_token
 from app.config import Settings, get_settings
 from app.db import Store
 from app.events import EventBus
@@ -78,6 +79,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def r2_media(key: str, request: Request):  # type: ignore[no-untyped-def]
         from fastapi.responses import RedirectResponse
 
+        store, user = request.app.state.store, optional_user(request)
+        m = re.search(r"(?:^|/)jobs/(j_[0-9a-f]+)/", key)
+        job = store.get_job(m.group(1)) if m else None
+        cid = job and job["conversation_id"]
+        if not user or not cid or not store.get_conversation(cid, user["id"]):
+            return JSONResponse({"detail": "Not found"}, status_code=404)
         return RedirectResponse(request.app.state.storage.presign(key), status_code=307)
 
     app.include_router(api.router)

@@ -19,6 +19,15 @@ from app.log import get_logger, job_id_var
 
 log = get_logger("jobs")
 
+
+class JobFailed(RuntimeError):
+    """Raise to fail a job while still persisting partial `result` (artifacts, logs)."""
+
+    def __init__(self, message: str, result: dict[str, Any]):
+        super().__init__(message)
+        self.result = result
+
+
 Handler = Callable[["JobContext"], Awaitable[dict[str, Any] | None]]
 HANDLERS: dict[str, Handler] = {}
 
@@ -77,12 +86,15 @@ class JobContext:
             self.reply(f"**Question:** {question}\n\n{opts}")
         self._update(status="waiting_input", pending_input=pending)
         self.emit("job.input_required", {"job": self.job, **pending})
+        # Waiting on a human must not hold a worker slot.
+        self._manager._slots.release()
         try:
             value = await asyncio.wait_for(fut, self.settings.ask_timeout_seconds)
         except TimeoutError as exc:
             raise RuntimeError(f"No answer to {question!r} within the time limit") from exc
         finally:
             self._manager._waiters.pop(self.id, None)
+            await asyncio.shield(self._manager._slots.acquire())
         self._update(status="running", pending_input=None)
         self.emit("job.input_received", {"job": self.job, "input_id": input_id, "value": value})
         return value
@@ -180,7 +192,11 @@ class JobManager:
         except Exception as exc:
             log.exception("Job %s failed", job["id"])
             job = self.store.update_job(
-                job["id"], status="failed", error=f"{type(exc).__name__}: {exc}", finished_at=now()
+                job["id"],
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+                result=getattr(exc, "result", None),
+                finished_at=now(),
             )
             self._publish_job("job.failed", job)
         finally:
