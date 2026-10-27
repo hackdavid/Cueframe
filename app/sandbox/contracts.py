@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 ActionKind = Literal[
-    "open_url", "click", "double_click", "type", "key", "scroll", "wait", "terminal"
+    "open_url", "click", "double_click", "type", "key", "scroll", "wait", "terminal", "launch"
 ]
 
 
@@ -23,7 +23,12 @@ class Action(BaseModel):
     ask: bool = True
     caption: str | None = None
     # Bring this app to the front first; apps fill the screen, so only one is visible.
-    app: Literal["browser", "terminal"] | None = None
+    # "browser", "terminal" or a desktop app's window class (e.g. "mousepad").
+    app: str | None = None
+    # click/type/scroll: the element's visible words (button text, label, placeholder),
+    # found in the sandbox (DevTools for the browser, AT-SPI for desktop apps).
+    target: str | None = None
+    enter: bool = False  # type: press Return after typing
     clear: bool = False  # terminal: clear the screen (Ctrl+L) before typing
 
 
@@ -51,6 +56,7 @@ class ActionRecord(BaseModel):
     output_tail: str = ""
     error: str | None = None
     screenshot_url: str | None = None
+    box: list[int] | None = None  # screen pixels (x, y, w, h) of the element acted on
 
 
 class Answer(BaseModel):

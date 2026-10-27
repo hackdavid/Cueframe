@@ -140,6 +140,28 @@ def plan_step(
             ]
         else:
             st.camera.append(Camera(t=dur, zoom=z * 1.05, cx=0, cy=0))
+    elif rec.get("box") and a["kind"] in ("click", "type", "double_click", "scroll"):
+        x, y, w, h = rec["box"]
+        cx, cy = x + w / 2, y + h / 2
+        z = round(max(1.2, min(1.9, 700 / max(w, 1))), 2)
+        st.camera = [
+            Camera(t=0, zoom=1.0, cx=W / 2, cy=H / 2),
+            Camera(t=lead + 0.1, zoom=z, cx=cx, cy=cy),
+            Camera(t=done + 1.2, zoom=z, cx=cx, cy=cy),
+            Camera(t=min(dur, done + 2.2), zoom=1.0, cx=W / 2, cy=H / 2),
+        ]
+        st.highlights.append(
+            Highlight(t_in=lead, t_out=min(dur, done + 1.4), x=max(0, x - 6), y=max(0, y - 6),
+                      w=w + 12, h=h + 12, label=hl.get("command"))
+        )  # fmt: skip
+        if a["kind"] == "type":
+            typed = len(a.get("text") or "") * 0.045 + 0.2
+            st.sfx += [
+                Sfx(t=lead + 0.3, kind="click"),
+                Sfx(t=lead + 0.5, kind="keys", duration=typed),
+            ]
+        elif a["kind"] != "scroll":
+            st.sfx.append(Sfx(t=lead + 0.3, kind="click"))
     else:
         if a["kind"] == "open_url":
             st.sfx += [

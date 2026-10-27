@@ -71,12 +71,12 @@ class Sandbox(ABC):
         if action.kind == "terminal":
             return await self._terminal(index, action, on_output)
         script = _script(action)
-        if action.app:
-            script = f"{FOCUS[action.app]}; {script}"
+        if action.app and action.kind != "launch":
+            script = f"{_focus(action.app)}; {script}"
         res = await self.exec(
             f"export DISPLAY=:99; s=$(date +%s.%N); {{ {script} ; }} >/tmp/cf/act.log 2>&1; "
             f"rc=$?; e=$(date +%s.%N); st=$(/opt/cf/settle.sh); "
-            f'echo "{MARK} $s $e $st $rc"; tail -c 400 /tmp/cf/act.log',
+            f'echo "{MARK} $s $e $st $rc"; tail -c 1500 /tmp/cf/act.log',
             timeout=max(60, action.seconds + 30),
         )
         return _record(index, action, res)
@@ -130,6 +130,21 @@ def _move(x: int, y: int) -> str:
     return f"/opt/cf/move.sh {int(x)} {int(y)}"
 
 
+def _focus(app: str) -> str:
+    return FOCUS.get(app) or f"/opt/cf/focus.sh {shlex.quote(app)}"
+
+
+def _find(a: Action, mode: str) -> str:
+    """Locate `a.target` on screen, print its box for the record and move the pointer
+    to its centre; exit 3 (with what *is* visible) when nothing matches."""
+    q = shlex.quote
+    return (
+        f"b=$(/opt/cf/ui.py find {q(a.app or 'browser')} {q(a.target or '')} {mode}) "
+        '|| { echo "$b"; exit 3; }; echo "$b"; set -- $b; '
+        "/opt/cf/move.sh $(( $2 + $4 / 2 )) $(( $3 + $5 / 2 ))"
+    )
+
+
 def _script(a: Action) -> str:
     q = shlex.quote
     if a.kind == "open_url":
@@ -137,16 +152,23 @@ def _script(a: Action) -> str:
             "/opt/cf/focus.sh chromium; xdotool key ctrl+l; "
             f"xdotool type --delay 35 -- {q(a.url or '')}; xdotool key Return"
         )
+    if a.kind == "launch":
+        return f"/opt/cf/launch.sh {a.command or ''}"
     if a.kind in ("click", "double_click"):
         n = 2 if a.kind == "double_click" else 1
-        return f"{_move(a.x or 0, a.y or 0)}; xdotool click --repeat {n} 1"
+        at = _find(a, "click") if a.target else _move(a.x or 0, a.y or 0)
+        return f"{at}; sleep 0.15; xdotool click --repeat {n} 1"
     if a.kind == "type":
-        return f"xdotool type --delay 45 -- {q(a.text or '')}"
+        pre = f"{_find(a, 'type')}; xdotool click 1; sleep 0.2; " if a.target else ""
+        enter = "; xdotool key Return" if a.enter else ""
+        return f"{pre}xdotool type --delay 45 -- {q(a.text or '')}{enter}"
     if a.kind == "key":
         return f"xdotool key -- {q(a.keys or '')}"
     if a.kind == "scroll":
+        if a.target:  # bring the element into view (the finder scrolls it to the centre)
+            return _find(a, "click")
         button = 5 if a.dy > 0 else 4
-        return f"{_move(a.x or 0, a.y or 0)}; xdotool click --repeat {abs(a.dy) or 1} {button}"
+        return f"{_move(a.x or 960, a.y or 540)}; xdotool click --repeat {abs(a.dy) or 1} {button}"
     if a.kind == "wait":
         return f"sleep {max(0.0, a.seconds)}"
     raise ValueError(f"Unsupported action: {a.kind}")
@@ -161,9 +183,12 @@ def _record(index: int, action: Action, res: ExecResult) -> ActionRecord:
             settled=0, error=(res.stderr or res.stdout)[-300:] or "no timing marker",
         )  # fmt: skip
     _, s, e, st, rc = mark.split()
-    tail = "\n".join(lines[lines.index(mark) + 1 :])[-400:]
+    body = lines[lines.index(mark) + 1 :]
+    found = next((ln.split()[1:5] for ln in body if ln.startswith("__CFBOX ")), None)
+    tail = "\n".join(ln for ln in body if not ln.startswith("__CFBOX "))[-1500:]
     return ActionRecord(
         index=index, action=action, ok=rc == "0", returncode=int(rc), started=float(s),
         ended=float(e), settled=max(float(st), float(e)), output_tail=tail,
-        error=None if rc == "0" else f"exit code {rc}: {tail[-200:]}",
+        error=None if rc == "0" else f"exit code {rc}: {tail[-1200:]}",
+        box=[int(v) for v in found] if found else None,
     )  # fmt: skip
