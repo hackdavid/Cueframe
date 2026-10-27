@@ -27,6 +27,8 @@ class SandboxManager:
         self._touched: dict[str, float] = {}
         self._watchdogs: dict[str, asyncio.Task[None]] = {}
         self._busy: dict[str, int] = {}
+        self._starting = 0
+        self._app_lock = asyncio.Lock()
 
     @classmethod
     def from_settings(cls, store: Store, settings: Settings) -> "SandboxManager":
@@ -64,6 +66,8 @@ class SandboxManager:
         rec = self.store.create_sandbox(job_id, conversation_id, self.provider.provider)
         sid = rec["id"]
         self.store.update_job(job_id, sandbox_id=sid)
+        async with self._app_lock:
+            self._starting += 1
         try:
             box = await self.provider.create(self.settings, start_url)
         except BaseException as exc:
@@ -71,7 +75,10 @@ class SandboxManager:
                 sid, status="failed", reason=f"{type(exc).__name__}: {exc}"[:300],
                 terminated_at=now(),
             )  # fmt: skip
+            self._starting -= 1
+            await asyncio.shield(self._release_if_idle())
             raise
+        self._starting -= 1
         self._live[sid], self._by_job[job_id] = box, sid
         self._started[sid] = self._touched[sid] = time.monotonic()
         self.store.update_sandbox(
@@ -109,10 +116,21 @@ class SandboxManager:
         self._busy.pop(sid, None)
         cost = round(secs / 3600 * self.settings.sandbox_usd_per_hour, 5)
         log.info("sandbox terminated", extra=fields(sandbox=sid, reason=reason, seconds=secs))
-        return self.store.update_sandbox(
+        rec = self.store.update_sandbox(
             sid, status="terminated", reason=reason, seconds=round(secs, 1),
             est_cost_usd=cost, terminated_at=now(),
         )  # fmt: skip
+        await self._release_if_idle()
+        return rec
+
+    async def _release_if_idle(self) -> None:
+        async with self._app_lock:
+            if self._live or self._starting:
+                return
+            try:
+                await self.provider.release(self.settings)
+            except Exception:
+                log.exception("provider release failed")
 
     async def _watch(self, sid: str) -> None:
         while sid in self._live:
@@ -144,6 +162,7 @@ class SandboxManager:
                 killed = await reap_app(self.settings)
                 if killed:
                     log.warning("reaped orphan sandboxes", extra=fields(ids=killed))
+        await self._release_if_idle()
 
     async def shutdown(self) -> None:
         await asyncio.gather(

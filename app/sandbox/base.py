@@ -6,6 +6,7 @@ import shlex
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 
+from app.config import Settings
 from app.sandbox.contracts import Action, ActionRecord, ExecResult
 
 OnOutput = Callable[[str], Awaitable[None]]
@@ -29,6 +30,11 @@ class Sandbox(ABC):
 
     @abstractmethod
     async def terminate(self) -> None: ...
+
+    @classmethod
+    async def release(cls, settings: Settings) -> None:
+        """Called when no sandbox is live: free provider-level resources."""
+        return None
 
     async def screenshot(self) -> bytes:
         await self._must(

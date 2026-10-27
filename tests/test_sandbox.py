@@ -116,3 +116,17 @@ def test_r2_media_bearer_and_ownership(client):
     assert own.status_code == 307 and own.headers["location"].endswith("recording.mp4")
     for bad in (f"other/jobs/{jid}/recording.mp4", f"cueframe/jobs/{jid}/../j_x/recording.mp4"):
         assert client.get(f"/media/r2/{bad}", headers=_auth(client)).status_code == 404
+
+
+def test_provider_released_when_last_sandbox_stops(client, monkeypatch):
+    provider = client.app.state.sandboxes.provider
+    calls: list[int] = []
+
+    async def release(cls, settings):  # type: ignore[no-untyped-def]
+        calls.append(len(client.app.state.sandboxes._live))
+
+    monkeypatch.setattr(provider, "release", classmethod(release))
+    body = {"content": "https://example.com", "job_kind": "sandbox.run"}
+    jid = client.post("/api/messages", json=body, headers=_auth(client)).json()["job"]["id"]
+    _wait(client, jid, {"succeeded", "failed"})
+    assert calls and calls[-1] == 0

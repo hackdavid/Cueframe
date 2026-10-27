@@ -1,7 +1,9 @@
 """Modal implementation: one Modal Sandbox per job running the desktop image."""
 
+import asyncio
 import base64
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -109,6 +111,18 @@ class ModalSandbox(Sandbox):
     async def terminate(self) -> None:
         await self._sb.terminate.aio()
 
+    @classmethod
+    async def release(cls, settings: Settings) -> None:
+        """Stop the Modal app once its last sandbox is gone, so the dashboard shows
+        nothing deployed. The image build cache is per workspace and survives this."""
+        modal_module(settings)
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "modal", "app", "stop", "-y", settings.modal_app,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )  # fmt: skip
+        out, _ = await asyncio.wait_for(proc.communicate(), 60)
+        log.info("modal app stop", extra=fields(rc=proc.returncode, out=out.decode()[-200:]))
+
 
 async def terminate_by_id(settings: Settings, provider_id: str) -> None:
     modal = modal_module(settings)
@@ -119,7 +133,10 @@ async def terminate_by_id(settings: Settings, provider_id: str) -> None:
 async def reap_app(settings: Settings) -> list[str]:
     """Terminate every sandbox still running under the Cueframe Modal app."""
     modal = modal_module(settings)
-    app = await modal.App.lookup.aio(settings.modal_app, create_if_missing=True)
+    try:
+        app = await modal.App.lookup.aio(settings.modal_app)
+    except modal.exception.NotFoundError:
+        return []
     killed = []
     async for sb in modal.Sandbox.list.aio(app_id=app.app_id):
         await sb.terminate.aio()
