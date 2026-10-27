@@ -66,15 +66,20 @@ class SandboxManager:
 
     @contextlib.asynccontextmanager
     async def session(
-        self, job_id: str, conversation_id: str | None, start_url: str = "about:blank"
+        self,
+        job_id: str,
+        conversation_id: str | None,
+        start_url: str = "about:blank",
+        settings: Settings | None = None,
     ) -> AsyncIterator[tuple[str, Sandbox]]:
+        """`settings` overrides the desktop (size, CPU) for this one sandbox."""
         rec = self.store.create_sandbox(job_id, conversation_id, self.provider.provider)
         sid = rec["id"]
         self.store.update_job(job_id, sandbox_id=sid)
         async with self._app_lock:
             self._starting += 1
         try:
-            box = await self.provider.create(self.settings, start_url)
+            box = await self.provider.create(settings or self.settings, start_url)
         except BaseException as exc:
             self.store.update_sandbox(
                 sid, status="failed", reason=f"{type(exc).__name__}: {exc}"[:300],

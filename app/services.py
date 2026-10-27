@@ -5,7 +5,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-DEFAULT_JOB = "demo.reply"
+DEFAULT_JOB = "assistant.reply"
 
 
 def conversation_or_404(s: Any, cid: str, user: dict[str, Any]) -> dict[str, Any]:

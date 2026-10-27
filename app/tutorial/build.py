@@ -3,9 +3,8 @@ narration into the tutorial state graph: per-state footage windows, camera moves
 highlights, sound effects and captions. Pure functions, so edits to one state can
 be re-planned and re-rendered without touching the others."""
 
-import json
 import re
-from pathlib import Path
+from collections.abc import Collection
 from typing import Any
 
 from app.tutorial.contracts import Camera, Highlight, Narration, Sfx, Source, State, Tutorial, Word
@@ -33,14 +32,15 @@ def caption_words(words: list[Word]) -> list[Word]:
     return out
 
 
-def narration(audio: Path, key: str, text: str, at: float, base: str) -> Narration:
-    words = [Word(**w) for w in json.loads((audio / f"{key}.json").read_text())]
-    dur = words[-1].end if words else 0
+def narration(voice: dict[str, Any], key: str, at: float, base: str) -> Narration:
+    """`voice[key]` is a synthesized line: {"text", "file", "words"}."""
+    v = voice[key]
+    words = [Word(**w) for w in v["words"]]
     return Narration(
-        text=text,
+        text=v["text"],
         at=at,
-        audio_url=f"{base}/audio/{key}.mp3",
-        duration=dur,
+        audio_url=f"{base}/audio/{v['file']}",
+        duration=words[-1].end if words else 0,
         words=caption_words(words),
     )
 
@@ -67,7 +67,8 @@ def plan_step(
         narr[1].at = max(narr[1].at, lead + run + 0.3)
     end = max(n.at + n.duration for n in narr) if narr else run
     window = rec["t_out"] - (rec["t_in"] - lead)
-    dur = round(min(window, max(end + 1.0, lead + run + 1.6, 3.4)), 2)
+    # Never cut narration short: past the captured window the renderer holds the last frame.
+    dur = round(max(min(window, max(lead + run + 1.6, 3.4)), end + 1.0), 2)
     st = State(
         id=step["id"],
         app=app,
@@ -153,21 +154,26 @@ def plan_step(
     return st
 
 
-def build(spec_dir: Path, run_dir: Path, base: str) -> Tutorial:
-    spec = json.loads((spec_dir / "spec.json").read_text())
-    lines = json.loads((spec_dir / "narration.json").read_text())
-    audio = run_dir / "audio"
-    cap = json.loads((run_dir / "capture.json").read_text())
-    recs = {r["step"]: r for r in cap["records"]}
-    intro = narration(audio, "intro", lines["intro"], 0.7, base)
+def build(
+    spec: dict[str, Any],
+    voice: dict[str, Any],
+    capture: dict[str, Any],
+    base: str,
+    hidden: Collection[str] = (),
+) -> Tutorial:
+    """Plan the whole graph from the recipe `spec` (after edits), the synthesized
+    `voice` lines and the `capture` records. `hidden` steps ran but stay out of the
+    video (e.g. "already installed"). A failed step ends the video honestly."""
+    recs = {r["step"]: r for r in capture["records"]}
     tut = Tutorial(
         id=base,
         title=spec["title"],
-        subtitle=spec["subtitle"],
+        subtitle=spec.get("subtitle", ""),
         recording_url=f"{base}/recording.mp4",
         music_url=f"{base}/audio/sfx_music.mp3",
-        steps=[s["label"] for s in spec["steps"]],
+        steps=[s["label"] for s in spec["steps"] if s["id"] not in hidden],
     )
+    intro = narration(voice, "intro", 0.7, base)
     tut.states.append(
         State(
             id="title",
@@ -178,33 +184,38 @@ def build(spec_dir: Path, run_dir: Path, base: str) -> Tutorial:
             sfx=[Sfx(t=0.25, kind="whoosh"), Sfx(t=2.7, kind="keys", duration=1.7)],
         )
     )
-    prev = None
+    prev, ok = None, True
     for step in spec["steps"]:
-        if step["id"] not in recs:
+        rec = recs.get(step["id"])
+        if rec is None:
             break
-        narr = [narration(audio, k, lines[k], 0, base) for k in step["narration"]]
-        st = plan_step(step, recs[step["id"]], narr, prev)
+        if step["id"] in hidden and rec["ok"]:
+            continue
+        narr = [narration(voice, k, 0, base) for k in step["narration"]]
+        st = plan_step(step, rec, narr, prev)
         tut.states.append(st)
         prev = st.app
         if not st.verified:
+            ok = False
             break
-    outro = narration(audio, "outro", lines["outro"], 0.4, base)
-    tut.states.append(
-        State(
-            id="outro",
-            kind="outro",
-            label="",
-            narration=[outro],
-            duration=round(outro.at + outro.duration + 2.2, 2),
-            sfx=[
-                Sfx(t=0.0, kind="whoosh"),
-                Sfx(t=0.85, kind="pop"),
-                Sfx(t=1.6, kind="pop"),
-                Sfx(t=2.3, kind="pop"),
-                Sfx(t=2.6, kind="success"),
-            ],
+    if ok:
+        outro = narration(voice, "outro", 0.4, base)
+        tut.states.append(
+            State(
+                id="outro",
+                kind="outro",
+                label="",
+                narration=[outro],
+                duration=round(outro.at + outro.duration + 2.2, 2),
+                sfx=[
+                    Sfx(t=0.0, kind="whoosh"),
+                    Sfx(t=0.85, kind="pop"),
+                    Sfx(t=1.6, kind="pop"),
+                    Sfx(t=2.3, kind="pop"),
+                    Sfx(t=2.6, kind="success"),
+                ],
+            )
         )
-    )
     return tut
 
 

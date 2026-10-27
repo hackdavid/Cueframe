@@ -9,6 +9,7 @@ from app.agents.docs_research import DocsResearchAgent
 from app.auth import User
 from app.llm import LLMError
 from app.sandbox.contracts import Action, Answer
+from app.tutorial.pipeline import StateEdit
 from app.uploads import save_upload
 
 router = APIRouter(prefix="/api")
@@ -277,3 +278,56 @@ async def stop_sandbox(request: Request, sid: str, user: User) -> dict[str, Any]
     if rec["job_id"]:
         _job_or_404(request, rec["job_id"], user)
     return await s.sandboxes.stop(sid, "stopped by user") or rec
+
+
+class StateEditIn(StateEdit):
+    state: str = ""
+
+
+# ---------- tutorials ----------
+
+
+def _tutorial_or_404(request: Request, tid: str, user: dict[str, Any]) -> dict[str, Any]:
+    tut = _s(request).store.get_tutorial(tid, user["id"])
+    if tut is None:
+        raise HTTPException(404, "Tutorial not found")
+    return tut
+
+
+@router.get("/tutorials", tags=["tutorials"])
+def list_tutorials(
+    request: Request, user: User, conversation_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Tutorials with their state graph, edit inputs and output URLs."""
+    return _s(request).store.list_tutorials(user["id"], conversation_id)
+
+
+@router.get("/tutorials/{tid}", tags=["tutorials"])
+def get_tutorial(request: Request, tid: str, user: User) -> dict[str, Any]:
+    return _tutorial_or_404(request, tid, user)
+
+
+def _edit_job(request: Request, tut: dict[str, Any], text: str, edits: list) -> dict[str, Any]:
+    payload = {"text": text, "attachments": [],
+               "job_input": {"tutorial_id": tut["id"], "edits": edits}}  # fmt: skip
+    return _s(request).jobs.submit("tutorial.edit", payload, tut["conversation_id"])
+
+
+@router.patch("/tutorials/{tid}/states/{state_id}", status_code=202, tags=["tutorials"])
+async def edit_state(
+    request: Request, tid: str, state_id: str, body: StateEditIn, user: User
+) -> dict[str, Any]:
+    """Change one state (narration, label, zoom, highlight). Starts a background job
+    that re-voices and re-renders only what changed, then posts the new version."""
+    tut = _tutorial_or_404(request, tid, user)
+    states = {s["id"] for s in (tut.get("graph") or {}).get("states", [])}
+    if state_id not in states:
+        raise HTTPException(404, f"Unknown state; states are {sorted(states)}")
+    edit = {**body.model_dump(exclude_none=True, exclude={"state"}), "state": state_id}
+    return {"job": _edit_job(request, tut, f"Edit state {state_id}", [edit])}
+
+
+@router.post("/tutorials/{tid}/render", status_code=202, tags=["tutorials"])
+async def rerender(request: Request, tid: str, user: User) -> dict[str, Any]:
+    """Render the current graph again (unchanged segments come from the cache)."""
+    return {"job": _edit_job(request, _tutorial_or_404(request, tid, user), "Re-render", [])}

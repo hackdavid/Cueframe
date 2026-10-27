@@ -571,6 +571,14 @@
     if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   });
 
+  document.querySelectorAll("[data-prompt]").forEach((b) =>
+    b.addEventListener("click", () => {
+      input.value = b.dataset.prompt;
+      autosize();
+      input.focus();
+    }),
+  );
+
   $("#composer").addEventListener("submit", async (e) => {
     e.preventDefault();
     if ($("#send").disabled) return;

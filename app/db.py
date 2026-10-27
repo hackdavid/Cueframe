@@ -94,6 +94,25 @@ CREATE TABLE IF NOT EXISTS connections (
     disconnected_at TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_connections_conv ON connections(conversation_id);
+CREATE TABLE IF NOT EXISTS tutorials (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+    job_id TEXT,
+    recipe TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 0,
+    spec TEXT NOT NULL,
+    voice TEXT NOT NULL DEFAULT '{}',
+    capture TEXT,
+    assets TEXT NOT NULL DEFAULT '{}',
+    graph TEXT,
+    output TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_tutorials_conv ON tutorials(conversation_id, created_at);
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT,
@@ -297,6 +316,45 @@ class Store:
         rows = self._all(f"SELECT * FROM uploads WHERE id IN ({marks})", tuple(ids))
         found = {r["id"]: r for r in rows if user_id is None or r["user_id"] == user_id}
         return [found[i] for i in dict.fromkeys(ids) if i in found]
+
+    # tutorials: the editable state graph and asset URLs; media bytes live in storage
+    _TUT_JSON = ("spec", "voice", "capture", "assets", "graph", "output")
+
+    def create_tutorial(
+        self, user_id: str, cid: str | None, job_id: str, recipe: str, title: str, spec: dict
+    ) -> dict[str, Any]:
+        tid, ts = new_id("t"), now()
+        self._insert(
+            "tutorials",
+            {"id": tid, "user_id": user_id, "conversation_id": cid, "job_id": job_id,
+             "recipe": recipe, "title": title, "status": "planned", "spec": json.dumps(spec),
+             "created_at": ts, "updated_at": ts},
+        )  # fmt: skip
+        return self.get_tutorial(tid)  # type: ignore[return-value]
+
+    def get_tutorial(self, tid: str, user_id: str | None = None) -> dict[str, Any] | None:
+        sql, args = "SELECT * FROM tutorials WHERE id = ?", [tid]
+        if user_id:
+            sql += " AND user_id = ?"
+            args.append(user_id)
+        return _decode(self._one(sql, tuple(args)), *self._TUT_JSON)
+
+    def list_tutorials(self, user_id: str, cid: str | None = None) -> list[dict[str, Any]]:
+        sql, args = "SELECT * FROM tutorials WHERE user_id = ?", [user_id]
+        if cid:
+            sql += " AND conversation_id = ?"
+            args.append(cid)
+        rows = self._all(sql + " ORDER BY created_at DESC", tuple(args))
+        return [_decode(r, *self._TUT_JSON) for r in rows]  # type: ignore[misc]
+
+    def update_tutorial(self, tid: str, **fields: Any) -> dict[str, Any]:
+        for col in self._TUT_JSON:
+            if col in fields and fields[col] is not None:
+                fields[col] = json.dumps(fields[col])
+        fields["updated_at"] = now()
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self._exec(f"UPDATE tutorials SET {cols} WHERE id = ?", (*fields.values(), tid))
+        return self.get_tutorial(tid)  # type: ignore[return-value]
 
     # jobs
     def create_job(

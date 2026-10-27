@@ -2,6 +2,31 @@
  "id": "nginx-website",
  "title": "Host Your Own Website on Linux",
  "subtitle": "nginx in about a minute",
+ "summary": "Install nginx, start it, open localhost in the browser, publish your own page and verify it answers 200 OK.",
+ "match": [
+  "nginx",
+  "engine-x",
+  "web server",
+  "webserver",
+  "host a website",
+  "host website",
+  "host my website",
+  "website on linux",
+  "self host"
+ ],
+ "software": "nginx",
+ "tags": [
+  "nginx",
+  "linux",
+  "web server",
+  "self hosting",
+  "ubuntu",
+  "debian",
+  "apt",
+  "curl",
+  "beginner",
+  "tutorial"
+ ],
  "steps": [
   {
    "id": "install",

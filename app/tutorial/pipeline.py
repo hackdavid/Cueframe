@@ -1,0 +1,437 @@
+"""Production tutorial pipeline, run inside background jobs.
+
+make: intake -> narration (ElevenLabs) -> real run in a 1080p sandbox, recorded once
+and paced to the narration -> state graph -> parallel per-state render -> publish.
+edit: patch states (narration, labels, zoom, highlights) -> re-voice only changed
+lines -> re-render only changed segments -> publish a new version.
+
+SQLite keeps the recipe (with edits), voice timings, capture records, the graph and
+storage URLs. Recordings, audio, segments and final files live in R2 (or the local
+artifacts dir); the per-tutorial work dir is only a cache and is refilled from storage.
+"""
+
+import asyncio
+import dataclasses
+import hashlib
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from app.jobs import JobContext, JobFailed
+from app.sandbox.contracts import Action
+from app.tutorial import recipes
+from app.tutorial.build import build
+from app.tutorial.contracts import Tutorial
+from app.tutorial.render import render
+from app.tutorial.voice import sound, speak
+
+SKIP = "Already installed - leave the install out of the video"
+SHOW = "Not installed - show me how to install it"
+DESKTOP = {"sandbox_width": 1920, "sandbox_height": 1080, "sandbox_scale": 1.5,
+           "sandbox_term_font": 22, "sandbox_cpu": 4}  # fmt: skip
+SFX = {
+    "click": ("A single crisp, soft mouse click. Clean UI sound, dry, no reverb", 0.5),
+    "keys": ("Fast, quiet laptop keyboard typing, close and dry, no music", 3.0),
+    "whoosh": ("A short smooth airy swoosh transition for a tech video", 0.8),
+    "success": ("A bright, pleasant two-note success chime, modern app notification", 1.2),
+    "pop": ("A soft, bubbly UI pop as an element appears", 0.5),
+    "music": ("Upbeat, light lo-fi electronic background loop for a tech tutorial, "
+              "warm keys and soft beat, no vocals, steady", 22.0),
+}  # fmt: skip
+LEAD, MIN_HOLD = 1.0, 1.2  # seconds of screen before the first step / after each step
+PACE = 1.0  # real-time factor for those holds (tests set 0)
+
+
+def work_dir(ctx: JobContext, tid: str) -> Path:
+    return ctx.settings.data_dir / "tutorials" / tid
+
+
+def _audio(ctx: JobContext, tid: str) -> Path:
+    path = work_dir(ctx, tid) / "public" / tid / "audio"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _keys(spec: dict[str, Any], state_id: str) -> list[str]:
+    if state_id == "title":
+        return ["intro"]
+    if state_id == "outro":
+        return ["outro"]
+    return next(s["narration"] for s in spec["steps"] if s["id"] == state_id)
+
+
+async def _ensure(ctx: JobContext, path: Path, stored: dict[str, Any]) -> None:
+    if path.exists():
+        return
+    data = await ctx._manager.storage.get(stored)
+    if data is None:
+        raise RuntimeError(f"Missing tutorial asset {stored['key']}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+
+async def ensure_sfx(ctx: JobContext, audio: Path) -> None:
+    """Shared sound library, generated once with ElevenLabs and kept in storage."""
+    storage = ctx._manager.storage
+    lib = ctx.settings.data_dir / "tutorial-assets"
+    lib.mkdir(parents=True, exist_ok=True)
+    for kind, (prompt, secs) in SFX.items():
+        name = f"sfx_{kind}.mp3"
+        cached = lib / name
+        if not cached.exists():
+            data = await storage.get(storage.ref(f"assets/{name}"))
+            if data is None:
+                ctx.thinking("Sound", f"Generating the {kind} sound")
+                for attempt in range(3):
+                    try:
+                        data = await sound(prompt, secs, 0.6 if kind == "music" else 0.5)
+                        break
+                    except Exception:
+                        if attempt == 2:
+                            raise
+                        await asyncio.sleep(2)
+                await storage.put(f"assets/{name}", data, "audio/mpeg")
+            cached.write_bytes(data)  # type: ignore[arg-type]
+        if not (audio / name).exists():
+            (audio / name).write_bytes(cached.read_bytes())
+
+
+async def voice_lines(
+    ctx: JobContext, tid: str, lines: dict[str, str], voice: dict[str, Any]
+) -> list[str]:
+    """Synthesize every line whose text changed; returns the keys that were re-voiced."""
+    vid = os.environ.get("ELEVENLABS_VOICE_ID", "")
+    todo = [k for k, text in lines.items() if voice.get(k, {}).get("text") != text]
+    sem = asyncio.Semaphore(3)
+    audio = _audio(ctx, tid)
+
+    async def one(key: str) -> None:
+        text = lines[key]
+        h = hashlib.sha256(f"{vid}|{text}".encode()).hexdigest()[:10]
+        async with sem:
+            mp3, words = await speak(text)
+        name = f"{key}-{h}.mp3"
+        (audio / name).write_bytes(mp3)
+        stored = await ctx._manager.storage.put(f"tutorials/{tid}/voice-{key}-{h}.mp3", mp3,
+                                                "audio/mpeg")  # fmt: skip
+        voice[key] = {"text": text, "file": name, "stored": stored,
+                      "words": [w.model_dump() for w in words]}  # fmt: skip
+
+    await asyncio.gather(*(one(k) for k in todo))
+    return todo
+
+
+async def capture(
+    ctx: JobContext, tid: str, spec: dict[str, Any], voice: dict[str, Any], hidden: set[str]
+) -> dict[str, Any]:
+    """Run every step for real in one sandbox while recording continuously. Each step
+    holds the screen for as long as its narration needs, so clips are never frozen."""
+    mgr, storage = ctx._manager.sandboxes, ctx._manager.storage
+    desk = dataclasses.replace(ctx.settings, **DESKTOP)  # type: ignore[arg-type]
+    records: list[dict[str, Any]] = []
+    steps = spec["steps"]
+    ctx.phase("sandbox", "Starting a 1080p Linux desktop")
+    async with mgr.session(ctx.id, ctx.conversation_id, "about:blank", settings=desk) as (sid, box):
+        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": box.live_url})
+        await box.run(-1, Action(kind="terminal", command="clear", ask=False))
+        t0 = await box.start_recording()
+        await asyncio.sleep(LEAD * PACE)
+        for i, step in enumerate(steps):
+            ctx.phase("act", f"Step {i + 1}/{len(steps)}: {step['label']}")
+            action = Action.model_validate(step["action"])
+            need = 0.0
+            if step["id"] not in hidden:
+                ends = [voice[k]["words"][-1]["end"] for k in step["narration"]]
+                need = sum(ends) + 0.6 * len(ends) + 0.3
+
+            async def out(line: str, i: int = i) -> None:
+                mgr.touch(sid)
+                ctx.emit("sandbox.output", {"sandbox_id": sid, "step": i, "line": line})
+
+            mgr.touch(sid)
+            async with mgr.busy(sid):
+                rec = await box.run(i, action, out)
+            spent = rec.settled - rec.started
+            hold = max(MIN_HOLD, need - spent + 0.8)
+            await asyncio.sleep(hold * PACE)
+            mgr.touch(sid)
+            rec.t_in, rec.t_out = rec.started - t0, rec.settled - t0 + hold
+            rec.in_video = step["id"] not in hidden
+            records.append({"step": step["id"], **rec.model_dump(mode="json")})
+            ctx.emit("sandbox.action", {"sandbox_id": sid, "record": records[-1]})
+            ctx.progress(0.15 + 0.45 * (i + 1) / len(steps))
+            if not rec.ok:
+                break
+        ctx.phase("upload", "Saving the recording")
+        video = await box.stop_recording()
+        failed = not records or not records[-1]["ok"]
+        await mgr.stop(sid, "job failed" if failed else "job finished")
+    (work_dir(ctx, tid) / "public" / tid / "recording.mp4").write_bytes(video)
+    stored = await storage.put(f"tutorials/{tid}/recording.mp4", video, "video/mp4")
+    sb = ctx.store.get_sandbox(sid) or {}
+    return {"t0": t0, "records": records, "recording": stored, "sandbox_id": sid,
+            "sandbox_seconds": sb.get("seconds"), "sandbox_cost_usd": sb.get("est_cost_usd")}  # fmt: skip  # noqa: E501
+
+
+def _ts(x: float) -> str:
+    return f"{int(x) // 60}:{int(x) % 60:02}"
+
+
+def youtube_md(spec: dict[str, Any], tut: Tutorial) -> str:
+    chapters, t, last = [], 0.0, -99.0
+    for st in tut.states:
+        name = {"title": "Intro", "outro": "Wrap-up"}.get(st.kind, st.label)
+        if t - last >= 10 or not chapters:  # YouTube needs chapters of 10 s or more
+            chapters.append(f"{_ts(t)} {name}")
+            last = t
+        t += round(st.duration * tut.fps) / tut.fps
+    cmds = [s["action"]["command"] for s in spec["steps"]
+            if s["action"]["kind"] == "terminal" and s["id"] in {x.id for x in tut.states}]  # fmt: skip  # noqa: E501
+    software = spec.get("software", "")
+    return "\n".join([
+        f"# {spec['title']}{f' ({software} tutorial)' if software else ''}", "",
+        "## Description", "", spec.get("summary", ""), "", *chapters, "",
+        "## Commands used", "", *(f"    {c}" for c in cmds), "",
+        "## Tags", "", ", ".join(spec.get("tags", [])), "",
+        "Captions: upload the attached .srt. Category: Science & Technology.",
+    ])  # fmt: skip
+
+
+async def publish(ctx: JobContext, row: dict[str, Any], note: str = "") -> dict[str, Any]:
+    """Build the graph from the stored inputs, render what changed and post the result."""
+    store, storage, tid = ctx.store, ctx._manager.storage, row["id"]
+    spec, voice, cap = row["spec"], row["voice"], row["capture"]
+    work, audio = work_dir(ctx, tid), _audio(ctx, tid)
+    ctx.phase("render", "Preparing assets")
+    await _ensure(ctx, work / "public" / tid / "recording.mp4", cap["recording"])
+    for v in voice.values():
+        await _ensure(ctx, audio / v["file"], v["stored"])
+    await ensure_sfx(ctx, audio)
+    tut = build(spec, voice, cap, tid, hidden=set(spec.get("hidden", [])))
+    row = store.update_tutorial(tid, status="rendering", graph=tut.model_dump())
+
+    def progress(done: int, total: int) -> None:
+        label = f"Rendering steps in parallel ({done}/{total})" if total else "Nothing changed"
+        ctx.progress(0.65 + 0.3 * (done / total if total else 1), label)
+
+    async def fetch(name: str) -> bytes | None:
+        return await storage.get(storage.ref(f"tutorials/{tid}/{name}"))
+
+    async def save(name: str, path: Path) -> None:
+        await storage.put(f"tutorials/{tid}/{name}", path.read_bytes(), "video/mp4")
+
+    ctx.phase("render", "Rendering the video")
+    res = await render(tut, work, fetch, save, progress)
+    n = row["version"] + 1
+    up = {
+        "video": await storage.put(f"tutorials/{tid}/video-v{n}.mp4",
+                                   res["video"].read_bytes(), "video/mp4"),
+        "captions": await storage.put(f"tutorials/{tid}/captions-v{n}.srt",
+                                      res["captions"].read_bytes(), "application/x-subrip"),
+        "thumbnail": await storage.put(f"tutorials/{tid}/thumbnail-v{n}.png",
+                                       res["thumbnail"].read_bytes(), "image/png"),
+        "youtube": await storage.put(f"tutorials/{tid}/youtube-v{n}.md",
+                                     youtube_md(spec, tut).encode(), "text/markdown"),
+    }  # fmt: skip
+    ok = all(s.verified for s in tut.states)
+    output = {**up, "stats": res["stats"], "job_id": ctx.id}
+    row = store.update_tutorial(tid, status="ready" if ok else "failed", version=n, output=output)
+    ctx.emit("tutorial.ready", {"tutorial_id": tid, "version": n, "video_url": up["video"]["url"]})
+    st = res["stats"]
+    rows = "\n".join(
+        f"| {i} | {s.label or s.kind.title()} | {'yes' if s.verified else '**failed**'} |"
+        f" {s.duration:.1f}s |"
+        for i, s in enumerate(tut.states, 1)
+    )
+    failed = next((s for s in tut.states if not s.verified), None)
+    head = (
+        f"**Step failed: {failed.label}.** The video shows exactly what happened, "
+        "up to the failure."
+        if failed
+        else f"**{'Updated' if n > 1 else 'Your tutorial is ready'}: {spec['title']}** "
+        f"(version {n}, {st['duration']:.0f} s, 1080p)"
+    )
+    cost = ""
+    if cap.get("sandbox_seconds") is not None and n == 1:
+        cost = f" The sandbox ran {cap['sandbox_seconds']:.0f} s (about ${cap['sandbox_cost_usd']:.4f})."  # noqa: E501
+    ctx.reply(
+        f"{head}\n\n{note + chr(10) + chr(10) if note else ''}"
+        f'<video src="{up["video"]["url"]}" poster="{up["thumbnail"]["url"]}" controls></video>\n\n'
+        f"[Captions (.srt)]({up['captions']['url']}) · [Thumbnail]({up['thumbnail']['url']}) · "
+        f"[YouTube title, description and chapters]({up['youtube']['url']})\n\n"
+        f"Rendered {st['rendered']} of {st['states']} steps in {st['render_seconds']:.0f} s.{cost}\n\n"  # noqa: E501
+        "| # | Step | Verified | Length |\n|---|---|---|---|\n" + rows + "\n\n"
+        'To change something, just say it, e.g. *"make the intro shorter"* or '
+        '*"zoom in more on the curl output"*. Only the steps you change are re-rendered.'
+    )
+    result = {"tutorial_id": tid, "version": n, **output}
+    if failed:
+        raise JobFailed(f"Step {failed.label!r} failed", result)
+    return result
+
+
+async def make(ctx: JobContext, recipe_id: str) -> dict[str, Any]:
+    spec = recipes.get(recipe_id)
+    missing = [k for k in ("ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID") if not os.environ.get(k)]
+    if missing:
+        raise RuntimeError(f"Tutorial narration needs {', '.join(missing)} on the server")
+    conv = ctx.store.get_conversation(ctx.conversation_id) if ctx.conversation_id else None
+    if not conv:
+        raise ValueError("tutorial.make needs a conversation")
+    hidden: set[str] = set()
+    ctx.phase("intake", "Checking with you before running terminal commands")
+    for step in spec["steps"]:
+        a = step["action"]
+        if a["kind"] == "terminal" and a.get("ask", True):
+            ans = await ctx.ask(
+                f"This tutorial runs `{a['command']}` in a terminal. "
+                f"Is {spec.get('software') or 'it'} already installed on your machine?",
+                [SKIP, SHOW],
+                key=f"install_{step['id']}",
+            )
+            if ans == SKIP:
+                hidden.add(step["id"])
+    spec["hidden"] = sorted(hidden)
+    row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, recipe_id,
+                                    spec["title"], spec)  # fmt: skip
+    tid = row["id"]
+    ctx.emit("tutorial.created", {"tutorial_id": tid})
+    ctx.phase("voice", "Recording the narration")
+    ctx.progress(0.05)
+    voice: dict[str, Any] = {}
+    await voice_lines(ctx, tid, spec["lines"], voice)
+    ctx.store.update_tutorial(tid, status="capturing", voice=voice)
+    cap = await capture(ctx, tid, spec, voice, hidden)
+    row = ctx.store.update_tutorial(tid, capture=cap, assets={"recording": cap["recording"]})
+    return await publish(ctx, row)
+
+
+class StateEdit(BaseModel):
+    state: str = Field(description="State id to change: 'title', 'outro' or a step id")
+    narration: list[str] | None = Field(
+        None, description="New spoken lines for this state, same count as before"
+    )
+    label: str | None = Field(None, description="New step label (or video title for 'title')")
+    zoom: float | None = Field(None, ge=1, le=3, description="Camera zoom on the key area")
+    highlight: str | None = Field(None, description="New text for the highlight label")
+
+
+class EditPlan(BaseModel):
+    edits: list[StateEdit]
+    summary: str = Field(description="One sentence telling the user what changed")
+    reply: str | None = Field(None, description="Set instead of edits if the request "
+                              "cannot be done by editing states (explain why)")  # fmt: skip
+
+
+EDIT_RULES = """You edit a tutorial video that is stored as a graph of states. Turn the
+user's request into the smallest set of state edits. Only change what they asked for.
+Narration is read by a text-to-speech voice: write tool names the way they are said
+(e.g. 'engine-x' for nginx, 'package manager' for apt) and keep each line short and
+natural. Never claim anything the recorded run did not show. You cannot re-record
+actions or change what happened on screen; if asked to, set `reply` and explain.
+Every edit must carry the new value itself: the full rewritten narration lines, the new
+label, the new zoom number, or the new highlight text. Example for "shorten the intro":
+{"edits": [{"state": "title", "narration": ["<the new, shorter intro line>"]}],
+ "summary": "Shortened the intro narration."}"""
+
+
+def describe(row: dict[str, Any]) -> str:
+    spec, lines = row["spec"], row["spec"]["lines"]
+    out = [f"Title: {spec['title']}", "States:"]
+    for st in (row.get("graph") or {}).get("states", []):
+        keys = _keys(spec, st["id"])
+        step = next((s for s in spec["steps"] if s["id"] == st["id"]), {})
+        out.append(
+            f"- {st['id']} ({st['kind']}, {st.get('app') or '-'}): label={st['label']!r} "
+            f"zoom={step.get('zoom', (step.get('focus') or {}).get('zoom', 1.8))} "
+            f"narration={[lines[k] for k in keys]}"
+        )
+    return "\n".join(out)
+
+
+def apply(row: dict[str, Any], edits: list[StateEdit]) -> list[str]:
+    spec, changed = row["spec"], []
+    states = {s["id"] for s in (row.get("graph") or {}).get("states", [])}
+    for e in edits:
+        if e.state not in states:
+            raise ValueError(f"Unknown state {e.state!r}; states are {sorted(states)}")
+        step = next((s for s in spec["steps"] if s["id"] == e.state), None)
+        if e.narration:
+            for k, text in zip(_keys(spec, e.state), e.narration, strict=False):
+                spec["lines"][k] = text.strip()
+        if e.label:
+            if e.state == "title":
+                spec["title"] = e.label
+            elif step:
+                step["label"] = e.label
+        if e.zoom and step:
+            if step["action"]["kind"] == "terminal":
+                step["zoom"] = e.zoom
+            elif step.get("focus"):
+                step["focus"]["zoom"] = e.zoom
+        if e.highlight and step:
+            hl = step.setdefault("highlight", {})
+            if "box" in hl:
+                hl["box"]["label"] = e.highlight
+            else:
+                hl["command"] = e.highlight
+        changed.append(e.state)
+    return changed
+
+
+async def edit(
+    ctx: JobContext,
+    tid: str,
+    instruction: str | None = None,
+    edits: list[StateEdit] | None = None,
+) -> dict[str, Any]:
+    row = ctx.store.get_tutorial(tid)
+    if row is None or not row.get("capture"):
+        raise ValueError("That tutorial has no finished recording to edit")
+    note = ""
+    if edits is None:
+        if ctx.llm is None or not ctx.llm.configured:
+            raise RuntimeError("Editing from chat needs MODEL_API_KEY")
+        ctx.phase("plan", "Working out which steps to change")
+        prompt = f"{describe(row)}\n\nUser request: {instruction}"
+        for _ in range(2):
+            plan, _ = await ctx.llm.parse(
+                EditPlan,
+                purpose="tutorial.edit",
+                model=ctx.settings.research_model,
+                instructions=EDIT_RULES,
+                input=prompt,
+            )
+            empty = [
+                e.state
+                for e in plan.edits
+                if not e.model_dump(exclude_none=True).keys() - {"state"}
+            ]
+            if not empty:
+                break
+            prompt += (f"\n\nYour previous plan had edits for {empty} with no new values. "
+                       "Give the new narration/label/zoom/highlight in each edit.")  # fmt: skip
+        if plan.reply and not plan.edits:
+            ctx.reply(plan.reply)
+            return {"tutorial_id": tid, "edits": []}
+        edits, note = plan.edits, plan.summary
+        ctx.thinking("Plan", json.dumps([e.model_dump(exclude_none=True) for e in edits]))
+    before = json.dumps(row["spec"], sort_keys=True)
+    states = apply(row, edits)
+    ctx.phase("voice", "Re-recording changed narration")
+    revoiced = await voice_lines(ctx, tid, row["spec"]["lines"], row["voice"])
+    if edits and json.dumps(row["spec"], sort_keys=True) == before:
+        ctx.reply("That request didn't change anything in the tutorial, so I kept the current "
+                  "version. Try naming the step and what to change, e.g. *\"shorten the intro "
+                  "narration\"*.")  # fmt: skip
+        return {"tutorial_id": tid, "edits": [e.model_dump() for e in edits], "changed": []}
+    row = ctx.store.update_tutorial(tid, spec=row["spec"], voice=row["voice"])
+    done = [f"edited {', '.join(dict.fromkeys(states))}"] if states else []
+    if revoiced:
+        done.append(f"new narration for {', '.join(revoiced)}")
+    if done:
+        note = f"{note} ({'; '.join(done)})".strip()
+    return await publish(ctx, row, note)
