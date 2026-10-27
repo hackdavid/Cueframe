@@ -222,6 +222,7 @@
     badge.classList.toggle("hidden", !activeCount);
     if (!jobs.length) {
       $("#run-list").innerHTML = `<p class="px-1 text-xs text-zinc-500">Background jobs for this chat show up here.</p>`;
+      renderLive();
       return;
     }
     $("#run-list").innerHTML = jobs

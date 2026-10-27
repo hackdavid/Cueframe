@@ -49,10 +49,9 @@ def test_terminal_step_asks_user_first_and_hides_when_installed(client):
     assert [a["in_video"] for a in job["result"]["actions"]] == [False, True]
 
 
-def test_failed_step_marks_job_failed_and_still_terminates(client):
-    client.app.state.sandboxes.provider.create = classmethod(  # type: ignore[method-assign]
-        lambda cls, s, u="": _failing()
-    )
+def test_failed_step_marks_job_failed_and_still_terminates(client, monkeypatch):
+    provider = client.app.state.sandboxes.provider
+    monkeypatch.setattr(provider, "create", classmethod(lambda cls, s, u="": _failing()))
     body = {"content": "https://example.com", "job_kind": "sandbox.run"}
     jid = client.post("/api/messages", json=body, headers=_auth(client)).json()["job"]["id"]
     job = _wait(client, jid, {"succeeded", "failed"})
@@ -90,3 +89,30 @@ def test_waiting_jobs_do_not_hold_worker_slots(client):
         _wait(client, jid, {"waiting_input"})
     demo = client.post("/api/messages", json={"content": "hi"}, headers=_auth(client)).json()
     assert _wait(client, demo["job"]["id"], {"succeeded", "failed"})["status"] == "succeeded"
+
+
+def test_cancelled_waiting_job_does_not_free_extra_slot(client):
+    spec = {"actions": [{"kind": "terminal", "command": "true"}]}
+    body = {"content": "go", "job_kind": "sandbox.run", "job_input": spec}
+    waiting = [client.post("/api/messages", json=body, headers=_auth(client)).json()["job"]["id"]
+               for _ in range(2)]  # fmt: skip
+    for jid in waiting:
+        _wait(client, jid, {"waiting_input"})
+    client.post(f"/api/jobs/{waiting[0]}/cancel", headers=_auth(client))
+    _wait(client, waiting[0], {"cancelled"})
+    mgr = client.app.state.jobs
+    assert mgr._slots._value == 2  # nobody running, both permits free
+
+
+def test_r2_media_bearer_and_ownership(client):
+    body = {"content": "go", "job_kind": "sandbox.run", "job_input": {"actions": [
+        {"kind": "open_url", "url": "https://example.com"}]}}  # fmt: skip
+    jid = client.post("/api/messages", json=body, headers=_auth(client)).json()["job"]["id"]
+    _wait(client, jid, {"succeeded"})
+    client.app.state.storage.presign = lambda key, seconds=3600: f"https://r2.test/{key}"
+    client.cookies.clear()
+    own = client.get(f"/media/r2/cueframe/jobs/{jid}/recording.mp4", headers=_auth(client),
+                      follow_redirects=False)  # fmt: skip
+    assert own.status_code == 307 and own.headers["location"].endswith("recording.mp4")
+    for bad in (f"other/jobs/{jid}/recording.mp4", f"cueframe/jobs/{jid}/../j_x/recording.mp4"):
+        assert client.get(f"/media/r2/{bad}", headers=_auth(client)).status_code == 404

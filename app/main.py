@@ -11,7 +11,7 @@ import app.handlers.demo  # noqa: F401  (registers job handlers)
 import app.handlers.research  # noqa: F401
 import app.handlers.sandbox_run  # noqa: F401
 from app import api, pages, ws
-from app.auth import hash_password, optional_user, user_for_token
+from app.auth import hash_password, user_for_token
 from app.config import Settings, get_settings
 from app.db import Store
 from app.events import EventBus
@@ -22,6 +22,14 @@ from app.sandbox.manager import SandboxManager
 from app.storage import Storage
 
 BASE = Path(__file__).parent
+
+
+def _media_user(request: Request) -> dict | None:
+    token = request.cookies.get("cf_session")
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        token = header[7:]
+    return user_for_token(request.app.state.store, token)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -66,21 +74,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def protect_media(request: Request, call_next):  # type: ignore[no-untyped-def]
-        if request.url.path.startswith("/media/"):
-            token = request.cookies.get("cf_session")
-            header = request.headers.get("authorization", "")
-            if header.lower().startswith("bearer "):
-                token = header[7:]
-            if user_for_token(request.app.state.store, token) is None:
-                return JSONResponse({"detail": "Not logged in"}, status_code=401)
+        if request.url.path.startswith("/media/") and _media_user(request) is None:
+            return JSONResponse({"detail": "Not logged in"}, status_code=401)
         return await call_next(request)
 
     @app.get("/media/r2/{key:path}", include_in_schema=False)
     async def r2_media(key: str, request: Request):  # type: ignore[no-untyped-def]
         from fastapi.responses import RedirectResponse
 
-        store, user = request.app.state.store, optional_user(request)
-        m = re.search(r"(?:^|/)jobs/(j_[0-9a-f]+)/", key)
+        store, user = request.app.state.store, _media_user(request)
+        prefix = re.escape(request.app.state.settings.r2_prefix.strip("/"))
+        m = re.fullmatch(rf"{prefix}/jobs/(j_[0-9a-f]+)/[A-Za-z0-9_-]+\.[a-z0-9]+", key)
         job = store.get_job(m.group(1)) if m else None
         cid = job and job["conversation_id"]
         if not user or not cid or not store.get_conversation(cid, user["id"]):

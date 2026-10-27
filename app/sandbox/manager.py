@@ -52,8 +52,10 @@ class SandboxManager:
         try:
             yield
         finally:
-            self._busy[sid] -= 1
-            self.touch(sid)
+            if sid in self._busy:
+                self._busy[sid] -= 1
+            if sid in self._live:
+                self.touch(sid)
 
     @contextlib.asynccontextmanager
     async def session(

@@ -42,6 +42,7 @@ def job_handler(kind: str) -> Callable[[Handler], Handler]:
 
 class JobContext:
     def __init__(self, manager: "JobManager", job: dict[str, Any]):
+        self.holds_slot = True
         self._manager = manager
         self.job = job
         self.id: str = job["id"]
@@ -88,13 +89,15 @@ class JobContext:
         self.emit("job.input_required", {"job": self.job, **pending})
         # Waiting on a human must not hold a worker slot.
         self._manager._slots.release()
+        self.holds_slot = False
         try:
             value = await asyncio.wait_for(fut, self.settings.ask_timeout_seconds)
         except TimeoutError as exc:
             raise RuntimeError(f"No answer to {question!r} within the time limit") from exc
         finally:
             self._manager._waiters.pop(self.id, None)
-            await asyncio.shield(self._manager._slots.acquire())
+            await self._manager._slots.acquire()  # cancellation here leaves holds_slot False
+            self.holds_slot = True
         self._update(status="running", pending_input=None)
         self.emit("job.input_received", {"job": self.job, "input_id": input_id, "value": value})
         return value
@@ -178,10 +181,15 @@ class JobManager:
     async def _run(self, job: dict[str, Any]) -> None:
         job_id_var.set(job["id"])
         try:
-            async with self._slots:
+            await self._slots.acquire()
+            ctx = JobContext(self, job)
+            try:
                 job = self.store.update_job(job["id"], status="running", started_at=now())
                 self._publish_job("job.started", job)
-                result = await HANDLERS[job["kind"]](JobContext(self, job))
+                result = await HANDLERS[job["kind"]](ctx)
+            finally:
+                if ctx.holds_slot:
+                    self._slots.release()
             job = self.store.update_job(
                 job["id"], status="succeeded", progress=1.0, result=result or {}, finished_at=now()
             )
