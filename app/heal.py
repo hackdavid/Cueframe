@@ -70,9 +70,12 @@ class Healer:
 
     def __init__(self, ctx: Any, log: list[str] | None = None):
         self.ctx, self.log = ctx, log if log is not None else []
+        self.save: Callable[[], Any] | None = None
 
     def __call__(self, text: str) -> None:
         self.log.append(text)
+        if self.save:
+            self.save()
         self.ctx.thinking("Healing", text)
         self.ctx.emit("tutorial.healing", {"note": text})
 

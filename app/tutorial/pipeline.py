@@ -451,6 +451,9 @@ async def produce(ctx: JobContext, row: dict[str, Any], heal: Healer) -> dict[st
     """Narrate, record (healing failed takes) and publish a stored tutorial. Each stage
     is saved, so a resumed job skips what is already done."""
     tid, spec = row["id"], row["spec"]
+    spec["healing"] = heal.log
+    heal.save = lambda: ctx.store.update_tutorial(tid, spec=spec)
+    heal.save()
     voice = row.get("voice") or {}
     hidden = set(spec.get("hidden", []))
     if not row.get("capture"):

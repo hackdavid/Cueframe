@@ -112,6 +112,8 @@ def test_broken_recording_sandbox_and_failed_quality_check_are_healed(client, mo
         takes.append(1)
         if len(takes) == 1:
             raise ConnectionError("sandbox connection lost")
+        stored = client.app.state.store.get_tutorial(a[1])["spec"]["healing"]
+        assert any("recording sandbox broke" in n for n in stored)  # saved before it's done
         return await real(*a, **kw)
 
     checks, forced = [], []
@@ -160,7 +162,8 @@ def test_interrupted_tutorial_resumes_after_restart(client, monkeypatch):
     job = _wait(client, jid, {"succeeded", "failed"})
     tid = job["result"]["tutorial_id"]
     store, jobs = client.app.state.store, client.app.state.jobs
-    store.update_tutorial(tid, status="rendering", active_job="j_dead")
+    spec = {**store.get_tutorial(tid)["spec"], "healing": ["Upload of x failed; retrying"]}
+    store.update_tutorial(tid, status="rendering", active_job="j_dead", spec=spec)
     other = store.create_tutorial(
         store.get_tutorial(tid)["user_id"], cid, "j_old", "planned", "Old", {"steps": []}
     )
@@ -174,6 +177,8 @@ def test_interrupted_tutorial_resumes_after_restart(client, monkeypatch):
     assert res["status"] == "succeeded", res["error"]
     tut = client.get(f"/api/tutorials/{tid}", headers=_auth(client)).json()
     assert tut["version"] == 2 and tut["status"] == "ready"
-    assert any("server restarted" in n for n in tut["output"]["healing"])
+    notes = tut["output"]["healing"]
+    assert notes[0] == "Upload of x failed; retrying" and "server restarted" in notes[1]
+    assert tut["spec"]["healing"] == notes
     assert len(client.get("/api/sandboxes", headers=_auth(client)).json()) == 2  # no re-record
     assert store.get_tutorial(other["id"])["status"] == "capturing"
