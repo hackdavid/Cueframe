@@ -332,10 +332,14 @@ def describe_plan(spec: dict[str, Any]) -> str:
         what = {"terminal": f"`{a.get('command')}`", "open_url": f"open `{a.get('url')}`",
                 "key": f"press `{a.get('keys')}`{on}", "launch": f"open `{a.get('command')}`",
                 "click": f"click “{a.get('target')}”{on}",
+                "double_click": f"double-click “{a.get('target')}”{on}",
+                "menu": f"choose **{a.get('target')}**{on}",
+                "drag": f"drag across “{a.get('target')}”{on}",
+                "wait": f"wait {a.get('seconds')} s",
                 "scroll": f"scroll to “{a.get('target')}”{on}",
                 "type": f"type `{a.get('text')}`"
                 + (f" into “{a['target']}”" if a.get("target") else "") + on,
-                }[a["kind"]]  # fmt: skip
+                }.get(a["kind"], a["kind"])  # fmt: skip
         out.append(f"{i}. **{s['label']}**: {what}")
     return "\n".join(out)
 

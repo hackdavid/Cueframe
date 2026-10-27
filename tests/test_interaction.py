@@ -216,3 +216,11 @@ def test_typing_into_a_named_field_replaces_its_value():
     named = action(_step("w", "type", app="browser", target="W:", text="900"))
     assert named["clear"] is True and named["target"] == "W:"
     assert action(_step("t", "type", app="browser", text="Studio Portrait"))["clear"] is False
+
+
+def test_plan_summary_names_menu_and_drag_steps():
+    menu = {"kind": "menu", "target": "Select > Magic Cut...", "app": "browser"}
+    drag = {"kind": "drag", "target": "canvas", "app": "browser"}
+    spec = {"steps": [{"label": "Cut out", "action": menu}, {"label": "Paint", "action": drag}]}
+    text = planner.describe_plan(spec)
+    assert "**Select > Magic Cut...**" in text and "drag across “canvas”" in text
