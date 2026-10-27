@@ -235,11 +235,12 @@ async def record(
         if last:
             return cap
         ctx.phase("plan", f"Fixing step {bad + 1} from its real output")
+        n = len(spec["steps"])
         if err := await planner.repair(ctx, spec, bad, recs[bad]):
             heal(f"Step **{step['label']}** failed while recording ({why}) and {err}")
             return cap
         heal(f"Step **{step['label']}** failed while recording ({why}); rewrote it as "
-             f"`{planner.what(spec['steps'][bad])}` and recorded again")  # fmt: skip
+             f"{planner.fixed(spec, bad, n)} and recorded again")  # fmt: skip
         await voice_lines(ctx, tid, spec["lines"], voice, heal)
         ctx.store.update_tutorial(tid, spec=spec, voice=voice)
     raise AssertionError("unreachable")

@@ -99,6 +99,11 @@ class StepFix(BaseModel):
     fixable: bool = Field(description="False if the task can't work in this sandbox")
     reason: str = Field(description="What went wrong, one sentence")
     step: PlannedStep
+    before: list[PlannedStep] = Field(
+        default_factory=list,
+        description="Up to 2 steps the plan is missing that must run first (e.g. dismiss a "
+        "start screen, open the menu or dialog the step types into); usually empty",
+    )
 
 
 SANDBOX = """The sandbox is a fresh Debian Linux desktop at 1920x1080 with
@@ -137,7 +142,8 @@ multi-stage edit in a full app (photo editing, documents) may use up to 16 steps
 visible action each, for a 2-4 minute video:
 - terminal steps: ONE line each, fully non-interactive (`apt-get install -y ...`,
   `--yes`, no editors, no prompts, no `less`/pagers, nothing that runs forever in the
-  foreground; start servers in the background or as daemons). Keep each step's output
+  foreground; start servers in the background or as daemons; never drive the GUI from
+  the terminal with xdotool/wmctrl, use click/type/key steps for that). Keep each step's output
   to at most 12 lines (`| head -n 12`, `-q`) so the result fits on screen, and keep
   commands short (under 70 characters when possible) so they read well zoomed in.
 - browser steps: kind=open_url with a URL (localhost services or public sites);
@@ -174,6 +180,9 @@ FIX = f"""A step of a tutorial plan failed when rehearsed for real. Rewrite just
 step so it works, keeping its id and purpose (you may change the command, url, expect
 text, target and narration). Base the fix on the real output: when an element wasn't
 found, the failure lists the elements that ARE visible; pick the right one from it.
+If the step can't work because something the plan never did has to happen first (a
+start screen to dismiss, a dialog or menu to open), keep the step as it is and put
+those missing steps in `before`; never replace a step with one that drops its purpose.
 {SANDBOX}"""
 
 GUI = ("click", "type", "scroll", "key", "launch", "drag", "menu")
@@ -194,6 +203,7 @@ SECRETISH = re.compile(r"(sk|pk|ghp|xox[bp]|AKIA)[-_A-Za-z0-9]{12,}|[A-Za-z0-9+/
 BLOCKED = re.compile(
     r"\b(shutdown|reboot|poweroff|halt|mkfs\S*|dd\s+if=|init\s+0)\b|rm\s+-\S*r\S*\s+/(\s|$)"
     r"|:\(\)\s*\{|\b(vim?|nano|emacs|less|more|top|htop|watch)\b(?!-)"
+    r"|\b(xdotool|wmctrl|xte)\b"  # the GUI is driven by click/type/key steps, on screen
 )
 
 
@@ -441,6 +451,13 @@ async def _visible(box: Sandbox, app: str, expect: str, rec: ActionRecord) -> Ac
     return rec
 
 
+def fixed(spec: dict[str, Any], i: int, n_before: int) -> str:
+    """The step(s) a repair of step `i` left in its place, for the healing note."""
+    return " → ".join(
+        f"`{what(s)}`" for s in spec["steps"][i : i + 1 + len(spec["steps"]) - n_before]
+    )
+
+
 def what(step: dict[str, Any]) -> str:
     a = step["action"]
     return (a.get("command") or a.get("url") or a.get("keys") or a.get("text")
@@ -458,7 +475,8 @@ async def repair(
     ctx: JobContext, spec: dict[str, Any], i: int, rec: ActionRecord | dict[str, Any]
 ) -> str | None:
     """Rewrite failing step `i` in place from its real output. None when a fix was made,
-    else why the step can't work here. Narration lines of the step are regenerated."""
+    else why the step can't work here. Narration lines of the step are regenerated; steps
+    the plan was missing before it are inserted (the caller re-runs from step `i`)."""
     step = spec["steps"][i]
     why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
     if ctx.llm is None or not ctx.llm.configured:
@@ -471,10 +489,18 @@ async def repair(
         f"{i + 1} ({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}",
     )  # fmt: skip
     fix.step.id = step["id"]
-    if not fix.fixable or (bad := problems_one(fix.step)):
+    ids = {s["id"] for s in spec["steps"]}
+    pre = fix.before[:2] if len(spec["steps"]) + len(fix.before) <= MAX_STEPS + 4 else []
+    for p in pre:
+        p.id = next(
+            f"{step['id']}_pre{n}" for n in range(1, 99) if f"{step['id']}_pre{n}" not in ids
+        )
+        ids.add(p.id)
+    bad = [x for s in (*pre, fix.step) for x in problems_one(s)]
+    if not fix.fixable or bad:
         return f"step **{step['label']}** can't work here: {fix.reason or '; '.join(bad)}"
-    new = to_spec(_stub([fix.step]), goal)
-    spec["steps"][i] = new["steps"][0]
+    new = to_spec(_stub([*pre, fix.step]), goal)
+    spec["steps"][i : i + 1] = new["steps"]
     for k in [k for k in spec["lines"] if k in (step["id"], f"{step['id']}_done")]:
         del spec["lines"][k]
     spec["lines"].update({k: v for k, v in new["lines"].items()
@@ -529,11 +555,12 @@ async def _rehearse(
                 )
             state["repairs"] += 1
             ctx.phase("plan", f"Fixing step {i + 1} from its real output")
+            n = len(spec["steps"])
             if err := await repair(ctx, spec, i, rec):
                 await mgr.stop(sid, "rehearsal failed")
                 return err
             heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
-                 f"real output as `{what(spec['steps'][i])}`")  # fmt: skip
+                 f"real output as {fixed(spec, i, n)}")  # fmt: skip
         await mgr.stop(sid, "rehearsal passed")
     spec["rehearsal"] = {"repairs": state["repairs"], "sandbox_id": sid}
     return None

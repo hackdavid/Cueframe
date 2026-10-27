@@ -224,3 +224,22 @@ def test_plan_summary_names_menu_and_drag_steps():
     spec = {"steps": [{"label": "Cut out", "action": menu}, {"label": "Paint", "action": drag}]}
     text = planner.describe_plan(spec)
     assert "**Select > Magic Cut...**" in text and "drag across “canvas”" in text
+
+
+def test_repair_can_add_the_missing_step_before_the_failed_one(client, monkeypatch):
+    monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
+                                                "browser": "Download Python"})  # fmt: skip
+    monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
+    start = _step("p", "click", app="browser", target="Start using it")
+    fix = planner.StepFix(fixable=True, reason="start screen", before=[start], step=_step(
+        "x", "click", app="browser", target="Download", expect="Download"))  # fmt: skip
+    llm = StubLLM([_plan(GUI, intro=LONG)], [fix])
+    _setup(client, monkeypatch, llm, fail=())
+    _, jid = _send(client, "Make a tutorial: write a note in mousepad")
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
+    ids = [s["id"] for s in tut["graph"]["states"]]
+    assert ids.index("download_pre1") + 1 == ids.index("download")
+    assert "`Start using it` → `Download`" in str(client.app.state.store.get_job(jid))
