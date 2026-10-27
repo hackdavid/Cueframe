@@ -20,6 +20,7 @@ from app.sandbox.contracts import Action, ActionRecord
 from app.tutorial.build import COLS, PROMPT
 
 MAX_REPAIRS = 3
+MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
 
 
 class PlannedStep(BaseModel):
@@ -134,6 +135,12 @@ def problems(plan: TutorialPlan) -> list[str]:
             out.append(f"step {s.id}: key needs keys")
         if not s.narration.strip():
             out.append(f"step {s.id}: narration is empty")
+    spoken = " ".join([plan.intro, plan.outro, *(f"{s.narration} {s.after}" for s in plan.steps)])
+    if len(plan.steps) >= 2 and len(spoken.split()) < MIN_WORDS:
+        out.append(
+            f"narration is {len(spoken.split())} words; write at least {MIN_WORDS} in total "
+            "(intro, outro and 2 sentences per step) so the video runs about a minute"
+        )
     return out
 
 
@@ -338,4 +345,4 @@ def _stub(steps: list[PlannedStep]) -> TutorialPlan:
 
 
 def problems_one(step: PlannedStep) -> list[str]:
-    return [p for p in problems(_stub([step, step])) if "unique" not in p]
+    return [p for p in problems(_stub([step, step])) if "unique" not in p and "words" not in p]

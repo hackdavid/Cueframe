@@ -23,3 +23,22 @@ SQLite table `tutorials`: recipe with edits (`spec`), voice lines with word timi
 - API: `PATCH /api/tutorials/{id}/states/{state_id}` with `{"narration": [...], "label", "zoom", "highlight"}`, or `POST /api/tutorials/{id}/render`. Both return the background job. `GET /api/tutorials[?conversation_id=]` and `GET /api/tutorials/{id}` return the graph.
 
 Not yet done: planning recipes automatically for any task (currently: `nginx-website`).
+
+## Automatic planning
+
+Requests that match no hand-written recipe go through `app/tutorial/planner.py`:
+
+1. `DocsResearchAgent` reads the official docs (best effort).
+2. The research model returns a structured `TutorialPlan`: title, intro/outro, 3-7 steps of kind
+   `terminal` (one non-interactive line), `open_url` or `key`, each with narration, label, badge,
+   highlight, `expect` text and an `installs` flag. `say` maps written names to spoken forms
+   (`jq` → `J Q`); on-screen text always uses the written form.
+3. `problems()` rejects unsafe or malformed plans (destructive or interactive commands, multi-line
+   commands, missing URLs, too little narration) and asks the model again.
+4. Intake: the chat shows the commands and asks before installs (or once, if nothing installs).
+   No sandbox exists until the user answers.
+5. Rehearsal: every step runs in a private, unrecorded sandbox. `check()` requires exit 0, the
+   `expect` text in the terminal output and HTTP 2xx/3xx for URLs. A failed step is rewritten from
+   its real output, up to `MAX_REPAIRS` times; otherwise the job fails and nothing is recorded.
+6. The proven plan is recorded in a fresh 1080p sandbox with the normal capture → voice → render →
+   R2 path; the same checks run again.

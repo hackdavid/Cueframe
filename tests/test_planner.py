@@ -13,10 +13,13 @@ def _step(id_, kind="terminal", **kw):
     return PlannedStep(**{**base, **kw})
 
 
-def _plan(steps, feasible=True, reason=""):
+LONG = " ".join(["word"] * 120)
+
+
+def _plan(steps, feasible=True, reason="", intro=LONG):
     return TutorialPlan(feasible=feasible, reason=reason, title="Say hi with cowsay",
                         subtitle="in a minute", summary="Install cowsay.", software="cowsay",
-                        tags=["linux"], intro="Hi there.", outro="Bye.",
+                        tags=["linux"], intro=intro, outro="Bye.",
                         say=[{"written": "nginx", "spoken": "engine-x"}], steps=steps)  # fmt: skip
 
 
@@ -146,6 +149,7 @@ def test_plan_without_installs_still_asks_before_running(client, monkeypatch):
 
 def test_problems_rejects_unsafe_and_malformed_steps():
     assert planner.problems(_plan(GOOD)) == []
+    assert "at least 120" in planner.problems(_plan(GOOD, intro="Hi."))[0]
     bad = [
         _step("a", command="reboot"),
         _step("b", command="rm -rf / --no-preserve-root"),
