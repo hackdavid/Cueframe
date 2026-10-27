@@ -79,4 +79,8 @@ class Tutorial(BaseModel):
     recording_url: str | None = None
     music_url: str | None = None
     steps: list[str] = []  # step labels, for the progress bar
+    software: str = ""  # title-card chip
+    teaser: str = ""  # command typed on the title card
+    done: str = "You did it"  # outro headline
+    recap: list[str] = []  # outro checklist
     states: list[State] = Field(default_factory=list)

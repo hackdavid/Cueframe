@@ -167,6 +167,17 @@ def plan_step(
     return st
 
 
+def teaser(steps: list[dict[str, Any]], width: int = 40) -> str:
+    """Short command for the title card: the first install, else the first terminal step."""
+    cmds = [s for s in steps if s["action"]["kind"] == "terminal"]
+    pick = next((s for s in cmds if s.get("installs")), cmds[0] if cmds else None)
+    if not pick:
+        return ""
+    cmd = re.sub(r"^(\w+=\S*\s+)+", "", pick["action"]["command"])
+    cmd = re.split(r"\s+(?:&&|\|\|?|;)\s+", cmd)[0]
+    return "$ " + (cmd if len(cmd) <= width else cmd[: width - 1] + "…")
+
+
 def build(
     spec: dict[str, Any],
     voice: dict[str, Any],
@@ -179,13 +190,18 @@ def build(
     video (e.g. "already installed"). A failed step ends the video honestly."""
     recs = {r["step"]: r for r in capture["records"]}
     say = spec.get("say") or {}
+    shown = [s for s in spec["steps"] if s["id"] not in hidden]
     tut = Tutorial(
         id=base,
         title=spec["title"],
         subtitle=spec.get("subtitle", ""),
         recording_url=f"{base}/recording.mp4",
         music_url=f"{base}/audio/sfx_music.mp3",
-        steps=[s["label"] for s in spec["steps"] if s["id"] not in hidden],
+        steps=[s["label"] for s in shown],
+        software=spec.get("software", ""),
+        teaser=teaser(spec["steps"]),
+        done=spec.get("done") or "You did it",
+        recap=spec.get("recap") or [s["label"] for s in shown][:4],
     )
     intro = narration(voice, "intro", 0.7, base, say)
     tut.states.append(
@@ -223,10 +239,8 @@ def build(
                 duration=round(outro.at + outro.duration + 2.2, 2),
                 sfx=[
                     Sfx(t=0.0, kind="whoosh"),
-                    Sfx(t=0.85, kind="pop"),
-                    Sfx(t=1.6, kind="pop"),
-                    Sfx(t=2.3, kind="pop"),
-                    Sfx(t=2.6, kind="success"),
+                    *(Sfx(t=round(0.85 + 0.73 * i, 2), kind="pop") for i in range(len(tut.recap))),
+                    Sfx(t=round(0.85 + 0.73 * len(tut.recap), 2), kind="success"),
                 ],
             )
         )

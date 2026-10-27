@@ -1,5 +1,5 @@
 from app.handlers.tutorial import Route
-from app.tutorial import pipeline, planner
+from app.tutorial import build, pipeline, planner
 from app.tutorial.build import caption_words
 from app.tutorial.contracts import Word
 from app.tutorial.planner import PlannedStep, StepFix, TutorialPlan
@@ -19,7 +19,7 @@ LONG = " ".join(["word"] * 120)
 def _plan(steps, feasible=True, reason="", intro=LONG):
     return TutorialPlan(feasible=feasible, reason=reason, title="Say hi with cowsay",
                         subtitle="in a minute", summary="Install cowsay.", software="cowsay",
-                        tags=["linux"], intro=intro, outro="Bye.",
+                        tags=["linux"], done="Cowsay says hi", intro=intro, outro="Bye.",
                         say=[{"written": "nginx", "spoken": "engine-x"}], steps=steps)  # fmt: skip
 
 
@@ -212,3 +212,21 @@ def test_zoom_keeps_long_commands_in_frame():
         1.0 < planner.zoom_for("curl -s 'https://api.github.com/repos/jqlang/jq' -o c.json") < 1.8
     )
     assert planner.zoom_for("x" * 200) == 1.0
+
+
+def test_title_and_outro_copy_come_from_the_plan():
+    spec = planner.to_spec(
+        _plan(
+            [
+                _step(
+                    "install",
+                    command="DEBIAN_FRONTEND=noninteractive apt-get install -y -q cowsay | head",
+                    installs=True,
+                ),
+                *GOOD[1:],
+            ]
+        ),
+        "goal",
+    )
+    assert build.teaser(spec["steps"]) == "$ apt-get install -y -q cowsay"
+    assert spec["done"] == "Cowsay says hi"

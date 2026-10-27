@@ -28,5 +28,9 @@ export type Tutorial = {
   recording_url: string | null;
   music_url: string | null;
   steps: string[];
+  software: string;
+  teaser: string;
+  done: string;
+  recap: string[];
   states: State[];
 };

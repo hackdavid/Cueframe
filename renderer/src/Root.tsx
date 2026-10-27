@@ -4,7 +4,7 @@ import type { Tutorial } from "./types";
 
 const empty: Tutorial = {
   id: "empty", title: "Cueframe", subtitle: "", width: 1920, height: 1080, fps: 30,
-  recording_url: null, music_url: null, steps: [], states: [],
+  recording_url: null, music_url: null, steps: [], software: "", teaser: "", done: "You did it", recap: [], states: [],
 };
 
 export const Root: React.FC = () => (

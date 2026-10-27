@@ -58,6 +58,7 @@ class TutorialPlan(BaseModel):
     summary: str = Field(description="One sentence: what the viewer will do")
     software: str = Field(description="Main software shown, e.g. 'nginx'")
     tags: list[str] = Field(description="6-10 YouTube tags")
+    done: str = Field(description="Outro headline, 2-5 words, e.g. 'Your site is live'")
     intro: str = Field(description="Spoken hook, 1-2 sentences")
     outro: str = Field(description="Spoken wrap-up, 1-2 sentences")
     say: list[SayAs] = Field(description="Terms the narration spells differently")
@@ -196,6 +197,7 @@ def to_spec(plan: TutorialPlan, goal: str) -> dict[str, Any]:
         "summary": plan.summary.strip(),
         "software": plan.software.strip(),
         "tags": plan.tags,
+        "done": written(plan.done, say),
         "say": say,
         "steps": steps,
         "lines": lines,
@@ -340,7 +342,7 @@ async def rehearse(ctx: JobContext, spec: dict[str, Any]) -> str | None:
 
 
 def _stub(steps: list[PlannedStep]) -> TutorialPlan:
-    blank = dict.fromkeys(("reason", "title", "subtitle", "summary", "software"), "")
+    blank = dict.fromkeys(("reason", "title", "subtitle", "summary", "software", "done"), "")
     return TutorialPlan(feasible=True, tags=[], intro="", outro="", say=[], steps=steps, **blank)
 
 
