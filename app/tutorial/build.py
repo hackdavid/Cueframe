@@ -143,7 +143,8 @@ def plan_step(
     elif rec.get("box") and a["kind"] in ("click", "type", "double_click", "scroll"):
         x, y, w, h = rec["box"]
         cx, cy = x + w / 2, y + h / 2
-        z = round(max(1.2, min(1.9, 700 / max(w, 1))), 2)
+        # Big targets (calculator keys) get a gentle zoom so the rest of the app stays in view.
+        z = round(max(1.2, min(1.9, W / (4 * max(w, 1)), H / (4 * max(h, 1)))), 2)
         st.camera = [
             Camera(t=0, zoom=1.0, cx=W / 2, cy=H / 2),
             Camera(t=lead + 0.1, zoom=z, cx=cx, cy=cy),
