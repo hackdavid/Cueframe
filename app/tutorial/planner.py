@@ -466,17 +466,18 @@ async def _rehearse(
                 continue
             why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
             ctx.thinking("Rehearsal", f"Step {step['id']} failed: {why}\n{out[-600:]}")
+            brief = why.split(" Visible:")[0]  # the chat gets the reason, the model all of it
             if state["repairs"] >= MAX_REPAIRS:
                 await mgr.stop(sid, "rehearsal failed")
                 return (
-                    f"step **{step['label']}** still fails after {state['repairs']} fixes ({why})"
+                    f"step **{step['label']}** still fails after {state['repairs']} fixes ({brief})"
                 )
             state["repairs"] += 1
             ctx.phase("plan", f"Fixing step {i + 1} from its real output")
             if err := await repair(ctx, spec, i, rec):
                 await mgr.stop(sid, "rehearsal failed")
                 return err
-            heal(f"Rehearsal: step **{step['label']}** failed ({why}); rewrote it from the "
+            heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
                  f"real output as `{what(spec['steps'][i])}`")  # fmt: skip
         await mgr.stop(sid, "rehearsal passed")
     spec["rehearsal"] = {"repairs": state["repairs"], "sandbox_id": sid}
