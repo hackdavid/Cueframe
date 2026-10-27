@@ -12,6 +12,13 @@ from app.sandbox.contracts import Action, ActionRecord, ExecResult
 OnOutput = Callable[[str], Awaitable[None]]
 
 MARK = "__CF"
+# Enter confirms, except in a GTK file dialog (Chromium's file picker), where Return in the
+# location box closes it without choosing: press its Open/Save button by mnemonic instead.
+ENTER = (
+    'case "$(xdotool getactivewindow getwindowname 2>/dev/null)" in '
+    '"Open File"*|"Open Files"*|"Select file"*) xdotool key alt+o;; '
+    '"Save File"*|"Save file"*) xdotool key alt+s;; *) xdotool key Return;; esac'
+)
 FOCUS = {"browser": "/opt/cf/focus.sh chromium", "terminal": "/opt/cf/term.sh >/dev/null"}
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
 
@@ -38,6 +45,17 @@ class Sandbox(ABC):
         `ended` are provider ids this process already terminated. Returns False
         if it held off because something else may still be running."""
         return True
+
+    async def write_file(self, path: str, data: bytes) -> None:
+        """Copy `data` into the sandbox at `path` (chunked: Modal caps a command at 64 KiB)."""
+        import base64
+
+        q = shlex.quote(path)
+        await self._must(f'mkdir -p "$(dirname {q})" && : > {q}.b64')
+        for i in range(0, len(data), 40_000):
+            chunk = base64.b64encode(data[i : i + 40_000]).decode()
+            await self._must(f"printf %s {chunk} >> {q}.b64")
+        await self._must(f"base64 -d {q}.b64 > {q} && rm {q}.b64")
 
     async def screenshot(self) -> bytes:
         await self._must(
@@ -134,14 +152,39 @@ def _focus(app: str) -> str:
     return FOCUS.get(app) or f"/opt/cf/focus.sh {shlex.quote(app)}"
 
 
-def _find(a: Action, mode: str) -> str:
-    """Locate `a.target` on screen, print its box for the record and move the pointer
-    to its centre; exit 3 (with what *is* visible) when nothing matches."""
+def _at(v: list[float] | None, default: tuple[float, float]) -> tuple[int, int]:
+    fx, fy = v if v and len(v) == 2 else default
+    return round(min(1.0, max(0.0, fx)) * 1000), round(min(1.0, max(0.0, fy)) * 1000)
+
+
+def _find(a: Action, mode: str, target: str | None = None, at: list[float] | None = None) -> str:
+    """Locate the target on screen, print its box for the record and move the pointer
+    to `at` inside it (the centre by default); exit 3 (with what *is* visible) when
+    nothing matches."""
     q = shlex.quote
+    fx, fy = _at(at, (0.5, 0.5))
     return (
-        f"b=$(/opt/cf/ui.py find {q(a.app or 'browser')} {q(a.target or '')} {mode}) "
+        f"b=$(/opt/cf/ui.py find {q(a.app or 'browser')} {q(target or a.target or '')} {mode}) "
         '|| { echo "$b"; exit 3; }; echo "$b"; set -- $b; '
-        "/opt/cf/move.sh $(( $2 + $4 / 2 )) $(( $3 + $5 / 2 ))"
+        f"/opt/cf/move.sh $(( $2 + $4 * {fx} / 1000 )) $(( $3 + $5 * {fy} / 1000 ))"
+    )
+
+
+def menu_path(target: str) -> list[str]:
+    return [p.strip() for p in re.split(r"\s*(?:>|→)\s*", target) if p.strip()]
+
+
+def _drag(a: Action) -> str:
+    """Press at `at` inside the target, glide to `to` (a real held-button drag), release."""
+    (x1, y1), (x2, y2) = _at(a.at, (0.3, 0.5)), _at(a.to, (0.7, 0.5))
+    return (
+        f"{_find(a, 'click', at=a.at or [0.3, 0.5])}; "
+        f"X1=$(( $2 + $4 * {x1} / 1000 )); Y1=$(( $3 + $5 * {y1} / 1000 )); "
+        f"X2=$(( $2 + $4 * {x2} / 1000 )); Y2=$(( $3 + $5 * {y2} / 1000 )); "
+        "sleep 0.2; xdotool mousedown 1; sleep 0.15; for i in $(seq 1 30); do "
+        "xdotool mousemove $(( X1 + (X2 - X1) * i / 30 )) $(( Y1 + (Y2 - Y1) * i / 30 )); "
+        "sleep 0.03; done; sleep 0.15; xdotool mouseup 1; "
+        "echo __CFDRAG $X1 $Y1 $X2 $Y2"
     )
 
 
@@ -156,19 +199,28 @@ def _script(a: Action) -> str:
         return f"/opt/cf/launch.sh {a.command or ''}"
     if a.kind in ("click", "double_click"):
         n = 2 if a.kind == "double_click" else 1
-        at = _find(a, "click") if a.target else _move(a.x or 0, a.y or 0)
+        at = _find(a, "click", at=a.at) if a.target else _move(a.x or 0, a.y or 0)
         return f"{at}; sleep 0.15; xdotool click --repeat {n} 1"
     if a.kind == "type":
         pre = f"{_find(a, 'type')}; xdotool click 1; sleep 0.2; " if a.target else ""
-        enter = "; xdotool key Return" if a.enter else ""
+        enter = f"; {ENTER}" if a.enter else ""
         return f"{pre}xdotool type --delay 45 -- {q(a.text or '')}{enter}"
     if a.kind == "key":
+        if (a.keys or "").strip().lower() in ("return", "enter"):
+            return ENTER
         return f"xdotool key -- {q(a.keys or '')}"
     if a.kind == "scroll":
         if a.target:  # bring the element into view (the finder scrolls it to the centre)
             return _find(a, "click")
         button = 5 if a.dy > 0 else 4
         return f"{_move(a.x or 960, a.y or 540)}; xdotool click --repeat {abs(a.dy) or 1} {button}"
+    if a.kind == "drag":
+        return _drag(a)
+    if a.kind == "menu":
+        return "; ".join(
+            f"{_find(a, 'click', target=part)}; sleep 0.15; xdotool click 1; sleep 0.7"
+            for part in menu_path(a.target or "")
+        )
     if a.kind == "wait":
         return f"sleep {max(0.0, a.seconds)}"
     raise ValueError(f"Unsupported action: {a.kind}")
@@ -184,11 +236,14 @@ def _record(index: int, action: Action, res: ExecResult) -> ActionRecord:
         )  # fmt: skip
     _, s, e, st, rc = mark.split()
     body = lines[lines.index(mark) + 1 :]
-    found = next((ln.split()[1:5] for ln in body if ln.startswith("__CFBOX ")), None)
-    tail = "\n".join(ln for ln in body if not ln.startswith("__CFBOX "))[-1500:]
+    # A menu prints one box per item: the last is the item finally chosen.
+    found = next((ln.split()[1:5] for ln in reversed(body) if ln.startswith("__CFBOX ")), None)
+    drag = next((ln.split()[1:5] for ln in body if ln.startswith("__CFDRAG ")), None)
+    tail = "\n".join(ln for ln in body if not ln.startswith(("__CFBOX ", "__CFDRAG ")))[-1500:]
     return ActionRecord(
         index=index, action=action, ok=rc == "0", returncode=int(rc), started=float(s),
         ended=float(e), settled=max(float(st), float(e)), output_tail=tail,
         error=None if rc == "0" else f"exit code {rc}: {tail[-1200:]}",
         box=[int(v) for v in found] if found else None,
+        path=[int(v) for v in drag] if drag else None,
     )  # fmt: skip

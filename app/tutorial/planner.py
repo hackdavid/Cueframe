@@ -17,8 +17,8 @@ from pydantic import BaseModel, Field
 from app.agents.contracts import ResearchRequest
 from app.agents.docs_research import DocsResearchAgent
 from app.heal import Healer, short
-from app.jobs import JobContext
-from app.sandbox.base import ANSI, Sandbox
+from app.jobs import JobContext, JobFailed
+from app.sandbox.base import ANSI, Sandbox, menu_path
 from app.sandbox.contracts import Action, ActionRecord, live_path
 from app.sandbox.manager import SandboxLimit
 from app.tutorial.build import COLS, PROMPT
@@ -31,7 +31,9 @@ MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
 class PlannedStep(BaseModel):
     id: str = Field(description="Short lowercase slug, unique, e.g. 'install'")
     label: str = Field(description="2-4 word step title shown on screen")
-    kind: Literal["terminal", "open_url", "key", "click", "type", "scroll", "launch"]
+    kind: Literal[
+        "terminal", "open_url", "key", "click", "type", "scroll", "launch", "drag", "menu"
+    ]
     command: str = Field(
         description="terminal: ONE non-interactive bash line; launch: the desktop app's "
         "command, e.g. 'mousepad'; else ''"
@@ -43,8 +45,14 @@ class PlannedStep(BaseModel):
     target: str = Field(
         description="click/scroll/type: the element's visible words exactly as on screen "
         "(button or link text, a field's label or placeholder, a menu name); type may use "
-        "'' to type where the cursor already is; else ''"
+        "'' to type where the cursor already is; menu: the item path, e.g. 'Layer > Layer "
+        "Style > Drop Shadow'; click/drag on the image or drawing area: 'canvas'; else ''"
     )
+    at: list[float] = Field(
+        description="click/drag on 'canvas' (or inside a big element): [x, y] fractions 0-1 "
+        "of its box where the mouse presses, e.g. [0.5, 0.2]; else []"
+    )
+    to: list[float] = Field(description="drag: [x, y] fractions 0-1 where it releases; else []")
     text: str = Field(description="type: the text to type; else ''")
     enter: bool = Field(description="type: press Enter after typing")
     url: str = Field(description="open_url: the address to type in the browser; else ''")
@@ -100,12 +108,24 @@ terminal, a Chromium browser, and Debian desktop apps you install with apt-get a
 with a launch step (GTK3 apps work best, e.g. mousepad, galculator, thunar,
 gnumeric, because their buttons and fields are found through the accessibility tree).
 Every app fills the screen and only one is shown at a time. The working directory is
-/work. Package manager: apt-get (index is already updated). Python 3 is installed."""
+/work. Package manager: apt-get (index is already updated). Python 3 is installed.
+Files the user attached to the request are already in /work under their own names.
+Browser downloads are saved to /root/Downloads without asking. A browser file-open dialog
+(GTK) accepts a typed full path: a type step with target '' and enter=true, e.g. text
+'/work/photo.jpg'. Web editors such as Photopea (https://www.photopea.com, free, no
+account) are driven through their menus (kind=menu, e.g. 'File > Open...', 'Select >
+Remove BG', 'Layer > New Fill Layer > Gradient Fill', 'Layer > Layer Style > Drop Shadow',
+'File > Export as > PNG'), their tool buttons by full name (e.g. 'Type Tool (T)'), dialog
+buttons ('OK', 'Save') and the drawing area as target 'canvas' with `at`/`to` points.
+Photopea's History and Layers panels list each edit by name, so use those names as
+`expect` (e.g. 'Drop Shadow', a new layer's name, the typed title)."""
 
 RULES = f"""You plan short, real, narrated video tutorials (about 60-90 seconds).
 {SANDBOX}
 
-Write 3-7 steps that a beginner can follow and that really work in that sandbox:
+Write 3-7 steps that a beginner can follow and that really work in that sandbox; a
+multi-stage edit in a full app (photo editing, documents) may use up to 16 steps, one
+visible action each, for a 2-4 minute video:
 - terminal steps: ONE line each, fully non-interactive (`apt-get install -y ...`,
   `--yes`, no editors, no prompts, no `less`/pagers, nothing that runs forever in the
   foreground; start servers in the background or as daemons). Keep each step's output
@@ -119,7 +139,14 @@ Write 3-7 steps that a beginner can follow and that really work in that sandbox:
   with command and app set to its command name (e.g. 'mousepad'), then click / type /
   key steps with that app. Name targets by the words visible on screen (menu names,
   button labels); a click or type step that names nothing visible fails.
-- Give every click/type/launch step an `expect` text that is visible afterwards when
+- menus: one kind=menu step per command, the full path from the menu bar to the item
+  as shown on screen. Dragging (a gradient, a selection, moving a layer): kind=drag on
+  'canvas' from `at` to `to`. Clicking a spot on the image: kind=click, target 'canvas',
+  with `at`.
+- To open a file in a web app, use its own open command (e.g. menu 'File > Open...')
+  and type the full /work path into the file dialog. Prove an exported or saved file
+  with a final terminal step (e.g. `file /root/Downloads/*.png`, expect 'PNG image').
+- Give every click/type/launch/menu/drag step an `expect` text that is visible afterwards when
   it worked (a page heading, the typed text, a dialog title).
 - Mark every software install with installs=true; the user is asked about it first.
 - Give each terminal step a concrete `expect` text when the exit code alone doesn't
@@ -140,7 +167,8 @@ text, target and narration). Base the fix on the real output: when an element wa
 found, the failure lists the elements that ARE visible; pick the right one from it.
 {SANDBOX}"""
 
-GUI = ("click", "type", "scroll", "key", "launch")
+GUI = ("click", "type", "scroll", "key", "launch", "drag", "menu")
+MAX_STEPS = 16
 APP_CMD = re.compile(r"[a-z0-9][a-z0-9.+_-]*( [\w./=:-]+){0,3}")
 BAD_URL = re.compile(
     r"^\s*(file|javascript|data|chrome|about|view-source):|169\.254\.|metadata\.google|"
@@ -162,8 +190,8 @@ BLOCKED = re.compile(
 
 def problems(plan: TutorialPlan) -> list[str]:
     out = []
-    if not 2 <= len(plan.steps) <= 8:
-        out.append(f"use 3-7 steps, not {len(plan.steps)}")
+    if not 2 <= len(plan.steps) <= MAX_STEPS:
+        out.append(f"use 3-{MAX_STEPS} steps, not {len(plan.steps)}")
     ids = [s.id for s in plan.steps]
     if len(set(ids)) != len(ids) or {"title", "outro", "intro"} & set(ids):
         out.append("step ids must be unique and not 'title', 'intro' or 'outro'")
@@ -181,11 +209,18 @@ def problems(plan: TutorialPlan) -> list[str]:
             out.append(f"step {s.id}: only http(s) addresses without credentials are allowed")
         if s.kind == "key" and not s.keys.strip():
             out.append(f"step {s.id}: key needs keys")
+        if s.kind == "menu" and len(menu_path(s.target)) < 2:
+            out.append(f"step {s.id}: menu needs a path like 'File > Open...'")
+        if s.kind == "drag" and (not s.target.strip() or len(s.at) != 2 or len(s.to) != 2):
+            out.append(f"step {s.id}: drag needs a target ('canvas') and [x, y] at and to")
+        for name, pt in (("at", s.at), ("to", s.to)):
+            if pt and (len(pt) != 2 or not all(0 <= v <= 1 for v in pt)):
+                out.append(f"step {s.id}: {name} must be [x, y] fractions between 0 and 1")
         if s.kind in ("click", "scroll") and not s.target.strip():
             out.append(f"step {s.id}: {s.kind} needs the target's visible words")
         if s.kind == "type" and not s.text:
             out.append(f"step {s.id}: type needs text")
-        if s.kind in ("click", "type") and UNSAFE_TARGET.search(s.target):
+        if s.kind in ("click", "type", "menu", "drag") and UNSAFE_TARGET.search(s.target):
             out.append(f"step {s.id}: no logins, sign-ups, passwords or purchases")
         if s.kind == "type" and (SECRETISH.search(s.text) or "\n" in s.text):
             out.append(f"step {s.id}: type one line of plain text, never a secret")
@@ -218,7 +253,12 @@ def action(s: PlannedStep) -> dict[str, Any]:
         cmd = s.command.strip()
         return {"kind": "launch", "command": cmd, "app": s.app.strip() or cmd.split()[0]}
     if s.kind == "click":
-        return {"kind": "click", "target": s.target.strip(), "app": app}
+        out = {"kind": "click", "target": s.target.strip(), "app": app}
+        return {**out, "at": s.at} if len(s.at) == 2 else out
+    if s.kind == "menu":
+        return {"kind": "menu", "target": " > ".join(menu_path(s.target)), "app": app}
+    if s.kind == "drag":
+        return {"kind": "drag", "target": s.target.strip(), "at": s.at, "to": s.to, "app": app}
     if s.kind == "type":
         return {"kind": "type", "target": s.target.strip() or None, "text": s.text,
                 "enter": s.enter, "app": app}  # fmt: skip
@@ -451,6 +491,7 @@ async def _rehearse(
     ctx.phase("rehearse", "Rehearsing every step in a private sandbox (not recorded)")
     async with mgr.session(ctx.id, ctx.conversation_id) as (sid, box):
         ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
+        await put_files(box, spec)
         i = 0
         while i < len(spec["steps"]):
             step = spec["steps"][i]
@@ -482,6 +523,39 @@ async def _rehearse(
         await mgr.stop(sid, "rehearsal passed")
     spec["rehearsal"] = {"repairs": state["repairs"], "sandbox_id": sid}
     return None
+
+
+MAX_FILE_MB = 25
+
+
+def attached(ctx: JobContext) -> list[dict[str, Any]]:
+    """The user's uploads on the request message that can go into the sandbox."""
+    root = ctx.settings.uploads_dir
+    out = []
+    for u in ctx.input.get("attachments") or []:
+        path = root / u["id"] / u["filename"]
+        if path.is_file() and u.get("size", 0) <= MAX_FILE_MB * 1024 * 1024:
+            out.append({"name": u["filename"], "upload_id": u["id"], "kind": u.get("kind"),
+                        "content_type": u.get("content_type"), "path": str(path)})  # fmt: skip
+    return out
+
+
+def with_files(goal: str, files: list[dict[str, Any]]) -> str:
+    if not files:
+        return goal
+    names = ", ".join(f"/work/{f['name']} ({f['content_type']})" for f in files)
+    return f"{goal}\n\nThe user attached these files; use them: {names}"
+
+
+async def put_files(box: Sandbox, spec: dict[str, Any]) -> None:
+    """Copy the user's attached files into /work, exactly as uploaded."""
+    from pathlib import Path
+
+    for f in spec.get("files") or []:
+        path = Path(f["path"])
+        if not path.is_file():
+            raise JobFailed(f"The attached file {f['name']} is no longer on the server")
+        await box.write_file(f"/work/{f['name']}", path.read_bytes())
 
 
 def _stub(steps: list[PlannedStep]) -> TutorialPlan:

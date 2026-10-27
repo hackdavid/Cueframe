@@ -10,7 +10,7 @@ def _step(id_, kind="terminal", **kw):
     base = dict(id=id_, label=id_.title(), kind=kind, command="", url="", keys="",
                 installs=False, expect="", narration=f"Now {id_}.", after="", badge="",
                 highlight="", output_label="", success=False, app="", target="",
-                text="", enter=False)  # fmt: skip
+                text="", enter=False, at=[], to=[])  # fmt: skip
     return PlannedStep(**{**base, **kw})
 
 

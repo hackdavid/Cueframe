@@ -24,7 +24,8 @@ def test_scripts_find_elements_by_their_words():
     assert "/opt/cf/ui.py find browser 'Sign up now'\"'\"'s' click" in click
     assert "xdotool click --repeat 1 1" in click and "exit 3" in click
     typed = _script(Action(kind="type", target="Search", text="jq", enter=True, app="browser"))
-    assert "find browser Search type" in typed and typed.endswith("xdotool key Return")
+    assert "find browser Search type" in typed and "alt+o" in typed
+    assert "xdotool key Return;; esac" in typed
     assert _script(Action(kind="type", text="hi")) == "xdotool type --delay 45 -- hi"
     assert _script(Action(kind="launch", command="mousepad")) == "/opt/cf/launch.sh mousepad"
     assert "find mousepad File click" in _script(
@@ -146,3 +147,61 @@ def test_live_view_is_behind_login_and_owner_only(client, anon):
     assert r.status_code == 409  # owner, but no sandbox running
     assert pipeline.live_path(jid).startswith(f"/api/jobs/{jid}/live/vnc.html?")
     assert f"path=api/jobs/{jid}/live/websockify" in pipeline.live_path(jid)
+
+
+def test_drag_menu_and_canvas_points():
+    drag = _script(Action(kind="drag", target="canvas", at=[0.1, 0.5], to=[0.9, 0.5]))
+    assert "find browser canvas click" in drag and "xdotool mousedown 1" in drag
+    assert "$4 * 100 / 1000" in drag and "$4 * 900 / 1000" in drag and "mouseup 1" in drag
+    menu = _script(Action(kind="menu", target="Layer > Layer Style>Drop Shadow", app="browser"))
+    assert [
+        p in menu
+        for p in (
+            "find browser Layer click",
+            "find browser 'Layer Style' click",
+            "find browser 'Drop Shadow' click",
+        )
+    ] == [True] * 3
+    click = _script(Action(kind="click", target="canvas", at=[0.25, 1.4]))
+    assert "$4 * 250 / 1000" in click and "$5 * 1000 / 1000" in click
+    res = ExecResult(returncode=0, stdout=f"{MARK} 1 2 3 0\n__CFBOX 1 1 9 9\n__CFBOX 5 6 7 8"
+                     "\n__CFDRAG 10 20 300 20\nok")  # fmt: skip
+    rec = _record(0, Action(kind="drag", target="canvas"), res)
+    assert rec.box == [5, 6, 7, 8] and rec.path == [10, 20, 300, 20] and rec.output_tail == "ok"
+
+
+def test_problems_check_menu_and_drag_steps():
+    bad = [
+        _step("a", "menu", app="browser", target="Filter"),
+        _step("b", "drag", app="browser", target="canvas", at=[0.1, 0.1]),
+        _step("c", "click", app="browser", target="canvas", at=[2, 0.5]),
+        _step("d", "menu", app="browser", target="File > Sign in"),
+    ]
+    out = " ".join(planner.problems(_plan(bad)))
+    for sid in "abcd":
+        assert f"step {sid}:" in out, sid
+    ok = [
+        _step("m", "menu", app="browser", target="Select → Remove BG", expect="Remove BG"),
+        _step("g", "drag", app="browser", target="canvas", at=[0.1, 0.5], to=[0.9, 0.5]),
+        *GUI,
+    ]
+    assert planner.problems(_plan(ok)) == []
+    spec = planner.to_spec(_plan(ok), "goal")
+    assert spec["steps"][0]["action"]["target"] == "Select > Remove BG"
+    assert spec["steps"][1]["action"]["to"] == [0.9, 0.5]
+
+
+def test_write_file_and_attached_files_reach_the_sandbox(tmp_path):
+    box = FakeSandbox()
+    data = bytes(range(256)) * 400
+    asyncio.run(box.write_file("/work/p.jpg", data))
+    chunks = [s for s in box.scripts if s.startswith("printf %s ")]
+    assert len(chunks) == 3 and box.scripts[-1].startswith("base64 -d /work/p.jpg.b64")
+    f = tmp_path / "me.png"
+    f.write_bytes(b"png")
+    box = FakeSandbox()
+    asyncio.run(planner.put_files(box, {"files": [{"name": "me.png", "path": str(f)}]}))
+    assert any("/work/me.png" in s for s in box.scripts)
+    assert "use them: /work/me.png (image/png)" in planner.with_files(
+        "edit it", [{"name": "me.png", "content_type": "image/png"}]
+    )

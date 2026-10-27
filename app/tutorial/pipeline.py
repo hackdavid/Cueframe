@@ -148,6 +148,7 @@ async def capture(
     ctx.phase("sandbox", "Starting a 1080p Linux desktop")
     async with mgr.session(ctx.id, ctx.conversation_id, "about:blank", settings=desk) as (sid, box):
         ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
+        await planner.put_files(box, spec)
         await box.run(-1, Action(kind="terminal", command="clear", ask=False))
         t0 = await box.start_recording()
         await asyncio.sleep(LEAD * PACE)
@@ -372,11 +373,14 @@ async def make(
     if recipe_id:
         spec = recipes.get(recipe_id)
     else:
-        planned = await planner.plan(ctx, goal or ctx.input.get("text", ""))
+        files = planner.attached(ctx)
+        goal = planner.with_files(goal or ctx.input.get("text", ""), files)
+        planned = await planner.plan(ctx, goal)
         if isinstance(planned, str):
             ctx.reply(f"I can't make that tutorial: {planned}")
             return {"routed": "make_tutorial", "planned": False, "reason": planned}
         spec, recipe_id = planned, "planned"
+        spec["files"] = files
         ctx.reply(
             f"**{spec['title']}**: here's the plan. I'll rehearse it in a private sandbox, "
             f"then record it for real.\n\n{planner.describe_plan(spec)}"
@@ -437,6 +441,7 @@ async def rehearsed(
     if isinstance(again, str):
         raise JobFailed(f"The rehearsal failed, so nothing was recorded: {why}. {again}",
                         {"rehearsal": why})  # fmt: skip
+    again["files"] = spec.get("files") or []
     ctx.reply(
         f"The first plan didn't work in the sandbox ({why}), so I planned it again. "
         f"**{again['title']}**:\n\n{planner.describe_plan(again)}"
