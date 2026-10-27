@@ -200,3 +200,11 @@ def test_multi_word_respellings_are_undone_on_screen():
     plan.say = [planner.SayAs(written="jq", spoken="J Q")]
     spec = planner.to_spec(plan, "g")
     assert spec["steps"][0]["label"] == "Install jq" and spec["steps"][0]["badge"] == "jq ready"
+
+
+def test_zoom_keeps_long_commands_in_frame():
+    assert planner.zoom_for("ls") == 1.8
+    assert (
+        1.0 < planner.zoom_for("curl -s 'https://api.github.com/repos/jqlang/jq' -o c.json") < 1.8
+    )
+    assert planner.zoom_for("x" * 200) == 1.0

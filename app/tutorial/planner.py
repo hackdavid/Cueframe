@@ -17,6 +17,7 @@ from app.agents.docs_research import DocsResearchAgent
 from app.jobs import JobContext
 from app.sandbox.base import ANSI, Sandbox
 from app.sandbox.contracts import Action, ActionRecord
+from app.tutorial.build import COLS, PROMPT
 
 MAX_REPAIRS = 3
 
@@ -33,7 +34,7 @@ class PlannedStep(BaseModel):
         description="terminal: short text that must appear in the output when the step "
         "worked (e.g. '200 OK', a version number prefix); '' if the exit code is enough"
     )
-    narration: str = Field(description="1-2 short spoken sentences while the step runs")
+    narration: str = Field(description="2 short spoken sentences while the step runs")
     after: str = Field(description="1 sentence spoken after a slow command ends; usually ''")
     badge: str = Field(description="2-4 words shown when the step is done")
     highlight: str = Field(description="1-4 word label on the typed command or URL")
@@ -77,14 +78,15 @@ are this terminal and a Chromium browser; each fills the screen and only one is 
 a time. The working directory is /work. Package manager: apt-get (index is already
 updated). Python 3 is installed."""
 
-RULES = f"""You plan short, real, narrated video tutorials (about 45-90 seconds).
+RULES = f"""You plan short, real, narrated video tutorials (about 60-90 seconds).
 {SANDBOX}
 
 Write 3-7 steps that a beginner can follow and that really work in that sandbox:
 - terminal steps: ONE line each, fully non-interactive (`apt-get install -y ...`,
   `--yes`, no editors, no prompts, no `less`/pagers, nothing that runs forever in the
-  foreground; start servers in the background or as daemons). Keep output short
-  (`| head`, `-q`), so the result fits on screen.
+  foreground; start servers in the background or as daemons). Keep each step's output
+  to at most 12 lines (`| head -n 12`, `-q`) so the result fits on screen, and keep
+  commands short (under 70 characters when possible) so they read well zoomed in.
 - browser steps: kind=open_url with a URL (localhost services or public sites), or
   kind=key (e.g. 'F5' to reload). The browser comes to the front automatically.
 - Mark every software install with installs=true; the user is asked about it first.
@@ -154,6 +156,12 @@ def written(text: str, say: dict[str, str]) -> str:
     return text.strip()
 
 
+def zoom_for(command: str, best: float = 1.8) -> float:
+    """Largest zoom (<= best) that keeps the whole typed command line in frame."""
+    need = PROMPT + len(command) + 2
+    return 1.0 if need > COLS else round(max(1.0, min(best, COLS / need)), 2)
+
+
 def to_spec(plan: TutorialPlan, goal: str) -> dict[str, Any]:
     """The plan in the recipe format `capture`/`build`/`edit` already use."""
     say = {x.spoken.strip().lower(): x.written.strip() for x in plan.say if x.spoken and x.written}
@@ -169,8 +177,9 @@ def to_spec(plan: TutorialPlan, goal: str) -> dict[str, Any]:
                 "action": action(s), "badge": written(s.badge, say) or None,
                 "success": s.success, "highlight": hl, "expect": s.expect.strip(),
                 "output_label": written(s.output_label, say)}  # fmt: skip
-        if s.kind == "terminal" and s.installs:
-            step["zoom_out_after"] = True
+        if s.kind == "terminal":
+            step["zoom"] = zoom_for(step["action"]["command"])
+            step["zoom_out_after"] = s.installs
         steps.append(step)
     return {
         "id": "planned",
@@ -258,9 +267,12 @@ async def check(box: Sandbox, step: dict[str, Any], rec: ActionRecord) -> Action
     if not rec.ok:
         return rec
     a = step["action"]
-    expect = step.get("expect") or ""
-    if a["kind"] == "terminal" and expect.lower() not in rec.output_tail.lower():
-        rec.ok, rec.error = False, f"Output did not contain {step['expect']!r}"
+    expect = (step.get("expect") or "").lower()
+    if a["kind"] == "terminal" and expect and expect not in rec.output_tail.lower():
+        full = (await box.exec("tail -c 20000 /tmp/cf/term.log | tr -d '\\r'")).stdout
+        after = ANSI.sub("", full).rpartition(a["command"].strip()[-30:])[2]
+        if expect not in after.lower():
+            rec.ok, rec.error = False, f"Output did not contain {step['expect']!r}"
     if a["kind"] == "open_url":
         url = a["url"] if "://" in a["url"] else f"http://{a['url']}"
         res = await box.exec(f"curl -s -o /dev/null -m 10 -w '%{{http_code}}' {url!r}", 20)
