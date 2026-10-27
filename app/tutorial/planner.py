@@ -484,6 +484,12 @@ async def repair(
     goal = spec.get("goal") or spec["title"]
     ask = (f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step {i + 1} "
            f"({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}")  # fmt: skip
+    if "No element matching" in why:
+        ask += (
+            "\n\nThe element isn't on screen at all, so aiming at it differently won't help. "
+            "From the Visible list, find what has to be clicked first to reach it (a start "
+            "or continue button, a menu, a tab, a dialog) and put that in `before`."
+        )
     for _ in range(2):
         fix, _ = await ctx.llm.parse(
             StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
