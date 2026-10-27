@@ -113,12 +113,21 @@ Files the user attached to the request are already in /work under their own name
 Browser downloads are saved to /root/Downloads without asking. A browser file-open dialog
 (GTK) accepts a typed full path: a type step with target '' and enter=true, e.g. text
 '/work/photo.jpg'. Web editors such as Photopea (https://www.photopea.com, free, no
-account) are driven through their menus (kind=menu, e.g. 'File > Open...', 'Select >
-Remove BG', 'Layer > New Fill Layer > Gradient Fill', 'Layer > Layer Style > Drop Shadow',
-'File > Export as > PNG'), their tool buttons by full name (e.g. 'Type Tool (T)'), dialog
-buttons ('OK', 'Save') and the drawing area as target 'canvas' with `at`/`to` points.
-Photopea's History and Layers panels list each edit by name, so use those names as
-`expect` (e.g. 'Drop Shadow', a new layer's name, the typed title)."""
+account) are driven through their menus (kind=menu, e.g. 'File > Open...', 'Select > Magic
+Cut...', 'Layer > New Fill Layer > Gradient Fill', 'Layer > Arrange > Send Backward',
+'Layer > Layer Style > Drop Shadow', 'File > Export as > PNG'), their tool buttons by full
+name (e.g. 'Type Tool (T)'), dialog buttons ('OK', 'Save'), fields by label (type into
+'Angle:', 'W:', 'X:', 'Y:'; typing replaces the value) and the drawing area as target
+'canvas' with `at`/`to` points. Photopea without an account: 'Select > Remove BG' and
+'Select > Subject' are Premium (an ad prompt blocks the page), never plan them. Cut a
+person out with 'Select > Magic Cut...': drag green strokes on 'canvas' down the body and
+across the shoulders (the image edges count as background), then 'OK' puts the cut-out on
+a new layer. A new fill or text layer goes above the selected layer: use 'Layer > Arrange'
+to order layers. The 'Properties' button opens/closes a panel over the image: close it
+after changing values there. Size and place a text layer with the Move Tool then 'W:',
+'X:', 'Y:' in Properties (image pixels). History lists each edit ('Refine Edge', 'New
+Fill Layer', 'Type Tool', 'Layer Order', 'Layer Style'); Layers lists layer names, so use
+those as `expect` (e.g. 'Gradient Fill 1', the typed title)."""
 
 RULES = f"""You plan short, real, narrated video tutorials (about 60-90 seconds).
 {SANDBOX}
@@ -260,8 +269,9 @@ def action(s: PlannedStep) -> dict[str, Any]:
     if s.kind == "drag":
         return {"kind": "drag", "target": s.target.strip(), "at": s.at, "to": s.to, "app": app}
     if s.kind == "type":
-        return {"kind": "type", "target": s.target.strip() or None, "text": s.text,
-                "enter": s.enter, "app": app}  # fmt: skip
+        target = s.target.strip() or None  # typing into a named field replaces its text
+        return {"kind": "type", "target": target, "text": s.text, "enter": s.enter,
+                "clear": bool(target), "app": app}  # fmt: skip
     if s.kind == "scroll":
         return {"kind": "scroll", "target": s.target.strip(), "app": app}
     return {"kind": "key", "keys": s.keys.strip(), "app": app}

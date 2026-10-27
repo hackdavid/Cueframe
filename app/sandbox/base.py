@@ -203,6 +203,8 @@ def _script(a: Action) -> str:
         return f"{at}; sleep 0.15; xdotool click --repeat {n} 1"
     if a.kind == "type":
         pre = f"{_find(a, 'type')}; xdotool click 1; sleep 0.2; " if a.target else ""
+        if a.clear:  # select the field's current text so typing replaces it
+            pre += "xdotool key End shift+Home; sleep 0.1; "
         enter = f"; {ENTER}" if a.enter else ""
         return f"{pre}xdotool type --delay 45 -- {q(a.text or '')}{enter}"
     if a.kind == "key":

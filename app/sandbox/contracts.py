@@ -51,7 +51,7 @@ class Action(BaseModel):
     at: list[float] | None = None
     to: list[float] | None = None
     enter: bool = False  # type: press Return after typing
-    clear: bool = False  # terminal: clear the screen (Ctrl+L) before typing
+    clear: bool = False  # terminal: clear the screen first; type: replace the field's text
 
 
 class ExecResult(BaseModel):
