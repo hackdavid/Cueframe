@@ -46,7 +46,7 @@ job stores `sandbox_id` and the tunnel URL, so a page refresh re-attaches to the
 **Shutdown rules.** A sandbox is terminated when its job succeeds, fails or is cancelled
 (`SandboxManager.session` `finally`), after `CUEFRAME_SANDBOX_IDLE_SECONDS` with no commands,
 after `CUEFRAME_SANDBOX_MAX_SECONDS` (also passed to Modal as `timeout`/`idle_timeout`, so
-Modal kills it even if Cueframe crashes), on server start (leftovers reaped) and on server stop.
+Modal kills it even if Cueframe crashes), on server start (leftovers reaped) and on server stop. When the last sandbox ends, the `cueframe-sandbox` Modal app is stopped too, so the dashboard shows nothing deployed; the image build cache survives this (next start ~6 s).
 Each row records `seconds` and an `est_cost_usd` from `CUEFRAME_SANDBOX_USD_PER_HOUR`.
 
 **User intake.** Every `terminal` action with `ask: true` puts the job in `waiting_input`
