@@ -23,7 +23,8 @@ from app.sandbox.contracts import Action, ActionRecord, live_path
 from app.sandbox.manager import SandboxLimit
 from app.tutorial.build import COLS, PROMPT
 
-MAX_REPAIRS = 3
+MAX_REPAIRS = 3  # per step
+MAX_TOTAL_REPAIRS = 10  # per rehearsal
 SANDBOX_TRIES = 2  # a sandbox that breaks mid-run is replaced this many times - 1
 MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
 
@@ -446,7 +447,7 @@ async def _visible(box: Sandbox, app: str, expect: str, rec: ActionRecord) -> Ac
         if res.returncode == 0 and expect.lower() in text.lower():
             return rec
         await asyncio.sleep(1)
-    seen = " | ".join(x.strip() for x in text.splitlines() if x.strip())[:600]
+    seen = " | ".join(x.strip() for x in text.splitlines() if x.strip())[:1500]
     rec.ok, rec.error = False, f"{expect!r} is not visible in {app} afterwards. Visible: {seen}"
     return rec
 
@@ -561,12 +562,12 @@ async def _rehearse(
             why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
             ctx.thinking("Rehearsal", f"Step {step['id']} failed: {why}\n{out[-600:]}")
             brief = why.split(" Visible:")[0]  # the chat gets the reason, the model all of it
-            if state["repairs"] >= MAX_REPAIRS:
+            tries = state.setdefault(step["id"], 0)
+            if tries >= MAX_REPAIRS or state["repairs"] >= MAX_TOTAL_REPAIRS:
                 await mgr.stop(sid, "rehearsal failed")
-                return (
-                    f"step **{step['label']}** still fails after {state['repairs']} fixes ({brief})"
-                )
+                return f"step **{step['label']}** still fails after {tries} fixes ({brief})"
             state["repairs"] += 1
+            state[step["id"]] = tries + 1
             ctx.phase("plan", f"Fixing step {i + 1} from its real output")
             n = len(spec["steps"])
             async with mgr.busy(sid):  # the sandbox waits for the fix; no idle shutdown
