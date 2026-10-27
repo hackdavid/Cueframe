@@ -115,12 +115,23 @@ class ModalSandbox(Sandbox):
     async def release(cls, settings: Settings) -> None:
         """Stop the Modal app once its last sandbox is gone, so the dashboard shows
         nothing deployed. The image build cache is per workspace and survives this."""
-        modal_module(settings)
+        modal = modal_module(settings)
+        try:
+            app = await modal.App.lookup.aio(settings.modal_app)
+        except modal.exception.NotFoundError:
+            return
+        async for _ in modal.Sandbox.list.aio(app_id=app.app_id):
+            return  # another process still has a sandbox under this app
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "modal", "app", "stop", "-y", settings.modal_app,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         )  # fmt: skip
-        out, _ = await asyncio.wait_for(proc.communicate(), 60)
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), 60)
+        except BaseException:
+            proc.kill()
+            await proc.wait()
+            raise
         log.info("modal app stop", extra=fields(rc=proc.returncode, out=out.decode()[-200:]))
 
 

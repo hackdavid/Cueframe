@@ -130,3 +130,18 @@ def test_provider_released_when_last_sandbox_stops(client, monkeypatch):
     jid = client.post("/api/messages", json=body, headers=_auth(client)).json()["job"]["id"]
     _wait(client, jid, {"succeeded", "failed"})
     assert calls and calls[-1] == 0
+
+
+def test_release_skipped_while_another_worker_has_a_sandbox(client, monkeypatch):
+    mgr = client.app.state.sandboxes
+    calls: list[int] = []
+
+    async def release(cls, settings):  # type: ignore[no-untyped-def]
+        calls.append(1)
+
+    monkeypatch.setattr(mgr.provider, "release", classmethod(release))
+    mgr.store.create_sandbox(None, None, "fake")  # row owned by "another worker"
+    import asyncio
+
+    asyncio.run(mgr._release_if_idle())
+    assert calls == []

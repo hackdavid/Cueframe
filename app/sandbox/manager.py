@@ -125,7 +125,8 @@ class SandboxManager:
 
     async def _release_if_idle(self) -> None:
         async with self._app_lock:
-            if self._live or self._starting:
+            # The DB is shared by all workers, so this also sees their live/starting rows.
+            if self._live or self._starting or self.store.list_sandboxes(active_only=True):
                 return
             try:
                 await self.provider.release(self.settings)
