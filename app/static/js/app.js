@@ -575,6 +575,7 @@
     b.addEventListener("click", () => {
       input.value = b.dataset.prompt;
       autosize();
+      updateSend();
       input.focus();
     }),
   );
