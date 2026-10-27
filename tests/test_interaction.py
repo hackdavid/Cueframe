@@ -243,3 +243,20 @@ def test_repair_can_add_the_missing_step_before_the_failed_one(client, monkeypat
     ids = [s["id"] for s in tut["graph"]["states"]]
     assert ids.index("download_pre1") + 1 == ids.index("download")
     assert "`Start using it` → `Download`" in str(client.app.state.store.get_job(jid))
+
+
+def test_a_repair_that_repeats_the_failed_step_is_asked_again(client, monkeypatch):
+    monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
+                                                "browser": "Download Python"})  # fmt: skip
+    monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
+    same = planner.StepFix(fixable=True, reason="retry", step=GUI[-1].model_copy())
+    fix = planner.StepFix(fixable=True, reason="label", step=_step(
+        "x", "click", app="browser", target="Download", expect="Download"))  # fmt: skip
+    llm = StubLLM([_plan(GUI, intro=LONG)], [same, fix])
+    _setup(client, monkeypatch, llm, fail=())
+    _, jid = _send(client, "Make a tutorial: write a note in mousepad")
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    asks = [x for name, x in llm.inputs if name == "StepFix"]
+    assert len(asks) == 2 and "Your fix was the same step" in asks[1]

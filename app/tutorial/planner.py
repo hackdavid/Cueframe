@@ -482,12 +482,19 @@ async def repair(
     if ctx.llm is None or not ctx.llm.configured:
         return f"step **{step['label']}** failed ({why}) and no model is configured to fix it"
     goal = spec.get("goal") or spec["title"]
-    fix, _ = await ctx.llm.parse(
-        StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
-        instructions=FIX,
-        input=f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step "
-        f"{i + 1} ({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}",
-    )  # fmt: skip
+    ask = (f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step {i + 1} "
+           f"({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}")  # fmt: skip
+    for _ in range(2):
+        fix, _ = await ctx.llm.parse(
+            StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
+            instructions=FIX, input=ask,
+        )  # fmt: skip
+        if fix.before or not fix.fixable or action(fix.step) != step["action"]:
+            break
+        ask += (
+            "\n\nYour fix was the same step, which just failed exactly like that. "
+            "Change it, or add the missing steps that must come first in `before`."
+        )
     fix.step.id = step["id"]
     ids = {s["id"] for s in spec["steps"]}
     pre = fix.before[:2] if len(spec["steps"]) + len(fix.before) <= MAX_STEPS + 4 else []
@@ -556,7 +563,9 @@ async def _rehearse(
             state["repairs"] += 1
             ctx.phase("plan", f"Fixing step {i + 1} from its real output")
             n = len(spec["steps"])
-            if err := await repair(ctx, spec, i, rec):
+            async with mgr.busy(sid):  # the sandbox waits for the fix; no idle shutdown
+                err = await repair(ctx, spec, i, rec)
+            if err:
                 await mgr.stop(sid, "rehearsal failed")
                 return err
             heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
