@@ -65,7 +65,13 @@ FIND_JS = r"""
           ox: window.screenX, oy: window.screenY + window.outerHeight - window.innerHeight};
 })
 """
-TEXT_JS = "location.href + '\\n' + document.title + '\\n' + document.body.innerText"
+# Typed text lives in field values, not innerText; passwords are never read back.
+TEXT_JS = (
+    "location.href + '\\n' + document.title + '\\n' + document.body.innerText + '\\n' + "
+    "[...document.querySelectorAll('input, textarea, select')]"
+    ".filter((e) => !['password', 'hidden'].includes(e.type) && e.value)"
+    ".map((e) => e.value).join('\\n')"
+)
 
 
 # ---------- Chromium (DevTools protocol over a minimal websocket) ----------

@@ -387,7 +387,7 @@ async def make(
     asked = await intake(ctx, spec, answers)
     if recipe_id == "planned" and not asked:
         ans = await ctx.ask(
-            "This tutorial runs the commands above in a Linux terminal. Shall I go ahead?",
+            "This tutorial runs the steps above in a private Linux sandbox. Shall I go ahead?",
             [RUN, CANCEL],
             key="confirm",
         )
