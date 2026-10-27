@@ -83,8 +83,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         from fastapi.responses import RedirectResponse
 
         store, user = request.app.state.store, _media_user(request)
-        prefix = re.escape(request.app.state.settings.r2_prefix.strip("/"))
-        m = re.fullmatch(rf"{prefix}/jobs/(j_[0-9a-f]+)/[A-Za-z0-9_-]+\.[a-z0-9]+", key)
+        prefix = request.app.state.settings.r2_prefix.strip("/")
+        prefix = f"{re.escape(prefix)}/" if prefix else ""
+        m = re.fullmatch(rf"{prefix}jobs/(j_[0-9a-f]+)/[A-Za-z0-9_-]+\.[a-z0-9]+", key)
         job = store.get_job(m.group(1)) if m else None
         cid = job and job["conversation_id"]
         if not user or not cid or not store.get_conversation(cid, user["id"]):
