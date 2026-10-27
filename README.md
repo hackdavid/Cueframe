@@ -32,6 +32,7 @@ SAM 3.1, Muse Image, Muse Voice Transcribe). Its design follows three ideas:
 | Persistence | SQLite for users, sessions, conversations, messages, uploads, jobs, events and WebSocket connections |
 | Background jobs | `@job_handler("kind")` registry with phases, progress, cancellation and crash recovery (`interrupted`); each job links to its conversation, connection and a future `sandbox_id` |
 | Realtime | `/api/ws` with persisted connection ids; opening a conversation reports `has_pending_job`, so a refresh re-attaches instead of starting a new job |
+| Self-healing tutorials | Failed steps are rewritten from their real output and re-recorded, broken sandboxes replaced, transient ElevenLabs/R2/render errors retried, the finished MP4 checked (size, length, sound, captions, black frames) and interrupted jobs resumed after a restart; every fix is shown in the chat ([docs](docs/tutorial-renderer.md#self-healing)) |
 | Docs research agent | Meta `web_search` finds the official docs, we fetch and clean the pages locally, and the model reasons over text and doc images to produce Pydantic-validated steps with confidence. It falls back to model knowledge, clearly labelled |
 | Shared infrastructure | One logger (`app/log.py`, job id on every line plus key=value fields), one Meta client (`app/llm.py`: retries, JSON-schema contracts, token and cost accounting) |
 

@@ -16,6 +16,7 @@ from app.auth import hash_password, user_for_token
 from app.config import Settings, get_settings
 from app.db import Store
 from app.events import EventBus
+from app.handlers.tutorial import resume_interrupted
 from app.jobs import JobManager
 from app.llm import MetaClient
 from app.log import setup_logging
@@ -48,10 +49,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         llm = MetaClient.from_settings(settings)
         jobs.llm = llm
         app.state.llm = llm
-        jobs.recover()
+        interrupted = jobs.recover()
         jobs.storage = Storage(settings)
         jobs.sandboxes = SandboxManager.from_settings(store, settings)
         await jobs.sandboxes.reap()
+        resume_interrupted(jobs, interrupted)
         app.state.sandboxes, app.state.storage = jobs.sandboxes, jobs.storage
         app.state.settings, app.state.store, app.state.bus, app.state.jobs = (
             settings,

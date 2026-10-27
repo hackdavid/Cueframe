@@ -42,3 +42,20 @@ Requests that match no hand-written recipe go through `app/tutorial/planner.py`:
    its real output, up to `MAX_REPAIRS` times; otherwise the job fails and nothing is recorded.
 6. The proven plan is recorded in a fresh 1080p sandbox with the normal capture → voice → render →
    R2 path; the same checks run again.
+
+## Self-healing
+
+Every tutorial job corrects itself inside the normal pipeline; each recovery is shown live as a
+"Healing" note in the chat, emitted as a `tutorial.healing` event, stored in `spec.healing` and
+`output.healing`, and listed in the final reply. The video only ever shows what really happened.
+
+| Problem | What the system does (`app/heal.py`, `pipeline.py`, `planner.py`, `qa.py`) |
+| --- | --- |
+| A step fails in rehearsal | Rewrites that step from its real output, up to `MAX_REPAIRS` (3) times |
+| A rehearsal step can't be fixed | Plans the whole tutorial again once with the failure as context, asks about any new install, rehearses again; fails honestly if that also fails |
+| A step fails while recording | Rewrites the step from its real output, re-voices only its lines, records again in a fresh sandbox (`MAX_TAKES` = 3); the last take is published as an honest failure |
+| A sandbox breaks (rehearsal or recording) | Starts a fresh sandbox and runs again (sandboxes always stop in `finally`) |
+| ElevenLabs, R2 upload or Remotion segment errors | `retry()` with exponential backoff; only transient errors (timeouts, connection errors, HTTP 408/409/425/429/5xx, Modal/gRPC) are retried, a segment of the wrong length is rendered again |
+| Raw recording is missing, too short or blank inside a step | `qa.recording()` rejects the take and records again |
+| Final MP4 is not 1920×1080, the wrong length, silent or has empty captions | `qa.final()` triggers one full re-render; if it still fails the tutorial is marked failed with the reasons |
+| Server restarts mid-job | Interrupted tutorial jobs are resumed (`tutorial.resume`): if the recording is saved it only renders, otherwise it narrates and records again; earlier intake answers are kept |
