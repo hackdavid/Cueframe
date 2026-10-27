@@ -12,6 +12,7 @@ from app.sandbox.contracts import Action, ActionRecord, ExecResult
 OnOutput = Callable[[str], Awaitable[None]]
 
 MARK = "__CF"
+FOCUS = {"browser": "/opt/cf/focus.sh chromium", "terminal": "/opt/cf/term.sh >/dev/null"}
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07")
 
 
@@ -70,6 +71,8 @@ class Sandbox(ABC):
         if action.kind == "terminal":
             return await self._terminal(index, action, on_output)
         script = _script(action)
+        if action.app:
+            script = f"{FOCUS[action.app]}; {script}"
         res = await self.exec(
             f"export DISPLAY=:99; s=$(date +%s.%N); {{ {script} ; }} >/tmp/cf/act.log 2>&1; "
             f"rc=$?; e=$(date +%s.%N); st=$(/opt/cf/settle.sh); "
@@ -86,6 +89,7 @@ class Sandbox(ABC):
         cmd = action.command or ""
         res = await self.exec(
             "export DISPLAY=:99; /opt/cf/term.sh >/dev/null; n0=$(cat /tmp/cf/prompt_n);"
+            f"{' xdotool key ctrl+l; sleep 0.2;' if action.clear else ''}"
             f" s=$(date +%s.%N); xdotool type --delay 35 -- {shlex.quote(cmd)};"
             " xdotool key Return; echo $n0 $s"
         )

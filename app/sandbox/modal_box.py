@@ -67,6 +67,8 @@ class ModalSandbox(Sandbox):
                 "CF_W": str(settings.sandbox_width),
                 "CF_H": str(settings.sandbox_height),
                 "CF_START_URL": start_url,
+                "CF_SCALE": str(settings.sandbox_scale),
+                "CF_TERM_FS": str(settings.sandbox_term_font),
             },
         )
 
