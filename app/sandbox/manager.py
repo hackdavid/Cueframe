@@ -3,6 +3,7 @@ cancel), idle, hard max lifetime (also enforced by Modal itself), server
 start (reap leftovers) and server stop."""
 
 import asyncio
+import collections
 import contextlib
 import time
 from collections.abc import AsyncIterator
@@ -29,6 +30,8 @@ class SandboxManager:
         self._busy: dict[str, int] = {}
         self._starting = 0
         self._app_lock = asyncio.Lock()
+        # Provider ids we terminated; Modal may still list them as running briefly.
+        self._ended: collections.deque[str] = collections.deque(maxlen=64)
 
     @classmethod
     def from_settings(cls, store: Store, settings: Settings) -> "SandboxManager":
@@ -111,6 +114,8 @@ class SandboxManager:
             await box.terminate()
         except Exception:
             log.exception("terminate failed for %s", sid)
+        if box.provider_id:
+            self._ended.append(box.provider_id)
         secs = time.monotonic() - self._started.pop(sid, time.monotonic())
         self._touched.pop(sid, None)
         self._busy.pop(sid, None)
@@ -129,7 +134,7 @@ class SandboxManager:
             if self._live or self._starting:
                 return
             try:
-                await self.provider.release(self.settings)
+                await self.provider.release(self.settings, tuple(self._ended))
             except Exception:
                 log.exception("provider release failed")
 
@@ -153,6 +158,7 @@ class SandboxManager:
                     from app.sandbox.modal_box import terminate_by_id
 
                     await terminate_by_id(self.settings, rec["provider_id"])
+                    self._ended.append(rec["provider_id"])
             self.store.update_sandbox(
                 rec["id"], status="terminated", reason="reaped on server start", terminated_at=now()
             )
@@ -161,6 +167,7 @@ class SandboxManager:
                 from app.sandbox.modal_box import reap_app
 
                 killed = await reap_app(self.settings)
+                self._ended.extend(killed)
                 if killed:
                     log.warning("reaped orphan sandboxes", extra=fields(ids=killed))
         await self._release_if_idle()

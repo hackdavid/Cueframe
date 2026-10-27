@@ -5,6 +5,7 @@ import base64
 import os
 import sys
 import time
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any
 
@@ -125,7 +126,7 @@ class ModalSandbox(Sandbox):
         await self._sb.terminate.aio()
 
     @classmethod
-    async def release(cls, settings: Settings) -> None:
+    async def release(cls, settings: Settings, ended: Collection[str] = ()) -> None:
         """Stop the Modal app once its last sandbox is gone, so the dashboard shows
         nothing deployed. The image build cache is per workspace and survives this."""
         modal = modal_module(settings)
@@ -133,18 +134,11 @@ class ModalSandbox(Sandbox):
             app = await modal.App.lookup.aio(settings.modal_app)
         except modal.exception.NotFoundError:
             return
-        # Modal is the shared source of truth across workers. A just-terminated
-        # sandbox can still report running for a few seconds, so re-check briefly.
-        for _ in range(15):
-            running = [
-                sb async for sb in modal.Sandbox.list.aio(app_id=app.app_id)
-                if await sb.poll.aio() is None
-            ]  # fmt: skip
-            if not running:
-                break
-            await asyncio.sleep(1)
-        else:
-            return
+        # Modal is the shared source of truth across workers. Sandboxes we just
+        # terminated can still report running for a few seconds; ignore those.
+        async for sb in modal.Sandbox.list.aio(app_id=app.app_id):
+            if sb.object_id not in ended and await sb.poll.aio() is None:
+                return  # another worker still has a running sandbox
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "modal", "app", "stop", "-y", settings.modal_app,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,

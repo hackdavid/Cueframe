@@ -4,7 +4,7 @@
 import re
 import shlex
 from abc import ABC, abstractmethod
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 
 from app.config import Settings
 from app.sandbox.contracts import Action, ActionRecord, ExecResult
@@ -32,8 +32,9 @@ class Sandbox(ABC):
     async def terminate(self) -> None: ...
 
     @classmethod
-    async def release(cls, settings: Settings) -> None:
-        """Called when no sandbox is live: free provider-level resources."""
+    async def release(cls, settings: Settings, ended: Collection[str] = ()) -> None:
+        """Called when no sandbox is live here: free provider-level resources.
+        `ended` are provider ids this process already terminated."""
         return None
 
     async def screenshot(self) -> bytes:

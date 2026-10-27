@@ -122,7 +122,7 @@ def test_provider_released_when_last_sandbox_stops(client, monkeypatch):
     provider = client.app.state.sandboxes.provider
     calls: list[int] = []
 
-    async def release(cls, settings):  # type: ignore[no-untyped-def]
+    async def release(cls, settings, ended=()):  # type: ignore[no-untyped-def]
         calls.append(len(client.app.state.sandboxes._live))
 
     monkeypatch.setattr(provider, "release", classmethod(release))
@@ -136,7 +136,7 @@ def test_release_skipped_while_a_sandbox_is_starting(client, monkeypatch):
     mgr = client.app.state.sandboxes
     calls: list[int] = []
 
-    async def release(cls, settings):  # type: ignore[no-untyped-def]
+    async def release(cls, settings, ended=()):  # type: ignore[no-untyped-def]
         calls.append(1)
 
     monkeypatch.setattr(mgr.provider, "release", classmethod(release))
