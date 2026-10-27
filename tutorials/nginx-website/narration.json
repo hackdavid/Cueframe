@@ -1,0 +1,11 @@
+{
+ "intro": "Want your own website running on Linux? In about a minute, we'll install engine-x, one of the most popular web servers in the world, and publish a page of our own.",
+ "install": "First, open a terminal and install engine-x with the package manager.",
+ "installed": "Done. It downloaded engine-x and set it up in just a few seconds.",
+ "start": "Let's check the version, then start the server.",
+ "browser": "Now switch to the browser and visit localhost. There it is. engine-x is serving its welcome page.",
+ "write": "Back in the terminal, we replace the default page with our own. A single line of HTML is all it takes.",
+ "reload": "Reload the browser, and our page is live.",
+ "verify": "Finally, let's confirm from the command line that the server answers with two hundred OK.",
+ "outro": "That's it. Install, start, publish. You just hosted a website on Linux. Thanks for watching!"
+}

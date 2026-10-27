@@ -4,10 +4,12 @@ W=${CF_W:-1280}; H=${CF_H:-720}
 mkdir -p /tmp/cf; echo 0 > /tmp/cf/prompt_n
 Xvfb :99 -screen 0 ${W}x${H}x24 -nolisten tcp & sleep 1
 export DISPLAY=:99
+mkdir -p ~/.fluxbox && cp /opt/cf/fluxbox/init /opt/cf/fluxbox/apps ~/.fluxbox/
 fluxbox >/dev/null 2>&1 &
 x11vnc -display :99 -forever -shared -viewonly -nopw -quiet -rfbport 5900 >/dev/null 2>&1 &
 websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 chromium --no-sandbox --test-type --disable-gpu --disable-dev-shm-usage --no-first-run \
   --no-default-browser-check --disable-infobars --window-size=${W},${H} --window-position=0,0 \
+  --force-device-scale-factor=${CF_SCALE:-1} --hide-crash-restore-bubble --disable-features=Translate \
   "${CF_START_URL:-about:blank}" >/dev/null 2>&1 &
 wait

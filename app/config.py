@@ -37,6 +37,8 @@ class Settings:
     sandbox_idle_seconds: int = 120
     sandbox_width: int = 1280
     sandbox_height: int = 720
+    sandbox_scale: float = 1
+    sandbox_term_font: int = 12
     sandbox_apt_extra: tuple[str, ...] = ()
     sandbox_usd_per_hour: float = 0.11
     ask_timeout_seconds: float = 900
@@ -85,6 +87,8 @@ def get_settings() -> Settings:
         sandbox_idle_seconds=_int("CUEFRAME_SANDBOX_IDLE_SECONDS", 120),
         sandbox_width=_int("CUEFRAME_SANDBOX_WIDTH", 1280),
         sandbox_height=_int("CUEFRAME_SANDBOX_HEIGHT", 720),
+        sandbox_scale=_float("CUEFRAME_SANDBOX_SCALE", 1),
+        sandbox_term_font=_int("CUEFRAME_SANDBOX_TERM_FONT", 12),
         sandbox_apt_extra=tuple(os.environ.get("CUEFRAME_SANDBOX_APT_EXTRA", "").split()),
         sandbox_usd_per_hour=_float("CUEFRAME_SANDBOX_USD_PER_HOUR", 0.11),
         ask_timeout_seconds=_float("CUEFRAME_ASK_TIMEOUT_SECONDS", 900),

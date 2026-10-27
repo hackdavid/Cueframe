@@ -1,0 +1,7 @@
+# Every app fills the screen with no decorations, so exactly one app is visible at a time.
+[app] (name=.*)
+  [Deco] {NONE}
+  [Dimensions] {100% 100%}
+  [Position] (UpperLeft) {0 0}
+  [Maximized] {yes}
+[end]

@@ -22,6 +22,9 @@ class Action(BaseModel):
     timeout: float = 600
     ask: bool = True
     caption: str | None = None
+    # Bring this app to the front first; apps fill the screen, so only one is visible.
+    app: Literal["browser", "terminal"] | None = None
+    clear: bool = False  # terminal: clear the screen (Ctrl+L) before typing
 
 
 class ExecResult(BaseModel):
