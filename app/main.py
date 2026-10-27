@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 import app.handlers.demo  # noqa: F401  (registers job handlers)
 import app.handlers.research  # noqa: F401
 import app.handlers.sandbox_run  # noqa: F401
+import app.handlers.tutorial  # noqa: F401
 from app import api, pages, ws
 from app.auth import hash_password, user_for_token
 from app.config import Settings, get_settings
@@ -85,10 +86,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         store, user = request.app.state.store, _media_user(request)
         prefix = request.app.state.settings.r2_prefix.strip("/")
         prefix = f"{re.escape(prefix)}/" if prefix else ""
-        m = re.fullmatch(rf"{prefix}jobs/(j_[0-9a-f]+)/[A-Za-z0-9_-]+\.[a-z0-9]+", key)
-        job = store.get_job(m.group(1)) if m else None
-        cid = job and job["conversation_id"]
-        if not user or not cid or not store.get_conversation(cid, user["id"]):
+        m = re.fullmatch(
+            rf"{prefix}(jobs|tutorials)/([jt]_[0-9a-f]+)/[A-Za-z0-9_-]+\.[a-z0-9]+", key
+        )
+        owner = None
+        if m and m.group(1) == "jobs":
+            job = store.get_job(m.group(2))
+            cid = job and job["conversation_id"]
+            conv = cid and store.get_conversation(cid)
+            owner = conv and conv["user_id"]
+        elif m:
+            tut = store.get_tutorial(m.group(2))
+            owner = tut and tut["user_id"]
+        if not user or not owner or owner != user["id"]:
             return JSONResponse({"detail": "Not found"}, status_code=404)
         return RedirectResponse(request.app.state.storage.presign(key), status_code=307)
 

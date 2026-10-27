@@ -1,6 +1,6 @@
 import React from "react";
 import {
-  AbsoluteFill, Audio, Easing, interpolate, OffthreadVideo, Sequence, spring,
+  AbsoluteFill, Audio, Easing, Freeze, interpolate, OffthreadVideo, Sequence, spring,
   staticFile, useCurrentFrame, useVideoConfig,
 } from "remotion";
 import { loadFont as loadInter } from "@remotion/google-fonts/Inter";
@@ -143,13 +143,20 @@ const Screen: React.FC<{ t: Tutorial; s: State }> = ({ t, s }) => {
       }}
     >
       <div style={{ position: "absolute", left: 0, top: 0, width: SRC_W * K, height: SRC_H * K, transformOrigin: "0 0", transform: `translate(${tx}px, ${ty}px) scale(${c.zoom})` }}>
-        <OffthreadVideo
-          src={src(t.recording_url)}
-          startFrom={Math.round(src0.t_in * fps)}
-          playbackRate={src0.rate}
-          muted
-          style={{ width: SRC_W * K, height: SRC_H * K }}
-        />
+        {(() => {
+          const video = (
+            <OffthreadVideo
+              src={src(t.recording_url)}
+              startFrom={Math.round(src0.t_in * fps)}
+              playbackRate={src0.rate}
+              muted
+              style={{ width: SRC_W * K, height: SRC_H * K }}
+            />
+          );
+          // Narration edited to run longer than the captured step: hold its last frame.
+          const last = Math.floor(((src0.t_out - src0.t_in) / src0.rate) * fps) - 1;
+          return f > last ? <Freeze frame={last}>{video}</Freeze> : video;
+        })()}
         {s.highlights.map((h, i) => <HighlightBox key={i} h={h} tt={tt} zoom={c.zoom} />)}
       </div>
       {s.badge && <Badge text={s.badge} s={s} />}

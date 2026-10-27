@@ -42,7 +42,7 @@ Browser UI ─┐                         ┌─ Meta Model API (Muse Spark / Wo
 Postman ────┼─ REST + /api/ws ─ FastAPI ─┤   computer use, SAM 3.1, Muse Image, ASR)
 MCP/scripts ┘        │                │  └─ Modal Sandboxes (planned: virtual desktop per job)
                      │                │
-                SQLite store ── EventBus ── JobManager ── handlers/ (demo.reply, docs.research, sandbox.run)
+                SQLite store ── EventBus ── JobManager ── handlers/ (assistant.reply, tutorial.make/edit, docs.research, sandbox.run)
 ```
 
 | Path | Role |
@@ -52,7 +52,8 @@ MCP/scripts ┘        │                │  └─ Modal Sandboxes (planned: 
 | `app/db.py`, `app/events.py`, `app/jobs.py` | SQLite store, persisted event fan-out, background job runner |
 | `app/llm.py`, `app/log.py`, `app/config.py` | Central Meta client, central logger, settings from env |
 | `app/agents/` | `contracts.py` (Pydantic), `docs_research.py` (agent), `web.py` (fetch, clean, BM25) |
-| `app/handlers/` | Job kinds: `demo.reply`, `docs.research` |
+| `app/handlers/` | Job kinds: `assistant.reply` (default: routes to a tutorial or a chat answer), `tutorial.make`, `tutorial.edit`, `docs.research`, `sandbox.run`, `demo.reply` |
+| `app/tutorial/` | Tutorial pipeline: recipes, voice, capture, state graph, parallel render ([docs/tutorial-renderer.md](docs/tutorial-renderer.md)) |
 | `app/templates/`, `app/static/` | Landing, login and dashboard (Jinja, Tailwind, vanilla JS) |
 | `docs/` | Meta tooling research, live test results, token optimization, partner services plan |
 | `scripts/` | Live smoke tests and benchmarks against the Meta API |
@@ -141,7 +142,7 @@ curl -s "localhost:8000/api/events?after=0&conversation_id=c_..." -H "$H"    # p
 | POST | `/api/auth/login` · `/api/auth/logout` · GET `/api/auth/me` | Token auth (also sets the `cf_session` cookie) |
 | GET/POST | `/api/conversations` | List / create |
 | GET/PATCH/DELETE | `/api/conversations/{cid}` | State including `messages`, `jobs`, `active_jobs`, `has_pending_job`, `connections` |
-| POST | `/api/conversations/{cid}/messages` | Send a message, which starts a job (`job_kind`, default `demo.reply`) |
+| POST | `/api/conversations/{cid}/messages` | Send a message, which starts a job (`job_kind`, default `assistant.reply`) |
 | POST | `/api/messages` | Same, but creates the conversation if `conversation_id` is omitted |
 | POST | `/api/uploads` | Multipart `files`; returns upload ids for `attachment_ids` |
 | GET | `/api/jobs` · `/api/jobs/{jid}` · POST `/api/jobs/{jid}/cancel` | Jobs |

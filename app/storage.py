@@ -51,6 +51,25 @@ class Storage:
         url = f"/media/artifacts/{key}"
         return {"backend": "local", "key": key, "url": url, "bytes": len(data)}
 
+    def ref(self, key: str) -> dict[str, Any]:
+        """The `put` result for `key`, without uploading (to `get` a known object)."""
+        return {"backend": self.backend, "key": self._key(key) if self._s3 else key}
+
+    async def get(self, stored: dict[str, Any]) -> bytes | None:
+        """Bytes of an object returned by `put`, or None if it is gone."""
+        try:
+            if stored["backend"] == "r2":
+                if not self._s3:
+                    return None
+                obj = await asyncio.to_thread(
+                    self._s3.get_object, Bucket=self.settings.r2_bucket, Key=stored["key"]
+                )
+                return await asyncio.to_thread(obj["Body"].read)
+            return await asyncio.to_thread((self.settings.artifacts_dir / stored["key"]).read_bytes)
+        except Exception:
+            log.warning("storage miss", extra=fields(key=stored.get("key")))
+            return None
+
     def presign(self, key: str, seconds: int = 3600) -> str:
         if not self._s3:
             raise RuntimeError("R2 is not configured")
