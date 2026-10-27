@@ -110,3 +110,10 @@ def test_already_installed_hides_install_state(client, monkeypatch):
 def test_tutorials_are_private(client, anon):
     assert anon.get("/api/tutorials").status_code == 401
     assert client.get("/api/tutorials/t_0000", headers=_auth(client)).status_code == 404
+
+
+def test_edit_ops_become_state_edits():
+    op = pipeline.EditOp(state="title", field="narration", value="Line one.\n\nLine two.")
+    assert op.to_edit().narration == ["Line one.", "Line two."]
+    assert pipeline.EditOp(state="verify", field="zoom", value="9").to_edit().zoom == 3.0
+    assert pipeline.EditOp(state="write", field="label", value=" New ").to_edit().label == "New"

@@ -16,7 +16,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -319,11 +319,28 @@ class StateEdit(BaseModel):
     highlight: str | None = Field(None, description="New text for the highlight label")
 
 
+class EditOp(BaseModel):
+    state: str = Field(description="State id: 'title', 'outro' or a step id")
+    field: Literal["narration", "label", "zoom", "highlight"]
+    value: str = Field(
+        description="The new value. narration: the full new spoken lines, one per line; "
+        "label: the new text; zoom: a number from 1 to 3; highlight: the new label text"
+    )
+
+    def to_edit(self) -> StateEdit:
+        if self.field == "narration":
+            lines = [x.strip() for x in self.value.splitlines() if x.strip()]
+            return StateEdit(state=self.state, narration=lines)
+        if self.field == "zoom":
+            return StateEdit(state=self.state, zoom=min(3.0, max(1.0, float(self.value))))
+        return StateEdit(state=self.state, **{self.field: self.value.strip()})
+
+
 class EditPlan(BaseModel):
-    edits: list[StateEdit]
+    edits: list[EditOp]
     summary: str = Field(description="One sentence telling the user what changed")
-    reply: str | None = Field(None, description="Set instead of edits if the request "
-                              "cannot be done by editing states (explain why)")  # fmt: skip
+    reply: str = Field(description="Empty, unless the request cannot be done by editing "
+                       "states: then explain why and leave edits empty")  # fmt: skip
 
 
 EDIT_RULES = """You edit a tutorial video that is stored as a graph of states. Turn the
@@ -334,8 +351,8 @@ natural. Never claim anything the recorded run did not show. You cannot re-recor
 actions or change what happened on screen; if asked to, set `reply` and explain.
 Every edit must carry the new value itself: the full rewritten narration lines, the new
 label, the new zoom number, or the new highlight text. Example for "shorten the intro":
-{"edits": [{"state": "title", "narration": ["<the new, shorter intro line>"]}],
- "summary": "Shortened the intro narration."}"""
+{"edits": [{"state": "title", "field": "narration", "value": "<the new, shorter intro>"}],
+ "summary": "Shortened the intro narration.", "reply": ""}"""
 
 
 def describe(row: dict[str, Any]) -> str:
@@ -396,29 +413,18 @@ async def edit(
         if ctx.llm is None or not ctx.llm.configured:
             raise RuntimeError("Editing from chat needs MODEL_API_KEY")
         ctx.phase("plan", "Working out which steps to change")
-        prompt = f"{describe(row)}\n\nUser request: {instruction}"
-        for _ in range(2):
-            plan, _ = await ctx.llm.parse(
-                EditPlan,
-                purpose="tutorial.edit",
-                model=ctx.settings.research_model,
-                instructions=EDIT_RULES,
-                input=prompt,
-            )
-            empty = [
-                e.state
-                for e in plan.edits
-                if not e.model_dump(exclude_none=True).keys() - {"state"}
-            ]
-            if not empty:
-                break
-            prompt += (f"\n\nYour previous plan had edits for {empty} with no new values. "
-                       "Give the new narration/label/zoom/highlight in each edit.")  # fmt: skip
+        plan, _ = await ctx.llm.parse(
+            EditPlan,
+            purpose="tutorial.edit",
+            model=ctx.settings.research_model,
+            instructions=EDIT_RULES,
+            input=f"{describe(row)}\n\nUser request: {instruction}",
+        )
+        ctx.thinking("Plan", json.dumps(plan.model_dump()))
         if plan.reply and not plan.edits:
             ctx.reply(plan.reply)
             return {"tutorial_id": tid, "edits": []}
-        edits, note = plan.edits, plan.summary
-        ctx.thinking("Plan", json.dumps([e.model_dump(exclude_none=True) for e in edits]))
+        edits, note = [op.to_edit() for op in plan.edits], plan.summary
     before = json.dumps(row["spec"], sort_keys=True)
     states = apply(row, edits)
     ctx.phase("voice", "Re-recording changed narration")
