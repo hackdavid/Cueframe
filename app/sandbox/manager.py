@@ -14,6 +14,7 @@ from app.db import Store, now
 from app.log import fields, get_logger
 from app.sandbox.base import Sandbox
 
+RELEASE_RETRY_DELAYS = (10.0, 30.0, 60.0)
 log = get_logger("sandbox")
 
 
@@ -32,6 +33,7 @@ class SandboxManager:
         self._app_lock = asyncio.Lock()
         # Provider ids we terminated; Modal may still list them as running briefly.
         self._ended: collections.deque[str] = collections.deque(maxlen=64)
+        self._release_retry: asyncio.Task[None] | None = None
 
     @classmethod
     def from_settings(cls, store: Store, settings: Settings) -> "SandboxManager":
@@ -134,9 +136,26 @@ class SandboxManager:
             if self._live or self._starting:
                 return
             try:
-                await self.provider.release(self.settings, tuple(self._ended))
+                released = await self.provider.release(self.settings, tuple(self._ended))
             except Exception:
                 log.exception("provider release failed")
+                released = True
+            if not released and not (self._release_retry and not self._release_retry.done()):
+                self._release_retry = asyncio.create_task(self._retry_release())
+
+    async def _retry_release(self) -> None:
+        """Held off because Modal listed an unknown running sandbox: it may be one
+        another worker just ended, so look again a few times."""
+        for delay in RELEASE_RETRY_DELAYS:
+            await asyncio.sleep(delay)
+            async with self._app_lock:
+                if self._live or self._starting:
+                    return
+                try:
+                    if await self.provider.release(self.settings, tuple(self._ended)):
+                        return
+                except Exception:
+                    log.exception("provider release retry failed")
 
     async def _watch(self, sid: str) -> None:
         while sid in self._live:
@@ -173,6 +192,8 @@ class SandboxManager:
         await self._release_if_idle()
 
     async def shutdown(self) -> None:
+        if self._release_retry:
+            self._release_retry.cancel()
         await asyncio.gather(
             *(self.stop(sid, "server shutdown") for sid in list(self._live)),
             return_exceptions=True,

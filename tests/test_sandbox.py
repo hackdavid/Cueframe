@@ -124,6 +124,7 @@ def test_provider_released_when_last_sandbox_stops(client, monkeypatch):
 
     async def release(cls, settings, ended=()):  # type: ignore[no-untyped-def]
         calls.append(len(client.app.state.sandboxes._live))
+        return True
 
     monkeypatch.setattr(provider, "release", classmethod(release))
     body = {"content": "https://example.com", "job_kind": "sandbox.run"}
@@ -138,6 +139,7 @@ def test_release_skipped_while_a_sandbox_is_starting(client, monkeypatch):
 
     async def release(cls, settings, ended=()):  # type: ignore[no-untyped-def]
         calls.append(1)
+        return True
 
     monkeypatch.setattr(mgr.provider, "release", classmethod(release))
     mgr._starting = 1
@@ -147,3 +149,28 @@ def test_release_skipped_while_a_sandbox_is_starting(client, monkeypatch):
     mgr._starting = 0
     asyncio.run(mgr._release_if_idle())
     assert calls == [1]
+
+
+def test_release_retried_when_held_off(client, monkeypatch):
+    import asyncio
+
+    import app.sandbox.manager as manager
+
+    mgr = client.app.state.sandboxes
+    answers = [False, True]
+    calls: list[int] = []
+
+    async def release(cls, settings, ended=()):  # type: ignore[no-untyped-def]
+        calls.append(1)
+        return answers.pop(0)
+
+    monkeypatch.setattr(mgr.provider, "release", classmethod(release))
+    monkeypatch.setattr(manager, "RELEASE_RETRY_DELAYS", (0.01, 0.01))
+
+    async def go() -> None:
+        await mgr._release_if_idle()
+        assert mgr._release_retry is not None
+        await mgr._release_retry
+
+    asyncio.run(go())
+    assert calls == [1, 1]

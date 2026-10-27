@@ -126,19 +126,19 @@ class ModalSandbox(Sandbox):
         await self._sb.terminate.aio()
 
     @classmethod
-    async def release(cls, settings: Settings, ended: Collection[str] = ()) -> None:
+    async def release(cls, settings: Settings, ended: Collection[str] = ()) -> bool:
         """Stop the Modal app once its last sandbox is gone, so the dashboard shows
         nothing deployed. The image build cache is per workspace and survives this."""
         modal = modal_module(settings)
         try:
             app = await modal.App.lookup.aio(settings.modal_app)
         except modal.exception.NotFoundError:
-            return
+            return True
         # Modal is the shared source of truth across workers. Sandboxes we just
         # terminated can still report running for a few seconds; ignore those.
         async for sb in modal.Sandbox.list.aio(app_id=app.app_id):
             if sb.object_id not in ended and await sb.poll.aio() is None:
-                return  # another worker still has a running sandbox
+                return False  # another worker's, or one Modal hasn't marked ended yet
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "modal", "app", "stop", "-y", settings.modal_app,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -150,6 +150,7 @@ class ModalSandbox(Sandbox):
             await proc.wait()
             raise
         log.info("modal app stop", extra=fields(rc=proc.returncode, out=out.decode()[-200:]))
+        return True
 
 
 async def terminate_by_id(settings: Settings, provider_id: str) -> None:

@@ -32,10 +32,11 @@ class Sandbox(ABC):
     async def terminate(self) -> None: ...
 
     @classmethod
-    async def release(cls, settings: Settings, ended: Collection[str] = ()) -> None:
+    async def release(cls, settings: Settings, ended: Collection[str] = ()) -> bool:
         """Called when no sandbox is live here: free provider-level resources.
-        `ended` are provider ids this process already terminated."""
-        return None
+        `ended` are provider ids this process already terminated. Returns False
+        if it held off because something else may still be running."""
+        return True
 
     async def screenshot(self) -> bytes:
         await self._must(
