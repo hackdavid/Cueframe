@@ -48,7 +48,8 @@ def code_hash() -> str:
 
 
 def segment_hashes(tut: Tutorial) -> list[str]:
-    code, steps = code_hash(), json.dumps(tut.steps)
+    code = code_hash()
+    steps = json.dumps([tut.steps, tut.software, tut.teaser, tut.done, tut.recap])
     return [
         hashlib.sha256((code + st.model_dump_json() + steps).encode()).hexdigest()[:12]
         for st in tut.states

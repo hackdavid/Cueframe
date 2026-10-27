@@ -53,7 +53,7 @@ MCP/scripts ┘        │                │  └─ Modal Sandboxes (planned: 
 | `app/llm.py`, `app/log.py`, `app/config.py` | Central Meta client, central logger, settings from env |
 | `app/agents/` | `contracts.py` (Pydantic), `docs_research.py` (agent), `web.py` (fetch, clean, BM25) |
 | `app/handlers/` | Job kinds: `assistant.reply` (default: routes to a tutorial or a chat answer), `tutorial.make`, `tutorial.edit`, `docs.research`, `sandbox.run`, `demo.reply` |
-| `app/tutorial/` | Tutorial pipeline: recipes, voice, capture, state graph, parallel render ([docs/tutorial-renderer.md](docs/tutorial-renderer.md)) |
+| `app/tutorial/` | Tutorial pipeline: recipes or automatic planning (`planner.py`: docs research → plan → safety checks → rehearsal), voice, capture, state graph, parallel render ([docs/tutorial-renderer.md](docs/tutorial-renderer.md)) |
 | `app/templates/`, `app/static/` | Landing, login and dashboard (Jinja, Tailwind, vanilla JS) |
 | `docs/` | Meta tooling research, live test results, token optimization, partner services plan |
 | `scripts/` | Live smoke tests and benchmarks against the Meta API |

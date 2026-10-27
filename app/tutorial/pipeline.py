@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field
 
 from app.jobs import JobContext, JobFailed
 from app.sandbox.contracts import Action
-from app.tutorial import recipes
+from app.tutorial import planner, recipes
 from app.tutorial.build import build
 from app.tutorial.contracts import Tutorial
 from app.tutorial.render import render
@@ -30,6 +30,8 @@ from app.tutorial.voice import sound, speak
 
 SKIP = "Already installed - leave the install out of the video"
 SHOW = "Not installed - show me how to install it"
+RUN = "Yes, run it and record the tutorial"
+CANCEL = "No, cancel"
 DESKTOP = {"sandbox_width": 1920, "sandbox_height": 1080, "sandbox_scale": 1.5,
            "sandbox_term_font": 22, "sandbox_cpu": 4}  # fmt: skip
 SFX = {
@@ -153,7 +155,14 @@ async def capture(
 
             mgr.touch(sid)
             async with mgr.busy(sid):
-                rec = await box.run(i, action, out)
+                rec = await planner.check(box, step, await box.run(i, action, out))
+            if step.get("output_label") and rec.ok:
+                body = planner.output_lines(rec, action.command or "")
+                if 0 < len(body) <= 6:
+                    step.setdefault("highlight", {})["output"] = {
+                        "lines": len(body), "label": step["output_label"],
+                        "chars": min(100, max(len(x) for x in body)),
+                    }  # fmt: skip
             spent = rec.settled - rec.started
             hold = max(MIN_HOLD, need - spent + 0.8)
             await asyncio.sleep(hold * PACE)
@@ -273,15 +282,30 @@ async def publish(ctx: JobContext, row: dict[str, Any], note: str = "") -> dict[
     return result
 
 
-async def make(ctx: JobContext, recipe_id: str) -> dict[str, Any]:
-    spec = recipes.get(recipe_id)
+async def make(
+    ctx: JobContext, recipe_id: str | None = None, goal: str | None = None
+) -> dict[str, Any]:
+    """Make a tutorial from a hand-written recipe, or plan one for `goal`."""
     missing = [k for k in ("ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID") if not os.environ.get(k)]
     if missing:
         raise RuntimeError(f"Tutorial narration needs {', '.join(missing)} on the server")
     conv = ctx.store.get_conversation(ctx.conversation_id) if ctx.conversation_id else None
     if not conv:
         raise ValueError("tutorial.make needs a conversation")
+    if recipe_id:
+        spec = recipes.get(recipe_id)
+    else:
+        planned = await planner.plan(ctx, goal or ctx.input.get("text", ""))
+        if isinstance(planned, str):
+            ctx.reply(f"I can't make that tutorial: {planned}")
+            return {"routed": "make_tutorial", "planned": False, "reason": planned}
+        spec, recipe_id = planned, "planned"
+        ctx.reply(
+            f"**{spec['title']}**: here's the plan. I'll rehearse it in a private sandbox, "
+            f"then record it for real.\n\n{planner.describe_plan(spec)}"
+        )
     hidden: set[str] = set()
+    asked = False
     ctx.phase("intake", "Checking with you before running terminal commands")
     for step in spec["steps"]:
         a = step["action"]
@@ -294,7 +318,19 @@ async def make(ctx: JobContext, recipe_id: str) -> dict[str, Any]:
             )
             if ans == SKIP:
                 hidden.add(step["id"])
+            asked = True
+    if recipe_id == "planned" and not asked:
+        ans = await ctx.ask(
+            "This tutorial runs the commands above in a Linux terminal. Shall I go ahead?",
+            [RUN, CANCEL],
+            key="confirm",
+        )
+        if ans == CANCEL:
+            ctx.reply("Okay, I won't run it. Nothing was started.")
+            return {"routed": "make_tutorial", "planned": True, "cancelled": True}
     spec["hidden"] = sorted(hidden)
+    if recipe_id == "planned" and (why := await planner.rehearse(ctx, spec)):
+        raise JobFailed(f"The rehearsal failed, so nothing was recorded: {why}", {"rehearsal": why})
     row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, recipe_id,
                                     spec["title"], spec)  # fmt: skip
     tid = row["id"]
@@ -305,7 +341,9 @@ async def make(ctx: JobContext, recipe_id: str) -> dict[str, Any]:
     await voice_lines(ctx, tid, spec["lines"], voice)
     ctx.store.update_tutorial(tid, status="capturing", voice=voice)
     cap = await capture(ctx, tid, spec, voice, hidden)
-    row = ctx.store.update_tutorial(tid, capture=cap, assets={"recording": cap["recording"]})
+    row = ctx.store.update_tutorial(
+        tid, spec=spec, capture=cap, assets={"recording": cap["recording"]}
+    )
     return await publish(ctx, row)
 
 

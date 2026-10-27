@@ -283,7 +283,9 @@ const TitleCard: React.FC<{ t: Tutorial }> = ({ t }) => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
   const words = t.title.split(" ");
-  const chips = ["Linux", "Terminal", "Browser", "nginx"];
+  const apps = new Set(t.states.map((s) => s.app));
+  const chips = ["Linux", ...(apps.has("terminal") ? ["Terminal"] : []), ...(apps.has("browser") ? ["Browser"] : []),
+    ...(t.software && !["linux", "terminal", "browser"].includes(t.software.toLowerCase()) ? [t.software] : [])];
   return (
     <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 34 }}>
       <div style={{ display: "flex", gap: 12, opacity: spring({ frame: f - 4, fps }) }}>
@@ -314,13 +316,12 @@ const TitleCard: React.FC<{ t: Tutorial }> = ({ t }) => {
           );
         })}
       </div>
-      <Terminal3D f={f} />
+      {t.teaser && <Terminal3D f={f} cmd={t.teaser} />}
     </AbsoluteFill>
   );
 };
 
-const Terminal3D: React.FC<{ f: number }> = ({ f }) => {
-  const cmd = "$ apt-get install -y nginx";
+const Terminal3D: React.FC<{ f: number; cmd: string }> = ({ f, cmd }) => {
   const n = Math.max(0, Math.floor((f - 80) / 2));
   return (
     <div style={{ marginTop: 30, fontFamily: MONO, fontSize: 30, padding: "18px 30px", minWidth: 640, borderRadius: 16, background: "#0d1117",
@@ -336,19 +337,21 @@ const Terminal3D: React.FC<{ f: number }> = ({ f }) => {
 const Outro: React.FC<{ t: Tutorial }> = ({ t }) => {
   const f = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const items = ["Install", "Start", "Publish"];
+  const items = t.recap;
+  const head = t.done.split(" ");
+  const big = items.length <= 3;
   return (
     <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 44 }}>
       <div style={{ fontSize: 96, fontWeight: 800, letterSpacing: -2, opacity: spring({ frame: f, fps }), transform: `scale(${0.9 + 0.1 * spring({ frame: f, fps })})` }}>
-        Your site is{" "}
-        <span style={{ background: "linear-gradient(90deg,#a78bfa,#38bdf8)", WebkitBackgroundClip: "text", color: "transparent" }}>live</span>
+        {head.slice(0, -1).join(" ")}{" "}
+        <span style={{ background: "linear-gradient(90deg,#a78bfa,#38bdf8)", WebkitBackgroundClip: "text", color: "transparent" }}>{head[head.length - 1]}</span>
       </div>
-      <div style={{ display: "flex", gap: 30 }}>
+      <div style={{ display: "flex", gap: big ? 30 : 22, flexWrap: "wrap", justifyContent: "center", maxWidth: 1760 }}>
         {items.map((x, i) => {
           const p = spring({ frame: f - 25 - i * 22, fps, config: { damping: 11, stiffness: 150 } });
           return (
             <div key={x} style={{ display: "flex", alignItems: "center", gap: 16, padding: "20px 34px", borderRadius: 20, background: "rgba(255,255,255,.07)",
-              border: "1px solid rgba(255,255,255,.14)", fontSize: 44, fontWeight: 700, transform: `scale(${p})`, opacity: p }}>
+              border: "1px solid rgba(255,255,255,.14)", fontSize: big ? 44 : 34, fontWeight: 700, transform: `scale(${p})`, opacity: p }}>
               <span style={{ width: 52, height: 52, borderRadius: 99, background: GREEN, display: "grid", placeItems: "center", fontSize: 32 }}>✓</span>
               {x}
             </div>

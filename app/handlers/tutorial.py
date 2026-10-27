@@ -15,9 +15,7 @@ from app.tutorial import pipeline, recipes
 @job_handler("tutorial.make")
 async def tutorial_make(ctx: JobContext) -> dict[str, Any]:
     rid = (ctx.input.get("job_input") or {}).get("recipe") or recipes.match(ctx.input["text"])
-    if not rid:
-        raise ValueError("No tutorial recipe matches this request")
-    return await pipeline.make(ctx, rid)
+    return await pipeline.make(ctx, rid, goal=ctx.input["text"])
 
 
 @job_handler("tutorial.edit")
@@ -40,7 +38,8 @@ class Route(BaseModel):
 ROUTER = """You route messages in Cueframe, an app that makes narrated video tutorials
 from real runs in a Linux desktop sandbox. Pick:
 - make_tutorial: the user wants a (new) tutorial/video/walkthrough of a task. Set
-  `recipe` to the id of the matching recipe below, or null if none fits.
+  `recipe` to the id of the matching recipe below, or null if none fits (a new
+  tutorial is then planned automatically).
 - edit_tutorial: the user wants to change the tutorial already in this conversation
   (narration, wording, zoom, highlights, title, re-render).
 - chat: anything else (questions, docs lookups, small talk).
@@ -84,14 +83,7 @@ async def assistant_reply(ctx: JobContext) -> dict[str, Any] | None:
     ctx.thinking("Router", "Reading your message")
     r = await route(ctx, bool(tuts))
     if r.intent == "make_tutorial":
-        if not r.recipe:
-            ctx.reply(
-                "I can't plan a tutorial for that task yet. Planning tutorials for any task "
-                "is the next phase; right now I can make these, recorded for real in a "
-                f"Linux sandbox:\n\n{recipes.catalog()}"
-            )
-            return {"routed": "make_tutorial", "recipe": None}
-        return await pipeline.make(ctx, r.recipe)
+        return await pipeline.make(ctx, r.recipe, goal=ctx.input.get("text"))
     if r.intent == "edit_tutorial" and tuts:
         return await pipeline.edit(ctx, tuts[0]["id"], instruction=ctx.input.get("text"))
     if ctx.llm is not None and ctx.llm.configured:

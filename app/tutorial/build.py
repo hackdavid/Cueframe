@@ -18,21 +18,34 @@ TYPE_S = 0.035  # xdotool per-character delay
 SPOKEN = {"engine-x": "nginx"}  # spelled for the voice, shown as written
 
 
-def caption_words(words: list[Word]) -> list[Word]:
+def _core(text: str) -> str:
+    return text.rstrip(".,!?;:").lower()
+
+
+def caption_words(words: list[Word], say: dict[str, str] | None = None) -> list[Word]:
+    """Show respelled terms as written: 'engine-x' -> nginx, 'J Q' -> jq, 'two hundred' -> 200."""
+    spoken = {**SPOKEN, **(say or {}), "two hundred": "200"}
+    phrases = sorted(((k.split(), v) for k, v in spoken.items()), key=lambda x: -len(x[0]))
     out: list[Word] = []
-    for w in words:
-        core = w.text.rstrip(".,!?")
-        tail = w.text[len(core) :]
-        if core.lower() in SPOKEN:
-            w = w.model_copy(update={"text": SPOKEN[core.lower()] + tail})
-        if out and out[-1].text.lower() == "two" and core.lower() == "hundred":
-            out[-1] = out[-1].model_copy(update={"text": "200" + tail, "end": w.end})
-            continue
-        out.append(w)
+    i = 0
+    while i < len(words):
+        for toks, written in phrases:
+            n = len(toks)
+            if [_core(w.text) for w in words[i : i + n]] == toks:
+                last = words[i + n - 1]
+                tail = last.text[len(last.text.rstrip(".,!?;:")) :]
+                out.append(words[i].model_copy(update={"text": written + tail, "end": last.end}))
+                i += n
+                break
+        else:
+            out.append(words[i])
+            i += 1
     return out
 
 
-def narration(voice: dict[str, Any], key: str, at: float, base: str) -> Narration:
+def narration(
+    voice: dict[str, Any], key: str, at: float, base: str, say: dict[str, str] | None = None
+) -> Narration:
     """`voice[key]` is a synthesized line: {"text", "file", "words"}."""
     v = voice[key]
     words = [Word(**w) for w in v["words"]]
@@ -41,7 +54,7 @@ def narration(voice: dict[str, Any], key: str, at: float, base: str) -> Narratio
         at=at,
         audio_url=f"{base}/audio/{v['file']}",
         duration=words[-1].end if words else 0,
-        words=caption_words(words),
+        words=caption_words(words, say),
     )
 
 
@@ -154,6 +167,17 @@ def plan_step(
     return st
 
 
+def teaser(steps: list[dict[str, Any]], width: int = 40) -> str:
+    """Short command for the title card: the first install, else the first terminal step."""
+    cmds = [s for s in steps if s["action"]["kind"] == "terminal"]
+    pick = next((s for s in cmds if s.get("installs")), cmds[0] if cmds else None)
+    if not pick:
+        return ""
+    cmd = re.sub(r"^(\w+=\S*\s+)+", "", pick["action"]["command"])
+    cmd = re.split(r"\s+(?:&&|\|\|?|;)\s+", cmd)[0]
+    return "$ " + (cmd if len(cmd) <= width else cmd[: width - 1] + "…")
+
+
 def build(
     spec: dict[str, Any],
     voice: dict[str, Any],
@@ -165,15 +189,21 @@ def build(
     `voice` lines and the `capture` records. `hidden` steps ran but stay out of the
     video (e.g. "already installed"). A failed step ends the video honestly."""
     recs = {r["step"]: r for r in capture["records"]}
+    say = spec.get("say") or {}
+    shown = [s for s in spec["steps"] if s["id"] not in hidden]
     tut = Tutorial(
         id=base,
         title=spec["title"],
         subtitle=spec.get("subtitle", ""),
         recording_url=f"{base}/recording.mp4",
         music_url=f"{base}/audio/sfx_music.mp3",
-        steps=[s["label"] for s in spec["steps"] if s["id"] not in hidden],
+        steps=[s["label"] for s in shown],
+        software=spec.get("software", ""),
+        teaser=teaser(spec["steps"]),
+        done=spec.get("done") or "You did it",
+        recap=spec.get("recap") or [s["label"] for s in shown][:4],
     )
-    intro = narration(voice, "intro", 0.7, base)
+    intro = narration(voice, "intro", 0.7, base, say)
     tut.states.append(
         State(
             id="title",
@@ -191,7 +221,7 @@ def build(
             break
         if step["id"] in hidden and rec["ok"]:
             continue
-        narr = [narration(voice, k, 0, base) for k in step["narration"]]
+        narr = [narration(voice, k, 0, base, say) for k in step["narration"]]
         st = plan_step(step, rec, narr, prev)
         tut.states.append(st)
         prev = st.app
@@ -199,7 +229,7 @@ def build(
             ok = False
             break
     if ok:
-        outro = narration(voice, "outro", 0.4, base)
+        outro = narration(voice, "outro", 0.4, base, say)
         tut.states.append(
             State(
                 id="outro",
@@ -209,10 +239,8 @@ def build(
                 duration=round(outro.at + outro.duration + 2.2, 2),
                 sfx=[
                     Sfx(t=0.0, kind="whoosh"),
-                    Sfx(t=0.85, kind="pop"),
-                    Sfx(t=1.6, kind="pop"),
-                    Sfx(t=2.3, kind="pop"),
-                    Sfx(t=2.6, kind="success"),
+                    *(Sfx(t=round(0.85 + 0.73 * i, 2), kind="pop") for i in range(len(tut.recap))),
+                    Sfx(t=round(0.85 + 0.73 * len(tut.recap), 2), kind="success"),
                 ],
             )
         )
