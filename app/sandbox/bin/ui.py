@@ -12,6 +12,7 @@ Standard library only, except pyatspi for desktop apps."""
 import base64
 import json
 import os
+import re
 import socket
 import struct
 import sys
@@ -196,7 +197,10 @@ def _walk(node, out: list, depth: int = 0) -> None:  # noqa: ANN001
         return
     try:
         st = node.getState()
-        if not st.contains(pyatspi.STATE_SHOWING):
+        # GTK4 may leave SHOWING unset on windows and containers: only prune deeper nodes.
+        if depth > 1 and not (
+            st.contains(pyatspi.STATE_SHOWING) or st.contains(pyatspi.STATE_VISIBLE)
+        ):
             return
         out.append(node)
         for child in node:
@@ -213,7 +217,8 @@ def _label(node) -> str:  # noqa: ANN001
             n = t.getText(0, min(t.characterCount, 120)).strip()
         except Exception:
             n = ""
-    return " ".join(n.split()).lower()
+    n = " ".join(n.split()).lower()
+    return "" if re.fullmatch(r"(gtk|adw)[a-z]*", n) else n  # widget class, not a label
 
 
 def desktop_nodes(app: str) -> list:

@@ -74,7 +74,7 @@ class Sandbox(ABC):
         if action.app and action.kind != "launch":
             script = f"{_focus(action.app)}; {script}"
         res = await self.exec(
-            f"export DISPLAY=:99; s=$(date +%s.%N); {{ {script} ; }} >/tmp/cf/act.log 2>&1; "
+            f"export DISPLAY=:99; s=$(date +%s.%N); ( {script} ) >/tmp/cf/act.log 2>&1; "
             f"rc=$?; e=$(date +%s.%N); st=$(/opt/cf/settle.sh); "
             f'echo "{MARK} $s $e $st $rc"; tail -c 1500 /tmp/cf/act.log',
             timeout=max(60, action.seconds + 30),

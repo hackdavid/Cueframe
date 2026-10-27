@@ -97,7 +97,7 @@ SANDBOX = """The sandbox is a fresh Debian Linux desktop at 1920x1080 with
 internet access. Commands run as root in a bash terminal (no sudo needed, no password,
 no systemd: start daemons directly, e.g. `nginx`, not `systemctl`). GUI apps: this
 terminal, a Chromium browser, and Debian desktop apps you install with apt-get and open
-with a launch step (GTK apps work best, e.g. mousepad, gnome-calculator, thunar,
+with a launch step (GTK3 apps work best, e.g. mousepad, galculator, thunar,
 gnumeric, because their buttons and fields are found through the accessibility tree).
 Every app fills the screen and only one is shown at a time. The working directory is
 /work. Package manager: apt-get (index is already updated). Python 3 is installed."""
