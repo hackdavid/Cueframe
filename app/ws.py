@@ -91,6 +91,7 @@ async def _handle(s: Any, user: dict[str, Any], conn_id: str, frame: dict[str, A
                 content=frame.get("content", ""),
                 attachment_ids=frame.get("attachment_ids", []),
                 job_kind=frame.get("job_kind", services.DEFAULT_JOB),
+                job_input=frame.get("job_input") or {},
                 source="ws",
                 connection_id=conn_id,
             )
@@ -101,6 +102,14 @@ async def _handle(s: Any, user: dict[str, Any], conn_id: str, frame: dict[str, A
             if not job or not s.store.get_conversation(job["conversation_id"], user["id"]):
                 raise HTTPException(404, "Job not found")
             return {"type": "ack", "request_id": rid, "cancelled": s.jobs.cancel(job["id"])}
+        if kind == "job.answer":
+            job = s.store.get_job(frame.get("job_id", ""))
+            if not job or not s.store.get_conversation(job["conversation_id"], user["id"]):
+                raise HTTPException(404, "Job not found")
+            data = services.answer_job(
+                s, job["id"], frame.get("input_id", ""), frame.get("value", "")
+            )
+            return {"type": "ack", "request_id": rid, **data}
         raise HTTPException(400, f"Unknown frame type: {kind}")
     except HTTPException as exc:
         return {"type": "error", "request_id": rid, "status": exc.status_code, "detail": exc.detail}

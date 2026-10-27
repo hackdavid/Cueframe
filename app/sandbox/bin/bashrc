@@ -1,0 +1,4 @@
+PS1='\[\e[32m\]user@cueframe\[\e[0m\]:\[\e[34m\]\w\[\e[0m\]$ '
+cd /work 2>/dev/null
+__cf_prompt() { echo $? > /tmp/cf/rc; date +%s.%N > /tmp/cf/prompt_ts; echo $(( $(cat /tmp/cf/prompt_n) + 1 )) > /tmp/cf/prompt_n; }
+PROMPT_COMMAND=__cf_prompt

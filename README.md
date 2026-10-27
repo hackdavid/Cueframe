@@ -42,7 +42,7 @@ Browser UI ─┐                         ┌─ Meta Model API (Muse Spark / Wo
 Postman ────┼─ REST + /api/ws ─ FastAPI ─┤   computer use, SAM 3.1, Muse Image, ASR)
 MCP/scripts ┘        │                │  └─ Modal Sandboxes (planned: virtual desktop per job)
                      │                │
-                SQLite store ── EventBus ── JobManager ── handlers/ (demo.reply, docs.research)
+                SQLite store ── EventBus ── JobManager ── handlers/ (demo.reply, docs.research, sandbox.run)
 ```
 
 | Path | Role |
@@ -87,6 +87,13 @@ uv run ruff check .       # lint
 | `CUEFRAME_ADMIN_USERNAME` / `_PASSWORD` | `admin` / `cueframe` | Seeded login |
 | `CUEFRAME_DATA_DIR` | `data` | SQLite database, uploads, artifacts |
 | `CUEFRAME_MAX_CONCURRENT_JOBS` | `2` | Job concurrency |
+| `CUEFRAME_SANDBOX_PROVIDER` | `modal` | `modal` or `fake` (tests / no Modal) |
+| `CUEFRAME_MODAL_PROFILE` | unset | Modal CLI profile to use; overrides saved `MODAL_TOKEN_*` env vars |
+| `CUEFRAME_SANDBOX_IDLE_SECONDS` / `CUEFRAME_SANDBOX_MAX_SECONDS` | `120` / `900` | Auto-shutdown limits (also enforced by Modal) |
+| `CUEFRAME_SANDBOX_APT_EXTRA` | empty | Extra Debian packages baked into the desktop image (e.g. `gimp`) |
+| `CUEFRAME_SANDBOX_USD_PER_HOUR` | `0.11` | Used for the per-sandbox cost estimate |
+| `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | unset | Store recordings/screenshots in R2 (else `data/artifacts`) |
+| `CUEFRAME_R2_PREFIX` | `cueframe` | Key prefix inside the bucket |
 | `CUEFRAME_LOG_LEVEL` | `INFO` | Central logger level |
 
 See `.env.example` for the full list.
@@ -164,11 +171,13 @@ Send the optional header `X-Connection-Id: ws_...` on message requests to link t
 ```python
 from app.jobs import JobContext, job_handler
 
+
 @job_handler("my.kind")
 async def run(ctx: JobContext) -> dict:
-    ctx.phase("research", "Reading docs"); ctx.progress(0.3)
-    ctx.reply("**Done** ![preview](/media/artifacts/...)")   # Markdown with media
-    return {"ok": True}                                      # stored as the job result
+    ctx.phase("research", "Reading docs")
+    ctx.progress(0.3)
+    ctx.reply("**Done** ![preview](/media/artifacts/...)")  # Markdown with media
+    return {"ok": True}  # stored as the job result
 ```
 
 ## Roadmap

@@ -20,6 +20,7 @@ def settings(tmp_path):
         demo_render_video=False,
         admin_username="admin",
         admin_password="pw-test",
+        sandbox_provider="fake",
     )
 
 

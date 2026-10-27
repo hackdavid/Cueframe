@@ -26,7 +26,11 @@ def conversation_state(s: Any, cid: str, user: dict[str, Any]) -> dict[str, Any]
     job history, which jobs are still pending, and who is connected."""
     conv = conversation_or_404(s, cid, user)
     jobs = s.store.list_jobs(cid)
-    active = [j for j in jobs if j["status"] in ("queued", "running")]
+    active = [j for j in jobs if j["status"] in ("queued", "running", "waiting_input")]
+    for j in active:
+        sb = s.store.get_sandbox(j["sandbox_id"]) if j.get("sandbox_id") else None
+        if sb and sb["status"] == "running":
+            j["live_url"] = sb["live_url"]
     return {
         **conv,
         "messages": s.store.list_messages(cid),
@@ -46,6 +50,7 @@ def send_message(
     content: str,
     attachment_ids: list[str],
     job_kind: str = DEFAULT_JOB,
+    job_input: dict[str, Any] | None = None,
     source: str = "api",
     connection_id: str | None = None,
 ) -> dict[str, Any]:
@@ -72,8 +77,21 @@ def send_message(
         s.bus.publish("conversation.updated", {"conversation": conv}, conversation_id=cid)
     try:
         job = s.jobs.submit(
-            job_kind, {"text": content, "attachments": attachments}, cid, connection_id
+            job_kind,
+            {"text": content, "attachments": attachments, "job_input": job_input or {}},
+            cid,
+            connection_id,
         )
     except KeyError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"conversation": conv, "message": message, "job": job}
+
+
+def answer_job(s: Any, job_id: str, input_id: str, value: str) -> dict[str, Any]:
+    try:
+        s.jobs.answer(job_id, input_id, value)
+    except LookupError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"answered": True, "job_id": job_id, "input_id": input_id}

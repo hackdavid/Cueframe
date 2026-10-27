@@ -1,7 +1,7 @@
 (function () {
   const $ = (sel) => document.querySelector(sel);
   const esc = Markdown.esc;
-  const ACTIVE = new Set(["queued", "running"]);
+  const ACTIVE = new Set(["queued", "running", "waiting_input"]);
   const DONE = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
   const PHASES = ["research", "plan", "execute", "stitch", "done"];
 
@@ -171,6 +171,11 @@
       .map((j) => {
         const pct = Math.round((j.progress || 0) * 100);
         const label = j.status === "queued" ? "Queued — waiting for a free worker" : j.label || "Working";
+        const ask = j.status === "waiting_input" && j.pending_input;
+        if (ask) {
+          const btns = ask.options.map((o) => `<button data-answer="${esc(j.id)}" data-input="${esc(ask.input_id)}" data-value="${esc(o)}" class="rounded-lg border border-sky-400/40 bg-sky-500/10 px-3 py-1.5 text-xs text-sky-200 hover:bg-sky-500/25">${esc(o)}</button>`).join("");
+          return `<div class="rounded-xl border border-sky-400/30 bg-sky-500/5 p-3"><p class="text-sm">${esc(ask.question)}</p><div class="mt-2 flex flex-wrap gap-2">${btns}</div></div>`;
+        }
         return `<div class="flex gap-3">
           <div class="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-fuchsia-500 to-sky-500 text-xs font-bold">S</div>
           <div class="min-w-0 flex-1">
@@ -202,6 +207,7 @@
   const STATUS_STYLE = {
     queued: "bg-zinc-700 text-zinc-200",
     running: "bg-sky-500/20 text-sky-300",
+    waiting_input: "bg-amber-500/20 text-amber-300",
     succeeded: "bg-emerald-500/20 text-emerald-300",
     failed: "bg-red-500/20 text-red-300",
     cancelled: "bg-amber-500/20 text-amber-300",
@@ -216,6 +222,7 @@
     badge.classList.toggle("hidden", !activeCount);
     if (!jobs.length) {
       $("#run-list").innerHTML = `<p class="px-1 text-xs text-zinc-500">Background jobs for this chat show up here.</p>`;
+      renderLive();
       return;
     }
     $("#run-list").innerHTML = jobs
@@ -238,6 +245,26 @@
         </div>`;
       })
       .join("");
+    renderLive();
+  }
+
+  $("#thread").addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-answer]");
+    if (!btn) return;
+    btn.parentElement.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    await api(`/api/jobs/${btn.dataset.answer}/answer`, { method: "POST", body: { input_id: btn.dataset.input, value: btn.dataset.value } });
+  });
+
+  // The live desktop lives outside #run-list so the 1 s run-panel refresh never reloads it.
+  function renderLive() {
+    const box = $("#live-view");
+    const j = [...state.jobs.values()].find((x) => x.live_url && ACTIVE.has(x.status));
+    const src = j ? j.live_url : "";
+    if (box.dataset.src === src) return;
+    box.dataset.src = src;
+    box.innerHTML = src
+      ? `<p class="mb-1 text-[11px] text-zinc-400">Live sandbox (view-only)</p><iframe src="${esc(src)}" title="Live sandbox" class="aspect-video w-full rounded-lg border border-white/10 bg-black"></iframe><a href="${esc(src)}" target="_blank" rel="noopener" class="mt-1 block text-[10px] text-sky-400">Open live view</a>`
+      : "";
   }
 
   $("#run-list").addEventListener("click", async (e) => {
@@ -327,6 +354,16 @@
         if (c) c.title = p.conversation.title;
         if (isCurrent) $("#chat-title").textContent = p.conversation.title;
         renderSidebar();
+        return;
+      }
+      case "sandbox.started":
+      case "sandbox.output": {
+        const j = state.jobs.get(p.job_id);
+        if (!j) return;
+        if (p.live_url) j.live_url = p.live_url;
+        if (p.line) j.label = p.line;
+        renderWorking();
+        renderRuns();
         return;
       }
       case "job.progress":

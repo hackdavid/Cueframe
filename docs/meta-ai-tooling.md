@@ -23,17 +23,28 @@ Those are exactly the tool types Meta documents, so it should work unchanged:
 
 ```python
 from openai import AsyncOpenAI
-from agents import (Agent, Runner, WebSearchTool, function_tool,
-                    set_default_openai_client, set_default_openai_api, set_tracing_disabled)
+from agents import (
+    Agent,
+    Runner,
+    WebSearchTool,
+    function_tool,
+    set_default_openai_client,
+    set_default_openai_api,
+    set_tracing_disabled,
+)
 
-set_default_openai_client(AsyncOpenAI(base_url="https://api.meta.ai/v1", api_key=MODEL_API_KEY),
-                          use_for_tracing=False)
+set_default_openai_client(
+    AsyncOpenAI(base_url="https://api.meta.ai/v1", api_key=MODEL_API_KEY), use_for_tracing=False
+)
 set_default_openai_api("responses")
-set_tracing_disabled(True)          # traces would otherwise be uploaded to OpenAI
+set_tracing_disabled(True)  # traces would otherwise be uploaded to OpenAI
 
-agent = Agent(name="Researcher", model="muse-spark-1.3",
-              instructions="Find the official docs for the app the user names; cite them.",
-              tools=[WebSearchTool()])
+agent = Agent(
+    name="Researcher",
+    model="muse-spark-1.3",
+    instructions="Find the official docs for the app the user names; cite them.",
+    tools=[WebSearchTool()],
+)
 print((await Runner.run(agent, "How do I export a vertical video in Shotcut?")).final_output)
 ```
 

@@ -63,11 +63,26 @@ CREATE TABLE IF NOT EXISTS jobs (
     error TEXT,
     connection_id TEXT,
     sandbox_id TEXT,
+    pending_input TEXT,
     created_at TEXT NOT NULL,
     started_at TEXT,
     finished_at TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_jobs_conv ON jobs(conversation_id, created_at);
+CREATE TABLE IF NOT EXISTS sandboxes (
+    id TEXT PRIMARY KEY,
+    job_id TEXT,
+    conversation_id TEXT,
+    provider TEXT NOT NULL,
+    provider_id TEXT,
+    status TEXT NOT NULL,
+    live_url TEXT,
+    reason TEXT,
+    seconds REAL,
+    est_cost_usd REAL,
+    created_at TEXT NOT NULL,
+    terminated_at TEXT
+);
 CREATE TABLE IF NOT EXISTS connections (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -90,7 +105,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
-ACTIVE_JOB_STATUSES = ("queued", "running")
+ACTIVE_JOB_STATUSES = ("queued", "running", "waiting_input")
 
 
 def now() -> str:
@@ -109,6 +124,9 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(jobs)")}
+        if "pending_input" not in cols:
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN pending_input TEXT")
         self._lock = threading.Lock()
 
     def close(self) -> None:
@@ -130,6 +148,35 @@ class Store:
         cols = ", ".join(row)
         marks = ", ".join(f":{k}" for k in row)
         self._exec(f"INSERT INTO {table} ({cols}) VALUES ({marks})", row)
+
+    # sandboxes
+    def create_sandbox(self, job_id: str | None, cid: str | None, provider: str) -> dict[str, Any]:
+        sid = new_id("sb")
+        self._insert(
+            "sandboxes",
+            {"id": sid, "job_id": job_id, "conversation_id": cid, "provider": provider,
+             "status": "starting", "created_at": now()},
+        )  # fmt: skip
+        return self.get_sandbox(sid)  # type: ignore[return-value]
+
+    def get_sandbox(self, sid: str) -> dict[str, Any] | None:
+        return self._one("SELECT * FROM sandboxes WHERE id = ?", (sid,))
+
+    def update_sandbox(self, sid: str, **fields: Any) -> dict[str, Any]:
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self._exec(f"UPDATE sandboxes SET {cols} WHERE id = ?", (*fields.values(), sid))
+        return self.get_sandbox(sid)  # type: ignore[return-value]
+
+    def list_sandboxes(self, active_only: bool = False, user_id: str | None = None) -> list[dict]:
+        sql = "SELECT s.* FROM sandboxes s LEFT JOIN conversations c ON c.id = s.conversation_id"
+        sql += " WHERE 1=1"
+        args: list[Any] = []
+        if active_only:
+            sql += " AND s.status IN ('starting', 'running')"
+        if user_id:
+            sql += " AND c.user_id = ?"
+            args.append(user_id)
+        return self._all(sql + " ORDER BY s.created_at DESC", tuple(args))
 
     # users and auth sessions
     def upsert_user(self, username: str, password_hash: str) -> dict[str, Any]:
@@ -189,7 +236,7 @@ class Store:
     def list_conversations(self, user_id: str) -> list[dict[str, Any]]:
         return self._all(
             """SELECT c.*, (SELECT COUNT(*) FROM jobs j WHERE j.conversation_id = c.id
-                   AND j.status IN ('queued', 'running')) AS active_jobs
+                   AND j.status IN ('queued', 'running', 'waiting_input')) AS active_jobs
                FROM conversations c WHERE c.user_id = ? ORDER BY updated_at DESC""",
             (user_id,),
         )
@@ -268,7 +315,9 @@ class Store:
         return self.get_job(jid)  # type: ignore[return-value]
 
     def get_job(self, jid: str) -> dict[str, Any] | None:
-        return _decode(self._one("SELECT * FROM jobs WHERE id = ?", (jid,)), "input", "result")
+        return _decode(
+            self._one("SELECT * FROM jobs WHERE id = ?", (jid,)), "input", "result", "pending_input"
+        )
 
     def list_jobs(
         self,
@@ -285,19 +334,22 @@ class Store:
             sql += " AND c.user_id = ?"
             args.append(user_id)
         if active_only:
-            sql += " AND j.status IN ('queued', 'running')"
+            sql += " AND j.status IN ('queued', 'running', 'waiting_input')"
         rows = self._all(sql + " ORDER BY j.created_at DESC", tuple(args))
-        return [_decode(r, "input", "result") for r in rows]  # type: ignore[misc]
+        return [_decode(r, "input", "result", "pending_input") for r in rows]  # type: ignore[misc]
 
     def update_job(self, jid: str, **fields: Any) -> dict[str, Any]:
-        if "result" in fields:
-            fields["result"] = json.dumps(fields["result"])
+        for col in ("result", "pending_input"):
+            if col in fields and fields[col] is not None:
+                fields[col] = json.dumps(fields[col])
         cols = ", ".join(f"{k} = ?" for k in fields)
         self._exec(f"UPDATE jobs SET {cols} WHERE id = ?", (*fields.values(), jid))
         return self.get_job(jid)  # type: ignore[return-value]
 
     def interrupt_stale_jobs(self) -> list[dict[str, Any]]:
-        stale = self._all("SELECT id FROM jobs WHERE status IN ('queued', 'running')")
+        stale = self._all(
+            "SELECT id FROM jobs WHERE status IN ('queued', 'running', 'waiting_input')"
+        )
         for row in stale:
             self.update_job(
                 row["id"], status="interrupted", error="Server restarted", finished_at=now()
