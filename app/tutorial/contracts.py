@@ -80,6 +80,7 @@ class Tutorial(BaseModel):
     music_url: str | None = None
     steps: list[str] = []  # step labels, for the progress bar
     software: str = ""  # title-card chip
+    kicker: str = ""  # title-card label above the title
     teaser: str = ""  # command typed on the title card
     done: str = "You did it"  # outro headline
     recap: list[str] = []  # outro checklist

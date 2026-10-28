@@ -1,6 +1,57 @@
-"""Sample tutorials shown on the public site: real Cueframe runs, stored in R2 under `samples/`."""
+"""Sample videos on the public site: real Cueframe runs (newest first), in R2 under `samples/`."""
 
 SAMPLES = [
+    {
+        "slug": "trending-repo-thinkrail",
+        "title": "Influencer video: today's #1 trending GitHub repo",
+        "site": "github.com · influencer mode",
+        "request": "Make an influencer video about the top trending GitHub repo today",
+        "steps": [
+            "Open trending repo",
+            "See what you get",
+            "Check install section",
+            "See under the hood",
+            "Open official site",
+        ],
+        "length": "0:57",
+        "made_in": "4.8 min",
+        "fixes": 0,
+    },
+    {
+        "slug": "trending-paper-trinity",
+        "title": "Influencer video: today's #1 AI paper on Hugging Face",
+        "site": "huggingface.co · influencer mode",
+        "request": "Make an influencer video about today's top trending AI paper",
+        "steps": [
+            "Open top paper",
+            "Read the abstract",
+            "Open code repo",
+            "Open project page",
+            "See the results",
+        ],
+        "length": "0:48",
+        "made_in": "6.5 min",
+        "fixes": 1,
+    },
+    {
+        "slug": "text-classifier-sklearn",
+        "title": "Train a small text classifier with scikit-learn",
+        "site": "Linux terminal · tutorial mode",
+        "request": (
+            "Make a tutorial: how to train a small text classifier in Python with scikit-learn"
+            " in the terminal, then test it on a new sentence"
+        ),
+        "steps": [
+            "Install scikit-learn",
+            "Verify install",
+            "Create training script",
+            "Show the code",
+            "Train and predict",
+        ],
+        "length": "1:00",
+        "made_in": "5.7 min",
+        "fixes": 0,
+    },
     {
         "slug": "python-docs-asyncio",
         "title": "Search the Python docs for asyncio",

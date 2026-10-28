@@ -229,6 +229,7 @@ def build(
         music_url=f"{base}/audio/sfx_music.mp3",
         steps=[s["label"] for s in shown],
         software=spec.get("software", ""),
+        kicker=spec.get("kicker", ""),
         teaser=teaser(spec["steps"]),
         done=spec.get("done") or "You did it",
         recap=spec.get("recap") or [s["label"] for s in shown][:4],

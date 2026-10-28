@@ -22,7 +22,7 @@ def _wait(c, jid, statuses, timeout=8.0):
 def _fakes(monkeypatch):
     spoken, rendered = [], []
 
-    async def speak(text, voice_id=None, seed=None):
+    async def speak(text, voice_id=None, seed=None, lively=False):
         spoken.append(text)
         return b"mp3", [
             Word(text=w, t=i * 0.1, end=i * 0.1 + 0.08) for i, w in enumerate(text.split())

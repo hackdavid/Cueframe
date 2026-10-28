@@ -210,8 +210,10 @@ def test_sample_videos_page_is_public(anon):
     page = anon.get("/samples")
     assert page.status_code == 200 and "/samples/media/python-docs-asyncio.mp4" in page.text
     assert anon.get("/samples/excalidraw-rectangle").status_code == 200
+    assert "/samples/media/trending-repo-thinkrail.mp4" in page.text
+    assert anon.get("/samples/text-classifier-sklearn").status_code == 200
     assert anon.get("/samples/nope").status_code == 404
-    assert "/samples/mdn-fetch-api" in anon.get("/").text
+    assert "/samples/trending-paper-trinity" in anon.get("/").text
 
 
 def test_sample_media_redirects_to_signed_r2_link(anon, monkeypatch):
