@@ -33,15 +33,19 @@ def words_from_alignment(al: dict[str, Any]) -> list[Word]:
     return words
 
 
+TUTOR = {"stability": 0.5, "similarity_boost": 0.8, "style": 0.3}
+LIVELY = {"stability": 0.35, "similarity_boost": 0.8, "style": 0.6, "speed": 1.08}
+
+
 async def speak(
-    text: str, voice_id: str | None = None, seed: int | None = None
+    text: str, voice_id: str | None = None, seed: int | None = None, lively: bool = False
 ) -> tuple[bytes, list[Word]]:
-    """MP3 bytes plus per-word timings."""
+    """MP3 bytes plus per-word timings; `lively` is the energetic influencer delivery."""
     vid = voice_id or os.environ["ELEVENLABS_VOICE_ID"]
     body: dict[str, Any] = {
         "text": text,
         "model_id": "eleven_multilingual_v2",
-        "voice_settings": {"stability": 0.5, "similarity_boost": 0.8, "style": 0.3},
+        "voice_settings": LIVELY if lively else TUTOR,
     }
     if seed is not None:
         body["seed"] = seed

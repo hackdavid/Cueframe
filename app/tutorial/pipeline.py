@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.agents.trending import brief_text
 from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
 from app.sandbox.contracts import Action, live_path
@@ -104,15 +105,21 @@ async def ensure_sfx(ctx: JobContext, audio: Path) -> None:
             (audio / name).write_bytes(cached.read_bytes())
 
 
+def _lively(spec: dict[str, Any]) -> bool:
+    return spec.get("mode") == "influencer"
+
+
 async def voice_lines(
     ctx: JobContext,
     tid: str,
     lines: dict[str, str],
     voice: dict[str, Any],
     heal: Healer | None = None,
+    lively: bool = False,
 ) -> list[str]:
-    """Synthesize every line whose text changed; returns the keys that were re-voiced."""
-    vid = os.environ.get("ELEVENLABS_VOICE_ID", "")
+    """Synthesize every line whose text changed; returns the keys that were re-voiced.
+    `lively` is the more energetic delivery of influencer videos."""
+    vid = os.environ.get("ELEVENLABS_VOICE_ID", "") + ("|lively" if lively else "")
     todo = [k for k, text in lines.items() if voice.get(k, {}).get("text") != text]
     sem = asyncio.Semaphore(3)
     audio = _audio(ctx, tid)
@@ -122,7 +129,9 @@ async def voice_lines(
         text = lines[key]
         h = hashlib.sha256(f"{vid}|{text}".encode()).hexdigest()[:10]
         async with sem:
-            mp3, words = await heal.retry(lambda: speak(text), f"ElevenLabs narration {key!r}")
+            mp3, words = await heal.retry(
+                lambda: speak(text, lively=lively), f"ElevenLabs narration {key!r}"
+            )
         if not words:
             raise RuntimeError(f"ElevenLabs returned no word timings for {key!r}")
         name = f"{key}-{h}.mp3"
@@ -260,7 +269,7 @@ async def record(
             return cap
         heal(f"Step **{step['label']}** failed while recording ({why}); rewrote it as "
              f"{planner.fixed(spec, bad, n)} and recorded again")  # fmt: skip
-        await voice_lines(ctx, tid, spec["lines"], voice, heal)
+        await voice_lines(ctx, tid, spec["lines"], voice, heal, lively=_lively(spec))
         ctx.store.update_tutorial(tid, spec=spec, voice=voice)
     raise AssertionError("unreachable")
 
@@ -381,9 +390,14 @@ async def publish(
 
 
 async def make(
-    ctx: JobContext, recipe_id: str | None = None, goal: str | None = None
+    ctx: JobContext,
+    recipe_id: str | None = None,
+    goal: str | None = None,
+    mode: planner.Mode = "tutorial",
+    trending: bool = False,
 ) -> dict[str, Any]:
-    """Make a tutorial from a hand-written recipe, or plan one for `goal`."""
+    """Make a tutorial from a hand-written recipe, or plan one for `goal`. `mode` is
+    the narration style (tutorial or influencer); `trending` first finds today's item."""
     missing = [k for k in ("ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID") if not os.environ.get(k)]
     if missing:
         raise RuntimeError(f"Tutorial narration needs {', '.join(missing)} on the server")
@@ -395,12 +409,25 @@ async def make(
     else:
         files = planner.attached(ctx)
         goal = planner.with_files(goal or ctx.input.get("text", ""), files)
-        planned = await planner.plan(ctx, goal)
+        brief = ""
+        if trending:
+            found = await planner.scout(ctx, goal)
+            if isinstance(found, str):
+                ctx.reply(f"I couldn't find a trending item to make a video about: {found}")
+                return {"routed": "make_tutorial", "planned": False, "reason": found}
+            brief = brief_text(found)
+            kicker = f"TRENDING · {found.source.upper()}"[:44]
+            ctx.reply(f"**Trending pick: {found.name}** ({found.source}, {found.why_trending})"
+                      f"\n\n{found.one_liner}\n\n{found.url}")  # fmt: skip
+        planned = await planner.plan(ctx, goal, mode=mode, brief=brief)
         if isinstance(planned, str):
             ctx.reply(f"I can't make that tutorial: {planned}")
             return {"routed": "make_tutorial", "planned": False, "reason": planned}
         spec, recipe_id = planned, "planned"
         spec["files"] = files
+        spec["brief"] = brief
+        if brief:
+            spec["kicker"] = kicker
         ctx.reply(
             f"**{spec['title']}**: here's the plan. I'll record a rehearsal of it; if every "
             "step works first time that's the video, otherwise I fix the steps and record "
@@ -446,7 +473,7 @@ async def first_take(
     heal.save = lambda: ctx.store.update_tutorial(tid, spec=spec)
     voice: dict[str, Any] = {}
     ctx.phase("voice", "Recording the narration")
-    await voice_lines(ctx, tid, spec["lines"], voice, heal)
+    await voice_lines(ctx, tid, spec["lines"], voice, heal, lively=_lively(spec))
     ctx.store.update_tutorial(tid, status="capturing", voice=voice)
     ctx.phase("rehearse", "Rehearsing every step, recorded; the take is kept if all pass")
     try:
@@ -508,11 +535,14 @@ async def replanned(
     """Plan again once around a rehearsal failure (asking about any new install) and
     rehearse the new plan."""
     heal(f"The first plan couldn't work here ({why}); planned the tutorial again around it")
-    again = await planner.plan(ctx, spec["goal"], avoid=why)
+    again = await planner.plan(ctx, spec["goal"], avoid=why, mode=spec.get("mode", "tutorial"),
+                               brief=spec.get("brief", ""))  # fmt: skip
     if isinstance(again, str):
         raise JobFailed(f"The rehearsal failed, so nothing was recorded: {why}. {again}",
                         {"rehearsal": why})  # fmt: skip
     again["files"] = spec.get("files") or []
+    again["brief"] = spec.get("brief", "")
+    again["kicker"] = spec.get("kicker") or again.get("kicker", "")
     ctx.reply(
         f"The first plan didn't work in the sandbox ({why}), so I planned it again. "
         f"**{again['title']}**:\n\n{planner.describe_plan(again)}"
@@ -536,7 +566,7 @@ async def produce(ctx: JobContext, row: dict[str, Any], heal: Healer) -> dict[st
     if not row.get("capture"):
         ctx.phase("voice", "Recording the narration")
         ctx.progress(0.05)
-        await voice_lines(ctx, tid, spec["lines"], voice, heal)
+        await voice_lines(ctx, tid, spec["lines"], voice, heal, lively=_lively(spec))
         ctx.store.update_tutorial(tid, status="capturing", voice=voice)
         cap = await record(ctx, tid, spec, voice, hidden, heal)
         row = ctx.store.update_tutorial(
@@ -678,7 +708,9 @@ async def edit(
     before = json.dumps(row["spec"], sort_keys=True)
     states = apply(row, edits)
     ctx.phase("voice", "Re-recording changed narration")
-    revoiced = await voice_lines(ctx, tid, row["spec"]["lines"], row["voice"])
+    revoiced = await voice_lines(
+        ctx, tid, row["spec"]["lines"], row["voice"], lively=_lively(row["spec"])
+    )
     if edits and json.dumps(row["spec"], sort_keys=True) == before:
         ctx.reply("That request didn't change anything in the tutorial, so I kept the current "
                   "version. Try naming the step and what to change, e.g. *\"shorten the intro "

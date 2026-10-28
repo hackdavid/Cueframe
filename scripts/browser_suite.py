@@ -57,16 +57,18 @@ def main() -> None:
     ap.add_argument("--user", default="admin")
     ap.add_argument("--password", default="cueframe")
     ap.add_argument("--only", default="", help="1-based task numbers, e.g. 1,3")
+    ap.add_argument("--task", action="append", default=[], help="chat request(s) to run instead")
     ap.add_argument("--limit", type=float, default=1800, help="seconds per task")
     a = ap.parse_args()
     c = httpx.Client(base_url=a.base, timeout=60)
     tok = c.post("/api/auth/login", json={"username": a.user, "password": a.password})
     c.headers["Authorization"] = f"Bearer {tok.json()['token']}"
     cid = c.post("/api/conversations", json={"title": "Browser suite"}).json()["id"]
-    pick = [int(x) - 1 for x in a.only.split(",") if x.strip()] or range(len(TASKS))
+    tasks = a.task or TASKS
+    pick = [int(x) - 1 for x in a.only.split(",") if x.strip()] or range(len(tasks))
     out = []
     for k in pick:
-        r = run(c, cid, TASKS[k], a.limit)
+        r = run(c, cid, tasks[k], a.limit)
         out.append(r)
         print(json.dumps(r), flush=True)
     ok = sum(r["status"] == "succeeded" for r in out)

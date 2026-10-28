@@ -29,6 +29,7 @@ export type Tutorial = {
   music_url: string | null;
   steps: string[];
   software: string;
+  kicker?: string;
   teaser: string;
   done: string;
   recap: string[];

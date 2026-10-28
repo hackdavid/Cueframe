@@ -14,8 +14,11 @@ from app.tutorial import pipeline, recipes
 
 @job_handler("tutorial.make")
 async def tutorial_make(ctx: JobContext) -> dict[str, Any]:
-    rid = (ctx.input.get("job_input") or {}).get("recipe") or recipes.match(ctx.input["text"])
-    return await pipeline.make(ctx, rid, goal=ctx.input["text"])
+    ji = ctx.input.get("job_input") or {}
+    rid = ji.get("recipe") or recipes.match(ctx.input["text"])
+    mode = "influencer" if ji.get("mode") == "influencer" else "tutorial"
+    return await pipeline.make(ctx, rid, goal=ctx.input["text"], mode=mode,
+                               trending=bool(ji.get("trending")))  # fmt: skip
 
 
 @job_handler("tutorial.edit")
@@ -47,13 +50,19 @@ def resume_interrupted(jobs: JobManager, interrupted: list[dict[str, Any]]) -> l
 class Route(BaseModel):
     intent: Literal["make_tutorial", "edit_tutorial", "chat"]
     recipe: str | None = None
+    mode: Literal["tutorial", "influencer"] = "tutorial"
+    trending: bool = False
 
 
 ROUTER = """You route messages in Cueframe, an app that makes narrated video tutorials
 from real runs in a Linux desktop sandbox. Pick:
 - make_tutorial: the user wants a (new) tutorial/video/walkthrough of a task. Set
   `recipe` to the id of the matching recipe below, or null if none fits (a new
-  tutorial is then planned automatically).
+  tutorial is then planned automatically). Set `mode`: "influencer" when the user wants
+  an engaging influencer/creator/social-style explainer (e.g. about a trending repo,
+  paper or launch), else "tutorial" (a how-to lesson). Set `trending` true only when the
+  user wants a video about whatever is trending/latest/hot now (a repo, paper, model or
+  news item) rather than naming the exact thing.
 - edit_tutorial: the user wants to change the tutorial already in this conversation
   (narration, wording, zoom, highlights, title, re-render).
 - chat: anything else (questions, docs lookups, small talk).
@@ -97,7 +106,9 @@ async def assistant_reply(ctx: JobContext) -> dict[str, Any] | None:
     ctx.thinking("Router", "Reading your message")
     r = await route(ctx, bool(tuts))
     if r.intent == "make_tutorial":
-        return await pipeline.make(ctx, r.recipe, goal=ctx.input.get("text"))
+        return await pipeline.make(ctx, None if r.trending else r.recipe,
+                                   goal=ctx.input.get("text"), mode=r.mode,
+                                   trending=r.trending)  # fmt: skip
     if r.intent == "edit_tutorial" and tuts:
         return await pipeline.edit(ctx, tuts[0]["id"], instruction=ctx.input.get("text"))
     if ctx.llm is not None and ctx.llm.configured:

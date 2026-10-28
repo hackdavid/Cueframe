@@ -297,7 +297,7 @@ const TitleCard: React.FC<{ t: Tutorial }> = ({ t }) => {
     <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 34 }}>
       <div style={{ display: "flex", gap: 12, opacity: spring({ frame: f - 4, fps }) }}>
         <div style={{ padding: "8px 18px", borderRadius: 999, border: `1px solid ${ACCENT}`, color: "#c4b5fd", fontSize: 22, fontWeight: 600, letterSpacing: 3 }}>
-          TUTORIAL · UNDER 2 MINUTES
+          {t.kicker || "TUTORIAL · UNDER 2 MINUTES"}
         </div>
       </div>
       <div style={{ display: "flex", gap: 26, flexWrap: "wrap", justifyContent: "center", maxWidth: 1500 }}>

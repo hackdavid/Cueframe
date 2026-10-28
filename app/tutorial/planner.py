@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.contracts import ResearchRequest
 from app.agents.docs_research import DocsResearchAgent
+from app.agents.trending import TrendBrief, TrendingAgent
 from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
 from app.sandbox.base import ANSI, FOCUS, Sandbox, menu_path
@@ -31,6 +32,8 @@ REVIEW_TIMEOUT = 150
 REPAIR_TIMEOUT = 90  # s per model call; a stalled call is retried sooner
 SANDBOX_TRIES = 2  # a sandbox that breaks mid-run is replaced this many times - 1
 MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
+REEL_WORDS = (80, 135)  # influencer mode: the whole video stays under a minute
+Mode = Literal["tutorial", "influencer"]
 
 
 class PlannedStep(BaseModel):
@@ -136,7 +139,11 @@ terminal, a Chromium browser, and Debian desktop apps you install with apt-get a
 with a launch step (GTK3 apps work best, e.g. mousepad, galculator, thunar,
 gnumeric, because their buttons and fields are found through the accessibility tree).
 Every app fills the screen and only one is shown at a time. The working directory is
-/work. Package manager: apt-get (index is already updated). Python 3 is installed.
+/work. Package manager: apt-get (index is already updated). Python 3 is installed, pip is
+not: install Python libraries as Debian packages (e.g. `apt-get install -y python3-sklearn`,
+installs=true). To show a short program, write it with ONE `printf '%s\n' 'line 1' 'line 2'
+> /work/name.py` command (each code line one quoted argument, no tabs), then `cat -n` it and
+run it with `python3`; keep it under 12 lines.
 Files the user attached to the request are already in /work under their own names.
 Browser downloads are saved to /root/Downloads without asking. A browser file-open dialog
 (GTK) accepts a typed full path: a type step with target '' and enter=true, e.g. text
@@ -208,6 +215,25 @@ Never claim results the steps don't produce. If the task needs Windows/macOS, an
 isn't packaged for Debian, hardware, paid accounts or credentials, set feasible=false
 and explain."""
 
+INFLUENCER = f"""{RULES}
+
+STYLE: influencer explainer, not a lesson. Same real steps and checks, but the video is
+made to be watched to the end on social media, and the WHOLE video stays under 60 seconds:
+- intro: a one-sentence scroll-stopping hook with a concrete, surprising fact or number
+  from the brief (e.g. 'Two thousand developers starred this in one day. Here's why.').
+- 4-6 browser steps that SHOW the thing: open its page, scroll to the headings or words
+  that prove each point (use the brief's visible headings as scroll targets, exactly as
+  written), open its paper, code or demo page. No installs or terminal steps unless the
+  request asks to run it.
+- narration: ONE punchy, conversational sentence per step (8-16 words), speaking to the
+  viewer ('you'), with energy and no filler; leave `after` empty. Total spoken words
+  (intro + steps + outro) {REEL_WORDS[0]}-{REEL_WORDS[1]}.
+- outro: the takeaway in one sentence plus a call to action ('Star it and follow for more').
+- title: a hook of max 50 characters; subtitle: where and when it is trending, e.g.
+  'Trending on GitHub today'; badges are short reactions ('Wow, 98% accuracy').
+- Use ONLY facts and numbers from the brief or the page itself, never from memory, and
+  say numbers the way the brief gives them with their date or source."""
+
 FIX = f"""A step of a tutorial plan failed when rehearsed for real. Rewrite just that
 step so it works, keeping its id and purpose (you may change the command, url, expect
 text, target and narration). Base the fix on the real output: when an element wasn't
@@ -263,7 +289,7 @@ BLOCKED = re.compile(
 )
 
 
-def problems(plan: TutorialPlan) -> list[str]:
+def problems(plan: TutorialPlan, mode: Mode = "tutorial") -> list[str]:
     out = []
     if not 2 <= len(plan.steps) <= MAX_STEPS:
         out.append(f"use 3-{MAX_STEPS} steps, not {len(plan.steps)}")
@@ -309,7 +335,12 @@ def problems(plan: TutorialPlan) -> list[str]:
         if not s.narration.strip():
             out.append(f"step {s.id}: narration is empty")
     spoken = " ".join([plan.intro, plan.outro, *(f"{s.narration} {s.after}" for s in plan.steps)])
-    if len(plan.steps) >= 2 and len(spoken.split()) < MIN_WORDS:
+    n = len(spoken.split())
+    if mode == "influencer":
+        if not REEL_WORDS[0] <= n <= REEL_WORDS[1]:
+            out.append(f"narration is {n} words; influencer videos need {REEL_WORDS[0]}-"
+                       f"{REEL_WORDS[1]} in total so the video stays under a minute")  # fmt: skip
+    elif len(plan.steps) >= 2 and n < MIN_WORDS:
         out.append(
             f"narration is {len(spoken.split())} words; write at least {MIN_WORDS} in total "
             "(intro, outro and 2 sentences per step) so the video runs about a minute"
@@ -359,7 +390,7 @@ def zoom_for(command: str, best: float = 1.8) -> float:
     return 1.0 if need > COLS else round(max(1.0, min(best, COLS / need)), 2)
 
 
-def to_spec(plan: TutorialPlan, goal: str) -> dict[str, Any]:
+def to_spec(plan: TutorialPlan, goal: str, mode: Mode = "tutorial") -> dict[str, Any]:
     """The plan in the recipe format `capture`/`build`/`edit` already use."""
     say = {x.spoken.strip().lower(): x.written.strip() for x in plan.say if x.spoken and x.written}
     steps, lines = [], {"intro": plan.intro.strip(), "outro": plan.outro.strip()}
@@ -381,6 +412,8 @@ def to_spec(plan: TutorialPlan, goal: str) -> dict[str, Any]:
     return {
         "id": "planned",
         "goal": goal,
+        "mode": mode,
+        "kicker": "TRENDING · EXPLAINED IN 60 SECONDS" if mode == "influencer" else "",
         "title": written(plan.title, say),
         "subtitle": written(plan.subtitle, say),
         "summary": plan.summary.strip(),
@@ -434,14 +467,37 @@ async def research(ctx: JobContext, goal: str) -> str:
     return f"Reference steps ({res.source}, confidence {res.confidence:.2f}, {src}):\n{steps}"
 
 
-async def plan(ctx: JobContext, goal: str, avoid: str = "") -> dict[str, Any] | str:
+async def scout(ctx: JobContext, goal: str) -> TrendBrief | str:
+    """Find today's trending item for `goal` with the trending agent's source tools."""
+    if ctx.llm is None or not ctx.llm.configured:
+        return "Finding trending items needs MODEL_API_KEY on the server."
+    ctx.phase("research", "Finding what's trending today")
+    agent = TrendingAgent(ctx.llm, ctx.settings.research_model)
+    try:
+        brief, trace = await agent.run(goal[:2000], lambda m: ctx.thinking("Trending", m))
+    except Exception as exc:
+        return f"the trending sources couldn't be read ({short(str(exc))})"
+    if not brief.found or not brief.url.startswith("https://"):
+        return brief.reason or "no trending item fit the request"
+    ctx.thinking("Trending", f"Picked {brief.name} ({brief.source}: {brief.why_trending}) "
+                 f"after {len(trace)} tool calls")  # fmt: skip
+    return brief
+
+
+async def plan(
+    ctx: JobContext, goal: str, avoid: str = "", mode: Mode = "tutorial", brief: str = ""
+) -> dict[str, Any] | str:
     """A validated spec, or a str explaining why the task can't be shown. `avoid` is
-    a failure from a previous plan's rehearsal; the new plan must work around it."""
+    a failure from a previous plan's rehearsal; the new plan must work around it. A
+    trending `brief` replaces docs research; `mode` picks tutorial or influencer style."""
     if ctx.llm is None or not ctx.llm.configured:
         return "Planning a new tutorial needs MODEL_API_KEY on the server."
-    ctx.phase("research", "Reading the official docs")
-    ref = await research(ctx, goal)
-    ctx.phase("plan", "Planning the tutorial steps")
+    if brief:
+        ref = brief
+    else:
+        ctx.phase("research", "Reading the official docs")
+        ref = await research(ctx, goal)
+    ctx.phase("plan", "Planning the video" if mode == "influencer" else "Planning the steps")
     prompt = f"Task: {goal}\n\n{ref}".strip()
     if avoid:
         prompt += (f"\n\nA previous plan for this task failed when run for real: {avoid}. "
@@ -449,15 +505,15 @@ async def plan(ctx: JobContext, goal: str, avoid: str = "") -> dict[str, Any] | 
     for _ in range(3):
         p, _res = await ctx.llm.parse(
             TutorialPlan, purpose="tutorial.plan", model=ctx.settings.research_model,
-            instructions=RULES, input=prompt,
+            instructions=INFLUENCER if mode == "influencer" else RULES, input=prompt,
             reasoning_effort=ctx.settings.plan_reasoning or None,
         )  # fmt: skip
         if not p.feasible:
             return p.reason or "That task can't be shown in a Linux terminal and browser."
-        issues = problems(p)
+        issues = problems(p, mode)
         ctx.thinking("Plan", "; ".join(issues) or f"{len(p.steps)} steps: {p.title}")
         if not issues:
-            return to_spec(p, goal)
+            return to_spec(p, goal, mode)
         prompt += f"\n\nYour previous plan had problems, fix them: {'; '.join(issues)}"
     return f"I couldn't produce a safe, runnable plan ({'; '.join(issues)})."
 
