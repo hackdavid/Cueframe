@@ -62,6 +62,9 @@ def test_files_are_read_as_the_source(tmp_path):
     assert "photo.jpg" not in out and files[-1]["name"] == "paper-text.html"
     page = (tmp_path / "paper-text.html").read_text()
     assert "<h2>Page 1</h2>" in page and "40 percent" in page
+    assert sources._prose("Recur-\nrence is\ngone.\n\nNext") == "Recurrence is gone.\n\nNext"
+    assert sources._prose("English-\nto-German") == "English-to-German"
+    assert sources._spans("One. Two!") == "<span>One.</span> <span>Two!</span>"
     assert asyncio.run(sources.brief(Ctx(), "Make a reel about caching", [])) == ""
 
 

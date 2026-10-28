@@ -35,6 +35,28 @@ def _clip(text: str) -> str:
     return text if len(text) <= CHARS else text[:CHARS] + "\n[... cut]"
 
 
+def _prose(text: str) -> str:
+    """PDF lines joined back into running text: 'recur-\nrence' -> 'recurrence'."""
+    text = re.sub(r"(\w)-\n(?=[a-z]+[\s.,;:!?)])", r"\1", text.strip())
+    text = re.sub(r"(\w)-\n(?=\w)", r"\1-", text)
+    return re.sub(r"[ \t]*\n[ \t]*(?!\n)", " ", re.sub(r"\n{2,}", "\x00", text)).replace(
+        "\x00", "\n\n"
+    )
+
+
+def _spans(para: str) -> str:
+    """One element per sentence (long ones per clause): the browser finds words by the
+    element that holds them, and only an element's first 120 characters count."""
+    out = []
+    for s in re.split(r"(?<=[.!?])\s+", para.strip()):
+        for b in re.split(r"(?<=[,;:])\s+", s) if len(s) > 110 else [s]:
+            words = b.split()
+            step = 14 if len(b) > 110 else len(words) or 1
+            out += [html.escape(" ".join(words[i : i + step])) for i in range(0, len(words), step)]
+    out = [f"<span>{b}</span>" for b in out]
+    return " ".join(out)
+
+
 def _xml_text(data: bytes, tag: str) -> str:
     found = re.findall(rf"<{tag}>([^<]*)</{tag}>", data.decode("utf-8", "ignore"))
     return " ".join(html.unescape(t) for t in found)
@@ -52,7 +74,7 @@ def read_file(path: Path, name: str) -> tuple[str, str] | None:
             pages = [p.extract_text() or "" for p in pdf.pages[:40]]
         except Exception:
             return None
-        body = "\n\n".join(f"[page {i}] {t.strip()}" for i, t in enumerate(pages, 1) if t.strip())
+        body = "\n\n".join(f"[page {i}] {_prose(t)}" for i, t in enumerate(pages, 1) if t.strip())
         return (f"PDF, {len(pdf.pages)} pages", body) if body else None
     if ext in (".pptx", ".docx"):
         try:
@@ -76,14 +98,14 @@ def readable(name: str, kind: str, text: str) -> str:
     """The document's own text as a plain page the browser can scroll and point at: a PDF
     viewer's words can't be found or clicked, a page's can. One heading per page/slide."""
     parts = re.split(r"\[(page|slide) (\d+)\] ?", text)
-    body = [f"<p>{html.escape(parts[0])}</p>"] if parts[0].strip() else []
+    body = [f"<p>{_spans(parts[0])}</p>"] if parts[0].strip() else []
     for i in range(1, len(parts) - 2, 3):
-        paras = "".join(f"<p>{html.escape(p)}</p>" for p in parts[i + 2].split("\n\n") if p.strip())
+        paras = "".join(f"<p>{_spans(p)}</p>" for p in parts[i + 2].split("\n\n") if p.strip())
         body.append(f"<h2>{parts[i].title()} {parts[i + 1]}</h2>{paras}")
     return ("<!doctype html><meta charset=utf-8>"
             f"<title>{html.escape(name)}</title><style>body{{font:26px/1.5 sans-serif;"
             "max-width:1500px;margin:40px auto;padding:0 40px;color:#111}h1{font-size:40px}"
-            "h2{margin-top:48px;border-top:2px solid #ccc;padding-top:16px}p{white-space:pre-wrap}"
+            "h2{margin-top:48px;border-top:2px solid #ccc;padding-top:16px}p{margin:0 0 20px}"
             f"</style><h1>{html.escape(name)}</h1><p><i>Text of the {html.escape(kind)}, "
             "as uploaded</i></p>" + "".join(body))  # fmt: skip
 
@@ -143,9 +165,10 @@ async def brief(ctx: JobContext, goal: str, files: list[dict[str, Any]]) -> str:
             files.append({"name": copy, "kind": "file", "content_type": "text/html",
                           "path": str(path)})  # fmt: skip
             show = (f"to show it, open its text page file:///work/{copy} (one 'Page N' or "
-                    "'Slide N' heading each, scroll to those headings or to words on the "
-                    f"page). The original can be opened at file:///work/{f['name']}#page=N, but "
-                    "words in Chromium's PDF viewer can't be scrolled to or clicked")  # fmt: skip
+                    "'Slide N' heading each; scroll to a heading, or to 3-8 words copied exactly "
+                    "from one sentence of the text below). The original can be opened at "
+                    f"file:///work/{f['name']}#page=N, but words in Chromium's PDF viewer "
+                    "can't be scrolled to or clicked")  # fmt: skip
         parts.append(f"Your file /work/{f['name']} ({got[0]}; {show}):\n{_clip(got[1])}")
     links = list(dict.fromkeys(u.rstrip(".,;:!?") for u in URL.findall(goal)))[:3]
     if links:
