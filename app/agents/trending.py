@@ -211,7 +211,9 @@ class TrendBrief(BaseModel):
     name: str = Field(description="e.g. 'HKUDS/DeepTutor' or the paper title")
     source: str = Field(description="Where it is trending, e.g. 'GitHub Trending'")
     why_trending: str = Field(
-        description="The tool's numbers with the date, e.g. '2,376 stars on 2026-10-26'"
+        description="The tool's rank and numbers as read today, with today's date (counts "
+        "are as of today, not the publish date), e.g. '#1 on GitHub Trending, 2,376 stars "
+        "today (2026-10-26)'"
     )
     url: str = Field(description="The page to open in the video (repo page or paper page)")
     extra_urls: list[str] = Field(
