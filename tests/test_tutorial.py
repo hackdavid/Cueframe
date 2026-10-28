@@ -1,6 +1,7 @@
 import time
 
-from app.tutorial import pipeline
+from app import heal
+from app.tutorial import pipeline, qa
 from app.tutorial.contracts import Word
 
 
@@ -30,7 +31,7 @@ def _fakes(monkeypatch):
     async def sound(prompt, seconds, influence=0.5):
         return b"sfx"
 
-    async def render(tut, work, fetch, save, progress):
+    async def render(tut, work, fetch, save, progress, force=(), on_retry=None):
         rendered.append(tut)
         out = work / "out"
         out.mkdir(parents=True, exist_ok=True)
@@ -45,6 +46,13 @@ def _fakes(monkeypatch):
     monkeypatch.setattr(pipeline, "sound", sound)
     monkeypatch.setattr(pipeline, "render", render)
     monkeypatch.setattr(pipeline, "PACE", 0)
+    monkeypatch.setattr(heal, "BACKOFF", 0)
+
+    async def no_issues(*a, **kw):
+        return []
+
+    monkeypatch.setattr(qa, "recording", no_issues)
+    monkeypatch.setattr(qa, "final", no_issues)
     monkeypatch.setenv("ELEVENLABS_API_KEY", "test")
     monkeypatch.setenv("ELEVENLABS_VOICE_ID", "test")
     monkeypatch.setattr(pipeline, "DESKTOP", {})

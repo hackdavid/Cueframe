@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.heal import retry
 from app.log import fields, get_logger
 
 log = get_logger("storage")
@@ -39,9 +40,12 @@ class Storage:
     async def put(self, key: str, data: bytes, content_type: str) -> dict[str, Any]:
         if self._s3:
             full = self._key(key)
-            await asyncio.to_thread(
-                self._s3.put_object,
-                Bucket=self.settings.r2_bucket, Key=full, Body=data, ContentType=content_type,
+            await retry(
+                lambda: asyncio.to_thread(
+                    self._s3.put_object,
+                    Bucket=self.settings.r2_bucket, Key=full, Body=data, ContentType=content_type,
+                ),
+                f"Upload of {key}",
             )  # fmt: skip
             log.info("stored", extra=fields(backend="r2", key=full, bytes=len(data)))
             return {"backend": "r2", "key": full, "url": f"/media/r2/{full}", "bytes": len(data)}

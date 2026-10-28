@@ -14,12 +14,14 @@ from pydantic import BaseModel, Field
 
 from app.agents.contracts import ResearchRequest
 from app.agents.docs_research import DocsResearchAgent
+from app.heal import Healer, short
 from app.jobs import JobContext
 from app.sandbox.base import ANSI, Sandbox
 from app.sandbox.contracts import Action, ActionRecord
 from app.tutorial.build import COLS, PROMPT
 
 MAX_REPAIRS = 3
+SANDBOX_TRIES = 2  # a sandbox that breaks mid-run is replaced this many times - 1
 MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
 
 
@@ -235,14 +237,18 @@ async def research(ctx: JobContext, goal: str) -> str:
     return f"Reference steps ({res.source}, confidence {res.confidence:.2f}, {src}):\n{steps}"
 
 
-async def plan(ctx: JobContext, goal: str) -> dict[str, Any] | str:
-    """A validated spec, or a str explaining why the task can't be shown."""
+async def plan(ctx: JobContext, goal: str, avoid: str = "") -> dict[str, Any] | str:
+    """A validated spec, or a str explaining why the task can't be shown. `avoid` is
+    a failure from a previous plan's rehearsal; the new plan must work around it."""
     if ctx.llm is None or not ctx.llm.configured:
         return "Planning a new tutorial needs MODEL_API_KEY on the server."
     ctx.phase("research", "Reading the official docs")
     ref = await research(ctx, goal)
     ctx.phase("plan", "Planning the tutorial steps")
     prompt = f"Task: {goal}\n\n{ref}".strip()
+    if avoid:
+        prompt += (f"\n\nA previous plan for this task failed when run for real: {avoid}. "
+                   "Use a different approach that avoids that failure.")  # fmt: skip
     for _ in range(3):
         p, _res = await ctx.llm.parse(
             TutorialPlan, purpose="tutorial.plan", model=ctx.settings.research_model,
@@ -291,12 +297,67 @@ async def check(box: Sandbox, step: dict[str, Any], rec: ActionRecord) -> Action
     return rec
 
 
-async def rehearse(ctx: JobContext, spec: dict[str, Any]) -> str | None:
+def what(step: dict[str, Any]) -> str:
+    a = step["action"]
+    return a.get("command") or a.get("url") or a.get("keys") or a["kind"]
+
+
+def failure(step: dict[str, Any], rec: ActionRecord | dict[str, Any]) -> tuple[str, str]:
+    """Why a step failed, and what it printed."""
+    get = rec.get if isinstance(rec, dict) else lambda k: getattr(rec, k)
+    out = "\n".join(output_lines(rec, step["action"].get("command") or ""))
+    return get("error") or f"exit code {get('returncode')}", out
+
+
+async def repair(
+    ctx: JobContext, spec: dict[str, Any], i: int, rec: ActionRecord | dict[str, Any]
+) -> str | None:
+    """Rewrite failing step `i` in place from its real output. None when a fix was made,
+    else why the step can't work here. Narration lines of the step are regenerated."""
+    step = spec["steps"][i]
+    why, out = failure(step, rec)
+    if ctx.llm is None or not ctx.llm.configured:
+        return f"step **{step['label']}** failed ({why}) and no model is configured to fix it"
+    goal = spec.get("goal") or spec["title"]
+    fix, _ = await ctx.llm.parse(
+        StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
+        instructions=FIX,
+        input=f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step "
+        f"{i + 1} ({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}",
+    )  # fmt: skip
+    fix.step.id = step["id"]
+    if not fix.fixable or (bad := problems_one(fix.step)):
+        return f"step **{step['label']}** can't work here: {fix.reason or '; '.join(bad)}"
+    new = to_spec(_stub([fix.step]), goal)
+    spec["steps"][i] = new["steps"][0]
+    for k in [k for k in spec["lines"] if k in (step["id"], f"{step['id']}_done")]:
+        del spec["lines"][k]
+    spec["lines"].update({k: v for k, v in new["lines"].items()
+                          if k not in ("intro", "outro")})  # fmt: skip
+    return None
+
+
+async def rehearse(ctx: JobContext, spec: dict[str, Any], heal: Healer | None = None) -> str | None:
     """Run the plan once, unrecorded; repair failing steps in place. Returns None when
-    every step passed, else why it can't be done. Updates `spec` with the fixes."""
+    every step passed, else why it can't be done. Updates `spec` with the fixes. A
+    sandbox that breaks (not a step that fails) is replaced and the rehearsal restarts."""
+    heal = heal or Healer(ctx)
+    state = {"repairs": 0}
+    for attempt in range(1, SANDBOX_TRIES + 1):
+        try:
+            return await _rehearse(ctx, spec, heal, state)
+        except Exception as exc:
+            if attempt == SANDBOX_TRIES:
+                raise
+            heal(f"The rehearsal sandbox broke ({short(exc)}); starting a fresh one")
+    raise AssertionError("unreachable")
+
+
+async def _rehearse(
+    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, int]
+) -> str | None:
     mgr = ctx._manager.sandboxes
     ctx.phase("rehearse", "Rehearsing every step in a private sandbox (not recorded)")
-    repairs = 0
     async with mgr.session(ctx.id, ctx.conversation_id) as (sid, box):
         ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": box.live_url})
         i = 0
@@ -312,32 +373,22 @@ async def rehearse(ctx: JobContext, spec: dict[str, Any]) -> str | None:
             if rec.ok:
                 i += 1
                 continue
-            out = "\n".join(output_lines(rec, step["action"].get("command") or ""))
-            why = rec.error or f"exit code {rec.returncode}"
+            why, out = failure(step, rec)
             ctx.thinking("Rehearsal", f"Step {step['id']} failed: {why}\n{out[-600:]}")
-            if repairs >= MAX_REPAIRS or ctx.llm is None:
+            if state["repairs"] >= MAX_REPAIRS:
                 await mgr.stop(sid, "rehearsal failed")
-                return f"step **{step['label']}** still fails after {repairs} fixes ({why})"
-            repairs += 1
+                return (
+                    f"step **{step['label']}** still fails after {state['repairs']} fixes ({why})"
+                )
+            state["repairs"] += 1
             ctx.phase("plan", f"Fixing step {i + 1} from its real output")
-            fix, _ = await ctx.llm.parse(
-                StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
-                instructions=FIX,
-                input=f"Task: {spec['goal']}\nPlan:\n{describe_plan(spec)}\n\nFailed step "
-                f"{i + 1} ({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}",
-            )  # fmt: skip
-            fix.step.id = step["id"]
-            if not fix.fixable or problems_one(fix.step):
+            if err := await repair(ctx, spec, i, rec):
                 await mgr.stop(sid, "rehearsal failed")
-                return f"step **{step['label']}** can't work here: {fix.reason}"
-            new = to_spec(_stub([fix.step]), spec["goal"])
-            spec["steps"][i] = new["steps"][0]
-            for k in [k for k in spec["lines"] if k in (step["id"], f"{step['id']}_done")]:
-                del spec["lines"][k]
-            spec["lines"].update({k: v for k, v in new["lines"].items()
-                                  if k not in ("intro", "outro")})  # fmt: skip
+                return err
+            heal(f"Rehearsal: step **{step['label']}** failed ({why}); rewrote it from the "
+                 f"real output as `{what(spec['steps'][i])}`")  # fmt: skip
         await mgr.stop(sid, "rehearsal passed")
-    spec["rehearsal"] = {"repairs": repairs, "sandbox_id": sid}
+    spec["rehearsal"] = {"repairs": state["repairs"], "sandbox_id": sid}
     return None
 
 

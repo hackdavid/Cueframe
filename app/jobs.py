@@ -136,9 +136,12 @@ class JobManager:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._slots = asyncio.Semaphore(settings.max_concurrent_jobs)
 
-    def recover(self) -> None:
-        for job in self.store.interrupt_stale_jobs():
+    def recover(self) -> list[dict[str, Any]]:
+        """Mark jobs cut off by a restart as interrupted; returns them."""
+        jobs = self.store.interrupt_stale_jobs()
+        for job in jobs:
             self._publish_job("job.interrupted", job)
+        return jobs
 
     def submit(
         self,

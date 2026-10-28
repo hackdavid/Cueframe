@@ -14,11 +14,13 @@ import hashlib
 import json
 import shutil
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 from pathlib import Path
 from typing import Any
 
+from app.heal import anything, retry
 from app.log import fields, get_logger
+from app.tutorial import qa
 from app.tutorial.build import srt
 from app.tutorial.contracts import Tutorial
 
@@ -56,7 +58,7 @@ def segment_hashes(tut: Tutorial) -> list[str]:
     ]
 
 
-async def _segment(bundle: Path, props: Path, a: int, b: int, out: Path) -> None:
+async def _segment(bundle: Path, props: Path, a: int, b: int, out: Path, fps: int = 30) -> None:
     tmp = out.with_suffix(".part.mp4")
     await _run(
         "npx", "remotion", "render", str(bundle), "Tutorial", str(tmp), f"--props={props}",
@@ -64,6 +66,10 @@ async def _segment(bundle: Path, props: Path, a: int, b: int, out: Path) -> None
         "--pixel-format=yuv420p", "--log=error",
         cwd=RENDERER,
     )  # fmt: skip
+    got, want = qa.duration(await qa.probe(tmp)), (b - a + 1) / fps
+    if abs(got - want) > 2.5 / fps:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(f"segment is {got:.2f} s, expected {want:.2f} s")
     tmp.rename(out)
 
 
@@ -108,10 +114,17 @@ async def _mix_audio(tut: Tutorial, audio: Path, total: float, out: Path) -> Non
 
 
 async def render(
-    tut: Tutorial, work: Path, fetch: Fetch, save: Save, progress: Progress
+    tut: Tutorial,
+    work: Path,
+    fetch: Fetch,
+    save: Save,
+    progress: Progress,
+    force: Collection[str] = (),
+    on_retry: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Render `tut` (assets already staged under `work/public`). `fetch`/`save` sync
-    cached segments with object storage so another server can reuse them."""
+    cached segments with object storage so another server can reuse them. States in
+    `force` are rendered again even when cached (used after a failed quality check)."""
     t_start = time.monotonic()
     seg_dir, out = work / "segments", work / "out"
     seg_dir.mkdir(parents=True, exist_ok=True)
@@ -127,7 +140,9 @@ async def render(
     for st, h in zip(tut.states, hashes, strict=True):
         n = round(st.duration * tut.fps)
         seg = seg_dir / f"{h}.mp4"
-        if not seg.exists() and (data := await fetch(f"seg-{h}.mp4")):
+        if st.id in force:
+            seg.unlink(missing_ok=True)
+        elif not seg.exists() and (data := await fetch(f"seg-{h}.mp4")):
             seg.write_bytes(data)
         if not seg.exists():
             todo.append((st.id, a, a + n - 1, seg))
@@ -142,7 +157,9 @@ async def render(
         nonlocal done
         async with sem:
             t = time.monotonic()
-            await _segment(bundle, props, f0, f1, seg)
+            await retry(lambda: _segment(bundle, props, f0, f1, seg, tut.fps),
+                        f"Rendering segment {sid!r}", attempts=3, when=anything,
+                        on_retry=on_retry)  # fmt: skip
             times[sid] = round(time.monotonic() - t, 1)
         await save(f"seg-{seg.stem}.mp4", seg)
         done += 1

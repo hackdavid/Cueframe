@@ -4,6 +4,7 @@ import json
 import sqlite3
 import threading
 import uuid
+from collections.abc import Collection
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -146,6 +147,9 @@ class Store:
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(jobs)")}
         if "pending_input" not in cols:
             self._conn.execute("ALTER TABLE jobs ADD COLUMN pending_input TEXT")
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tutorials)")}
+        if "active_job" not in cols:  # the job currently working on the tutorial
+            self._conn.execute("ALTER TABLE tutorials ADD COLUMN active_job TEXT")
         self._lock = threading.Lock()
 
     def close(self) -> None:
@@ -345,6 +349,18 @@ class Store:
             sql += " AND conversation_id = ?"
             args.append(cid)
         rows = self._all(sql + " ORDER BY created_at DESC", tuple(args))
+        return [_decode(r, *self._TUT_JSON) for r in rows]  # type: ignore[misc]
+
+    def tutorials_to_resume(self, job_ids: Collection[str]) -> list[dict[str, Any]]:
+        """Unfinished tutorials whose active job was among `job_ids` (interrupted)."""
+        if not job_ids:
+            return []
+        marks = ", ".join("?" * len(job_ids))
+        rows = self._all(
+            "SELECT * FROM tutorials WHERE status IN ('planned', 'capturing', 'rendering') "
+            f"AND active_job IN ({marks}) ORDER BY created_at",
+            tuple(job_ids),
+        )
         return [_decode(r, *self._TUT_JSON) for r in rows]  # type: ignore[misc]
 
     def update_tutorial(self, tid: str, **fields: Any) -> dict[str, Any]:

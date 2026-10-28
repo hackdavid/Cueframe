@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from app.handlers.demo import demo_reply
 from app.handlers.research import docs_research
-from app.jobs import JobContext, job_handler
+from app.jobs import JobContext, JobManager, job_handler
 from app.tutorial import pipeline, recipes
 
 
@@ -28,6 +28,20 @@ async def tutorial_edit(ctx: JobContext) -> dict[str, Any]:
         instruction=ctx.input.get("text"),
         edits=None if edits is None else [pipeline.StateEdit.model_validate(e) for e in edits],
     )
+
+
+@job_handler("tutorial.resume")
+async def tutorial_resume(ctx: JobContext) -> dict[str, Any]:
+    return await pipeline.resume(ctx, ctx.input["job_input"]["tutorial_id"])
+
+
+def resume_interrupted(jobs: JobManager, interrupted: list[dict[str, Any]]) -> list[str]:
+    """After a restart, continue every tutorial whose job was interrupted mid-way."""
+    out = []
+    for t in jobs.store.tutorials_to_resume([j["id"] for j in interrupted]):
+        payload = {"text": "", "attachments": [], "job_input": {"tutorial_id": t["id"]}}
+        out.append(jobs.submit("tutorial.resume", payload, t["conversation_id"])["id"])
+    return out
 
 
 class Route(BaseModel):

@@ -117,13 +117,16 @@ def test_planned_tutorial_rehearses_repairs_then_records(client, monkeypatch):
 
 def test_unfixable_rehearsal_records_nothing(client, monkeypatch):
     fix = StepFix(fixable=False, reason="needs a GPU", step=_step("run", command="x"))
-    _setup(client, monkeypatch, StubLLM([_plan(GOOD)], [fix]))
+    llm = StubLLM([_plan(GOOD), _plan(GOOD)], [fix, fix])
+    _setup(client, monkeypatch, llm)
     _, jid = _send(client)
     _answer(client, jid, pipeline.SKIP)
     job = _wait(client, jid, {"succeeded", "failed"})
-    assert job["status"] == "failed" and "needs a GPU" in job["error"]
+    assert job["status"] == "failed" and "failed twice" in job["error"]
+    assert "needs a GPU" in job["error"]
+    assert "failed when run for real" in llm.inputs[3][1]  # the re-plan saw the failure
     boxes = _sandboxes(client)
-    assert len(boxes) == 1 and boxes[0]["status"] == "terminated"  # no recording sandbox
+    assert len(boxes) == 2 and all(b["status"] == "terminated" for b in boxes)  # no recording
     assert client.get("/api/tutorials", headers=_auth(client)).json() == []
 
 

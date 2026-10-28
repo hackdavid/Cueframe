@@ -20,9 +20,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
 from app.sandbox.contracts import Action
-from app.tutorial import planner, recipes
+from app.tutorial import planner, qa, recipes
 from app.tutorial.build import build
 from app.tutorial.contracts import Tutorial
 from app.tutorial.render import render
@@ -45,6 +46,7 @@ SFX = {
 }  # fmt: skip
 LEAD, MIN_HOLD = 1.0, 1.2  # seconds of screen before the first step / after each step
 PACE = 1.0  # real-time factor for those holds (tests set 0)
+MAX_TAKES = 3  # recording attempts before an honest failure video is published
 
 
 def work_dir(ctx: JobContext, tid: str) -> Path:
@@ -102,19 +104,26 @@ async def ensure_sfx(ctx: JobContext, audio: Path) -> None:
 
 
 async def voice_lines(
-    ctx: JobContext, tid: str, lines: dict[str, str], voice: dict[str, Any]
+    ctx: JobContext,
+    tid: str,
+    lines: dict[str, str],
+    voice: dict[str, Any],
+    heal: Healer | None = None,
 ) -> list[str]:
     """Synthesize every line whose text changed; returns the keys that were re-voiced."""
     vid = os.environ.get("ELEVENLABS_VOICE_ID", "")
     todo = [k for k, text in lines.items() if voice.get(k, {}).get("text") != text]
     sem = asyncio.Semaphore(3)
     audio = _audio(ctx, tid)
+    heal = heal or Healer(ctx)
 
     async def one(key: str) -> None:
         text = lines[key]
         h = hashlib.sha256(f"{vid}|{text}".encode()).hexdigest()[:10]
         async with sem:
-            mp3, words = await speak(text)
+            mp3, words = await heal.retry(lambda: speak(text), f"ElevenLabs narration {key!r}")
+        if not words:
+            raise RuntimeError(f"ElevenLabs returned no word timings for {key!r}")
         name = f"{key}-{h}.mp3"
         (audio / name).write_bytes(mp3)
         stored = await ctx._manager.storage.put(f"tutorials/{tid}/voice-{key}-{h}.mp3", mp3,
@@ -185,6 +194,55 @@ async def capture(
             "sandbox_seconds": sb.get("seconds"), "sandbox_cost_usd": sb.get("est_cost_usd")}  # fmt: skip  # noqa: E501
 
 
+async def record(
+    ctx: JobContext,
+    tid: str,
+    spec: dict[str, Any],
+    voice: dict[str, Any],
+    hidden: set[str],
+    heal: Healer,
+) -> dict[str, Any]:
+    """Record the tutorial, healing failed takes: a broken sandbox or blank capture is
+    recorded again in a fresh sandbox; a step that fails for real is rewritten from its
+    real output (narration re-voiced) and recorded again. After MAX_TAKES the last take
+    is returned as is, so the video honestly shows the failure."""
+    for take in range(1, MAX_TAKES + 1):
+        last = take == MAX_TAKES
+        try:
+            cap = await capture(ctx, tid, spec, voice, hidden)
+        except Exception as exc:
+            if last:
+                raise
+            heal(f"The recording sandbox broke ({short(exc)}); recording again in a fresh one")
+            continue
+        cap["take"] = take
+        recs = cap["records"]
+        bad = next((i for i, r in enumerate(recs) if not r["ok"]), None)
+        if bad is None:
+            path = work_dir(ctx, tid) / "public" / tid / "recording.mp4"
+            issues = await qa.recording(path, recs)
+            if not issues:
+                return cap
+            if last:
+                cap["qa"] = issues
+                return cap
+            heal(f"Quality check of take {take}: {'; '.join(issues)}. Recording again")
+            continue
+        step = spec["steps"][bad]
+        why, _ = planner.failure(step, recs[bad])
+        if last:
+            return cap
+        ctx.phase("plan", f"Fixing step {bad + 1} from its real output")
+        if err := await planner.repair(ctx, spec, bad, recs[bad]):
+            heal(f"Step **{step['label']}** failed while recording ({why}) and {err}")
+            return cap
+        heal(f"Step **{step['label']}** failed while recording ({why}); rewrote it as "
+             f"`{planner.what(spec['steps'][bad])}` and recorded again")  # fmt: skip
+        await voice_lines(ctx, tid, spec["lines"], voice, heal)
+        ctx.store.update_tutorial(tid, spec=spec, voice=voice)
+    raise AssertionError("unreachable")
+
+
 def _ts(x: float) -> str:
     return f"{int(x) // 60}:{int(x) % 60:02}"
 
@@ -209,8 +267,12 @@ def youtube_md(spec: dict[str, Any], tut: Tutorial) -> str:
     ])  # fmt: skip
 
 
-async def publish(ctx: JobContext, row: dict[str, Any], note: str = "") -> dict[str, Any]:
-    """Build the graph from the stored inputs, render what changed and post the result."""
+async def publish(
+    ctx: JobContext, row: dict[str, Any], note: str = "", heal: Healer | None = None
+) -> dict[str, Any]:
+    """Build the graph from the stored inputs, render what changed, check the result
+    (re-rendering once if the check fails) and post it."""
+    heal = heal or Healer(ctx)
     store, storage, tid = ctx.store, ctx._manager.storage, row["id"]
     spec, voice, cap = row["spec"], row["voice"], row["capture"]
     work, audio = work_dir(ctx, tid), _audio(ctx, tid)
@@ -220,7 +282,7 @@ async def publish(ctx: JobContext, row: dict[str, Any], note: str = "") -> dict[
         await _ensure(ctx, audio / v["file"], v["stored"])
     await ensure_sfx(ctx, audio)
     tut = build(spec, voice, cap, tid, hidden=set(spec.get("hidden", [])))
-    row = store.update_tutorial(tid, status="rendering", graph=tut.model_dump())
+    row = store.update_tutorial(tid, status="rendering", graph=tut.model_dump(), active_job=ctx.id)
 
     def progress(done: int, total: int) -> None:
         label = f"Rendering steps in parallel ({done}/{total})" if total else "Nothing changed"
@@ -233,7 +295,15 @@ async def publish(ctx: JobContext, row: dict[str, Any], note: str = "") -> dict[
         await storage.put(f"tutorials/{tid}/{name}", path.read_bytes(), "video/mp4")
 
     ctx.phase("render", "Rendering the video")
-    res = await render(tut, work, fetch, save, progress)
+    res = await render(tut, work, fetch, save, progress, on_retry=heal)
+    ctx.phase("qa", "Checking the finished video")
+    issues = await qa.final(tut, res["video"], res["captions"], res["stats"]["duration"])
+    if issues:
+        heal(f"Quality check: {'; '.join(issues)}. Rendering every step again")
+        res = await render(tut, work, fetch, save, progress,
+                           force={s.id for s in tut.states}, on_retry=heal)  # fmt: skip
+        issues = await qa.final(tut, res["video"], res["captions"], res["stats"]["duration"])
+    issues = [*(cap.get("qa") or []), *issues]
     n = row["version"] + 1
     up = {
         "video": await storage.put(f"tutorials/{tid}/video-v{n}.mp4",
@@ -245,8 +315,8 @@ async def publish(ctx: JobContext, row: dict[str, Any], note: str = "") -> dict[
         "youtube": await storage.put(f"tutorials/{tid}/youtube-v{n}.md",
                                      youtube_md(spec, tut).encode(), "text/markdown"),
     }  # fmt: skip
-    ok = all(s.verified for s in tut.states)
-    output = {**up, "stats": res["stats"], "job_id": ctx.id}
+    ok = all(s.verified for s in tut.states) and not issues
+    output = {**up, "stats": res["stats"], "job_id": ctx.id, "qa": issues, "healing": heal.log}
     row = store.update_tutorial(tid, status="ready" if ok else "failed", version=n, output=output)
     ctx.emit("tutorial.ready", {"tutorial_id": tid, "version": n, "video_url": up["video"]["url"]})
     st = res["stats"]
@@ -260,14 +330,18 @@ async def publish(ctx: JobContext, row: dict[str, Any], note: str = "") -> dict[
         f"**Step failed: {failed.label}.** The video shows exactly what happened, "
         "up to the failure."
         if failed
+        else f"**The video failed its quality check:** {'; '.join(issues)}."
+        if issues
         else f"**{'Updated' if n > 1 else 'Your tutorial is ready'}: {spec['title']}** "
         f"(version {n}, {st['duration']:.0f} s, 1080p)"
     )
     cost = ""
     if cap.get("sandbox_seconds") is not None and n == 1:
         cost = f" The sandbox ran {cap['sandbox_seconds']:.0f} s (about ${cap['sandbox_cost_usd']:.4f})."  # noqa: E501
+    healed = heal.summary()
     ctx.reply(
         f"{head}\n\n{note + chr(10) + chr(10) if note else ''}"
+        f"{healed + chr(10) + chr(10) if healed else ''}"
         f'<video src="{up["video"]["url"]}" poster="{up["thumbnail"]["url"]}" controls></video>\n\n'
         f"[Captions (.srt)]({up['captions']['url']}) · [Thumbnail]({up['thumbnail']['url']}) · "
         f"[YouTube title, description and chapters]({up['youtube']['url']})\n\n"
@@ -279,6 +353,8 @@ async def publish(ctx: JobContext, row: dict[str, Any], note: str = "") -> dict[
     result = {"tutorial_id": tid, "version": n, **output}
     if failed:
         raise JobFailed(f"Step {failed.label!r} failed", result)
+    if issues:
+        raise JobFailed(f"Quality check failed: {'; '.join(issues)}", result)
     return result
 
 
@@ -304,21 +380,10 @@ async def make(
             f"**{spec['title']}**: here's the plan. I'll rehearse it in a private sandbox, "
             f"then record it for real.\n\n{planner.describe_plan(spec)}"
         )
-    hidden: set[str] = set()
-    asked = False
+    heal = Healer(ctx)
+    answers: dict[str, bool] = {}  # install command -> already installed (left out)
     ctx.phase("intake", "Checking with you before running terminal commands")
-    for step in spec["steps"]:
-        a = step["action"]
-        if a["kind"] == "terminal" and a.get("ask", True):
-            ans = await ctx.ask(
-                f"This tutorial runs `{a['command']}` in a terminal. "
-                f"Is {spec.get('software') or 'it'} already installed on your machine?",
-                [SKIP, SHOW],
-                key=f"install_{step['id']}",
-            )
-            if ans == SKIP:
-                hidden.add(step["id"])
-            asked = True
+    asked = await intake(ctx, spec, answers)
     if recipe_id == "planned" and not asked:
         ans = await ctx.ask(
             "This tutorial runs the commands above in a Linux terminal. Shall I go ahead?",
@@ -328,23 +393,93 @@ async def make(
         if ans == CANCEL:
             ctx.reply("Okay, I won't run it. Nothing was started.")
             return {"routed": "make_tutorial", "planned": True, "cancelled": True}
+    if recipe_id == "planned":
+        spec = await rehearsed(ctx, spec, answers, heal)
+    hidden = {s["id"] for s in spec["steps"] if answers.get(s["action"].get("command", ""))}
     spec["hidden"] = sorted(hidden)
-    if recipe_id == "planned" and (why := await planner.rehearse(ctx, spec)):
-        raise JobFailed(f"The rehearsal failed, so nothing was recorded: {why}", {"rehearsal": why})
+    spec["healing"] = heal.log
     row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, recipe_id,
                                     spec["title"], spec)  # fmt: skip
     tid = row["id"]
+    ctx.store.update_tutorial(tid, active_job=ctx.id)
     ctx.emit("tutorial.created", {"tutorial_id": tid})
-    ctx.phase("voice", "Recording the narration")
-    ctx.progress(0.05)
-    voice: dict[str, Any] = {}
-    await voice_lines(ctx, tid, spec["lines"], voice)
-    ctx.store.update_tutorial(tid, status="capturing", voice=voice)
-    cap = await capture(ctx, tid, spec, voice, hidden)
-    row = ctx.store.update_tutorial(
-        tid, spec=spec, capture=cap, assets={"recording": cap["recording"]}
+    return await produce(ctx, row, heal)
+
+
+async def intake(ctx: JobContext, spec: dict[str, Any], answers: dict[str, bool]) -> bool:
+    """Ask about every install step not asked before; True if anything was asked."""
+    asked = False
+    for step in spec["steps"]:
+        a = step["action"]
+        if a["kind"] == "terminal" and a.get("ask", True) and a["command"] not in answers:
+            ans = await ctx.ask(
+                f"This tutorial runs `{a['command']}` in a terminal. "
+                f"Is {spec.get('software') or 'it'} already installed on your machine?",
+                [SKIP, SHOW],
+                key=f"install_{step['id']}" + (f"_{len(answers)}" if answers else ""),
+            )
+            answers[a["command"]] = ans == SKIP
+            asked = True
+    return asked
+
+
+async def rehearsed(
+    ctx: JobContext, spec: dict[str, Any], answers: dict[str, bool], heal: Healer
+) -> dict[str, Any]:
+    """Rehearse the plan; if a step can't be repaired, plan again once around that
+    failure (asking about any new install) and rehearse the new plan."""
+    why = await planner.rehearse(ctx, spec, heal)
+    if not why:
+        return spec
+    heal(f"The first plan couldn't work here ({why}); planned the tutorial again around it")
+    again = await planner.plan(ctx, spec["goal"], avoid=why)
+    if isinstance(again, str):
+        raise JobFailed(f"The rehearsal failed, so nothing was recorded: {why}. {again}",
+                        {"rehearsal": why})  # fmt: skip
+    ctx.reply(
+        f"The first plan didn't work in the sandbox ({why}), so I planned it again. "
+        f"**{again['title']}**:\n\n{planner.describe_plan(again)}"
     )
-    return await publish(ctx, row)
+    await intake(ctx, again, answers)
+    if again_why := await planner.rehearse(ctx, again, heal):
+        raise JobFailed(f"The rehearsal failed twice, so nothing was recorded: {again_why}",
+                        {"rehearsal": again_why})  # fmt: skip
+    return again
+
+
+async def produce(ctx: JobContext, row: dict[str, Any], heal: Healer) -> dict[str, Any]:
+    """Narrate, record (healing failed takes) and publish a stored tutorial. Each stage
+    is saved, so a resumed job skips what is already done."""
+    tid, spec = row["id"], row["spec"]
+    spec["healing"] = heal.log
+    heal.save = lambda: ctx.store.update_tutorial(tid, spec=spec)
+    heal.save()
+    voice = row.get("voice") or {}
+    hidden = set(spec.get("hidden", []))
+    if not row.get("capture"):
+        ctx.phase("voice", "Recording the narration")
+        ctx.progress(0.05)
+        await voice_lines(ctx, tid, spec["lines"], voice, heal)
+        ctx.store.update_tutorial(tid, status="capturing", voice=voice)
+        cap = await record(ctx, tid, spec, voice, hidden, heal)
+        row = ctx.store.update_tutorial(
+            tid, spec=spec, voice=voice, capture=cap, assets={"recording": cap["recording"]}
+        )
+    return await publish(ctx, row, heal=heal)
+
+
+async def resume(ctx: JobContext, tid: str) -> dict[str, Any]:
+    """Continue a tutorial whose job was cut off by a server restart."""
+    row = ctx.store.get_tutorial(tid)
+    if row is None:
+        raise ValueError(f"Unknown tutorial {tid}")
+    heal = Healer(ctx, row["spec"].setdefault("healing", []))
+    stage = "rendering" if row.get("capture") else "recording"
+    heal(f"The server restarted during this tutorial; resumed it at the {stage} stage")
+    ctx.reply(f"The server restarted while I was making **{row['title']}**. "
+              f"Picking it up again at the {stage} stage.")  # fmt: skip
+    row = ctx.store.update_tutorial(tid, active_job=ctx.id, spec=row["spec"])
+    return await produce(ctx, row, heal)
 
 
 class StateEdit(BaseModel):
