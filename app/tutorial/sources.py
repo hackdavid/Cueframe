@@ -45,16 +45,9 @@ def _prose(text: str) -> str:
 
 
 def _spans(para: str) -> str:
-    """One element per sentence (long ones per clause): the browser finds words by the
-    element that holds them, and only an element's first 120 characters count."""
-    out = []
-    for s in re.split(r"(?<=[.!?])\s+", para.strip()):
-        for b in re.split(r"(?<=[,;:])\s+", s) if len(s) > 110 else [s]:
-            words = b.split()
-            step = 14 if len(b) > 110 else len(words) or 1
-            out += [html.escape(" ".join(words[i : i + step])) for i in range(0, len(words), step)]
-    out = [f"<span>{b}</span>" for b in out]
-    return " ".join(out)
+    """One element per sentence, so scrolling to a few words lands on that sentence."""
+    out = (html.escape(s) for s in re.split(r"(?<=[.!?])\s+", para.strip()) if s)
+    return " ".join(f"<span>{s}</span>" for s in out)
 
 
 def _xml_text(data: bytes, tag: str) -> str:
@@ -168,7 +161,8 @@ async def brief(ctx: JobContext, goal: str, files: list[dict[str, Any]]) -> str:
                     "'Slide N' heading each; scroll to a heading, or to 3-8 words copied exactly "
                     "from one sentence of the text below). The original can be opened at "
                     f"file:///work/{f['name']}#page=N, but words in Chromium's PDF viewer "
-                    "can't be scrolled to or clicked")  # fmt: skip
+                    "can't be scrolled to or clicked. Never rewrite or replace these "
+                    "files")  # fmt: skip
         parts.append(f"Your file /work/{f['name']} ({got[0]}; {show}):\n{_clip(got[1])}")
     links = list(dict.fromkeys(u.rstrip(".,;:!?") for u in URL.findall(goal)))[:3]
     if links:

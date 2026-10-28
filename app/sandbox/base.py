@@ -228,7 +228,7 @@ def _act(a: Action) -> str:
         return f"xdotool key -- {q(a.keys or '')}"
     if a.kind == "scroll":
         if a.target:  # bring the element into view (the finder scrolls it to the centre)
-            return _find(a, "click")
+            return _find(a, "scroll")
         button = 5 if a.dy > 0 else 4
         return f"{_move(a.x or 960, a.y or 540)}; xdotool click --repeat {abs(a.dy) or 1} {button}"
     if a.kind == "drag":
