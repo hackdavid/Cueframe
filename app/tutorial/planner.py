@@ -188,7 +188,8 @@ visible action each, for a 2-4 minute video:
   the terminal with xdotool/wmctrl, use click/type/key steps for that). Keep each step's output
   to at most 12 lines (`| head -n 12`, `-q`) so the result fits on screen, and keep
   commands short (under 70 characters when possible) so they read well zoomed in.
-- browser steps: kind=open_url with a URL (localhost services or public sites);
+- browser steps: kind=open_url with a URL (localhost services or public sites, or
+  file:///work/<name> for a file the user attached, e.g. a PDF);
   kind=click / type / scroll on a real element named by its visible words in `target`
   (e.g. click 'Download', type 'pandas' into 'Search'); kind=key (e.g. 'F5' to reload).
   Set app='browser'. The browser comes to the front automatically.
@@ -346,7 +347,8 @@ GUI = ("click", "type", "scroll", "key", "launch", "drag", "menu")
 MAX_STEPS = 16
 APP_CMD = re.compile(r"[a-z0-9][a-z0-9.+_-]*( [\w./=:-]+){0,3}")
 BAD_URL = re.compile(
-    r"^\s*(file|javascript|data|chrome|about|view-source):|169\.254\.|metadata\.google|"
+    r"^\s*(file:(?!///work/[\w.-]+$)|javascript:|data:|chrome:|about:|view-source:)|"
+    r"169\.254\.|metadata\.google|"
     r"//[^/]*@",
     re.I,
 )

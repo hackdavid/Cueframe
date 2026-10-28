@@ -58,7 +58,8 @@ class Route(BaseModel):
 
 ROUTER = """You route messages in Cueframe, an app that makes narrated video tutorials
 from real runs in a Linux desktop sandbox. Pick:
-- make_tutorial: the user wants a (new) tutorial/video/walkthrough of a task. Set
+- make_tutorial: the user wants a (new) tutorial/video/walkthrough of a task, or a
+  video about a file they attached or a link they sent (a PDF, slides, a repo). Set
   `recipe` to the id of the matching recipe below, or null if none fits (a new
   tutorial is then planned automatically). Set `format` to what they asked for:
   "tutorial" (a how-to, step-by-step guide), "reel" (a reel, short, TikTok, influencer,
@@ -79,13 +80,15 @@ Recipes:
 
 async def route(ctx: JobContext, has_tutorial: bool) -> Route:
     text = ctx.input.get("text", "")
+    names = [a.get("filename", "") for a in ctx.input.get("attachments") or []]
+    files = f"Attached files: {', '.join(names)}\n" if names else ""
     if ctx.llm is not None and ctx.llm.configured:
         r, _ = await ctx.llm.parse(
             Route,
             purpose="assistant.route",
             model=ctx.settings.research_model,
             instructions=ROUTER.format(catalog=recipes.catalog()),
-            input=f"Conversation already has a tutorial: {has_tutorial}\n\nMessage: {text}",
+            input=f"Conversation already has a tutorial: {has_tutorial}\n{files}\nMessage: {text}",
         )
         if r.recipe not in recipes.recipes():
             r.recipe = None

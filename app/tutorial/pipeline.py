@@ -25,7 +25,7 @@ from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
 from app.sandbox.contracts import Action, live_path
 from app.sandbox.manager import SandboxLimit
-from app.tutorial import formats, planner, qa, recipes, shown
+from app.tutorial import formats, planner, qa, recipes, shown, sources
 from app.tutorial.build import build
 from app.tutorial.contracts import Tutorial
 from app.tutorial.render import render
@@ -465,7 +465,11 @@ async def make(
     else:
         files = planner.attached(ctx)
         goal = planner.with_files(goal or ctx.input.get("text", ""), files)
-        brief = ""
+        brief, kicker = "", ""
+        if not trending and (brief := await sources.brief(ctx, goal, files)):
+            kicker = "FROM YOUR SOURCE"
+            ctx.reply("I'll build the video from your source: every fact in it comes from "
+                      "what you attached or linked.")  # fmt: skip
         if trending:
             found = await planner.scout(ctx, goal)
             if isinstance(found, str):
