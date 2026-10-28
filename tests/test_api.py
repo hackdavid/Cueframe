@@ -204,3 +204,22 @@ def test_video_range_requests(client):
 def test_safe_filename():
     assert safe_filename("../../etc/passwd") == "passwd"
     assert safe_filename("") == "file"
+
+
+def test_sample_videos_page_is_public(anon):
+    page = anon.get("/samples")
+    assert page.status_code == 200 and "/samples/media/python-docs-asyncio.mp4" in page.text
+    assert anon.get("/samples/excalidraw-rectangle").status_code == 200
+    assert anon.get("/samples/nope").status_code == 404
+    assert "/samples/mdn-fetch-api" in anon.get("/").text
+
+
+def test_sample_media_redirects_to_signed_r2_link(anon, monkeypatch):
+    storage = anon.app.state.storage
+    assert anon.get("/samples/media/mdn-fetch-api.mp4").status_code == 404  # no R2 here
+    monkeypatch.setattr(type(storage), "backend", property(lambda self: "r2"))
+    monkeypatch.setattr(storage, "presign", lambda key, seconds: f"https://r2.test/{key}")
+    res = anon.get("/samples/media/mdn-fetch-api.mp4", follow_redirects=False)
+    assert res.status_code == 307 and res.headers["location"].endswith("samples/mdn-fetch-api.mp4")
+    assert anon.get("/samples/media/other.mp4", follow_redirects=False).status_code == 404
+    assert anon.get("/samples/media/mdn-fetch-api.txt", follow_redirects=False).status_code == 404

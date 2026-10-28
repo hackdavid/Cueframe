@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}Sample videos · Cueframe{% endblock %}
+{% block body %}
+<main>
+  <section class="relative overflow-hidden">
+    <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(217,70,239,0.16),transparent_55%)]"></div>
+    <div class="relative mx-auto max-w-6xl px-4 pb-10 pt-14 sm:pt-20">
+      <p class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300">
+        <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Real runs, not mockups
+      </p>
+      <h1 class="mt-5 max-w-3xl text-4xl font-semibold tracking-tight sm:text-5xl">
+        Watch Cueframe make a tutorial<br><span class="bg-gradient-to-r from-fuchsia-400 to-sky-400 bg-clip-text text-transparent">from a single sentence.</span>
+      </h1>
+      <p class="mt-5 max-w-2xl text-lg text-zinc-400">
+        Each video below started as one chat message. Cueframe opened the real website in a cloud Linux sandbox, clicked and typed through it, checked every step on screen, then added the narration, captions and zooms itself. Nobody edited them.
+      </p>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4">
+    <div class="grid gap-6 lg:grid-cols-3">
+      <div class="lg:col-span-2">
+        <div class="overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl shadow-fuchsia-500/10">
+          <video id="player" class="aspect-video w-full" controls playsinline preload="metadata"
+                 poster="{{ current.poster }}" src="{{ current.video }}"></video>
+        </div>
+      </div>
+      <aside class="rounded-2xl border border-white/10 bg-zinc-900/60 p-6">
+        <p id="s-site" class="text-xs font-medium uppercase tracking-wider text-sky-400">{{ current.site }}</p>
+        <h2 id="s-title" class="mt-2 text-xl font-semibold">{{ current.title }}</h2>
+        <p class="mt-5 text-xs font-medium uppercase tracking-wider text-zinc-500">What was asked</p>
+        <div class="mt-2 rounded-xl bg-zinc-800 px-4 py-3 text-sm text-zinc-200">“<span id="s-request">{{ current.request }}</span>”</div>
+        <p class="mt-5 text-xs font-medium uppercase tracking-wider text-zinc-500">Steps done and checked</p>
+        <ol id="s-steps" class="mt-2 space-y-1.5 text-sm">
+          {% for step in current.steps %}
+          <li class="flex items-center gap-2 text-zinc-300"><span class="grid h-5 w-5 place-items-center rounded-full bg-emerald-500/15 text-[11px] text-emerald-400">✓</span>{{ step }}</li>
+          {% endfor %}
+        </ol>
+        <dl class="mt-6 grid grid-cols-3 gap-2 text-center">
+          <div class="rounded-xl border border-white/10 bg-white/5 p-2.5"><dt class="text-[11px] text-zinc-500">Video</dt><dd id="s-length" class="mt-0.5 font-semibold">{{ current.length }}</dd></div>
+          <div class="rounded-xl border border-white/10 bg-white/5 p-2.5"><dt class="text-[11px] text-zinc-500">Made in</dt><dd id="s-made" class="mt-0.5 font-semibold">{{ current.made_in }}</dd></div>
+          <div class="rounded-xl border border-white/10 bg-white/5 p-2.5"><dt class="text-[11px] text-zinc-500">Self-fixes</dt><dd id="s-fixes" class="mt-0.5 font-semibold">{{ current.fixes }}</dd></div>
+        </dl>
+      </aside>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 py-14">
+    <h2 class="text-2xl font-semibold tracking-tight">All sample videos</h2>
+    <div class="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      {% for s in samples %}
+      <a href="/samples/{{ s.slug }}" data-slug="{{ s.slug }}"
+         class="sample-card group block overflow-hidden rounded-2xl border bg-zinc-900/50 transition hover:-translate-y-0.5 hover:border-sky-400/50 {% if s.slug == current.slug %}border-sky-400/60 ring-1 ring-sky-400/40{% else %}border-white/10{% endif %}">
+        <div class="relative aspect-video overflow-hidden bg-black">
+          <img src="{{ s.poster }}" alt="{{ s.title }}" loading="lazy" class="h-full w-full object-cover opacity-90 transition group-hover:scale-[1.03] group-hover:opacity-100">
+          <span class="absolute inset-0 grid place-items-center">
+            <span class="grid h-14 w-14 place-items-center rounded-full bg-white/90 text-xl text-zinc-900 shadow-lg transition group-hover:scale-110">▶</span>
+          </span>
+          <span class="absolute bottom-2 right-2 rounded-md bg-black/75 px-1.5 py-0.5 text-xs font-medium">{{ s.length }}</span>
+        </div>
+        <div class="p-4">
+          <p class="text-xs text-sky-400">{{ s.site }}</p>
+          <h3 class="mt-1 font-semibold">{{ s.title }}</h3>
+          <p class="mt-1 text-xs text-zinc-500">{{ s.steps|length }} steps · made in {{ s.made_in }}</p>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="border-t border-white/10 bg-zinc-900/40">
+    <div class="mx-auto grid max-w-6xl gap-5 px-4 py-14 md:grid-cols-3">
+      <div class="rounded-2xl border border-white/10 bg-zinc-950/60 p-6">
+        <h3 class="font-semibold">Recorded on a real machine</h3>
+        <p class="mt-2 text-sm text-zinc-400">A fresh cloud Linux desktop with a real browser for every request. It's shut down as soon as the video is done.</p>
+      </div>
+      <div class="rounded-2xl border border-white/10 bg-zinc-950/60 p-6">
+        <h3 class="font-semibold">Every step is checked</h3>
+        <p class="mt-2 text-sm text-zinc-400">After each click or keystroke, Cueframe reads the screen to confirm it worked. A step that fails is fixed from what's on screen and practised before anything is recorded.</p>
+      </div>
+      <div class="rounded-2xl border border-white/10 bg-zinc-950/60 p-6">
+        <h3 class="font-semibold">Nothing is staged</h3>
+        <p class="mt-2 text-sm text-zinc-400">The video only shows what really happened. If the result can't be confirmed, no video is published.</p>
+      </div>
+    </div>
+    <div class="pb-16 text-center">
+      <a href="/dashboard" class="rounded-xl bg-sky-600 px-6 py-3 font-medium text-white hover:bg-sky-500">Make your own tutorial</a>
+    </div>
+  </section>
+</main>
+<script id="samples-data" type="application/json">{{ samples|tojson }}</script>
+<script>
+(() => {
+  const samples = Object.fromEntries(JSON.parse(document.getElementById("samples-data").textContent).map((s) => [s.slug, s]));
+  const player = document.getElementById("player");
+  const set = (id, v) => (document.getElementById(id).textContent = v);
+  const show = (s, play) => {
+    player.poster = s.poster;
+    player.src = s.video;
+    set("s-site", s.site); set("s-title", s.title); set("s-request", s.request);
+    set("s-length", s.length); set("s-made", s.made_in); set("s-fixes", s.fixes);
+    const ol = document.getElementById("s-steps");
+    ol.replaceChildren(...s.steps.map((t) => {
+      const li = document.createElement("li");
+      li.className = "flex items-center gap-2 text-zinc-300";
+      li.innerHTML = '<span class="grid h-5 w-5 place-items-center rounded-full bg-emerald-500/15 text-[11px] text-emerald-400">✓</span>';
+      li.append(t);
+      return li;
+    }));
+    document.querySelectorAll(".sample-card").forEach((c) => {
+      const on = c.dataset.slug === s.slug;
+      c.classList.toggle("border-sky-400/60", on); c.classList.toggle("ring-1", on);
+      c.classList.toggle("ring-sky-400/40", on); c.classList.toggle("border-white/10", !on);
+    });
+    document.title = `${s.title} · Cueframe`;
+    if (play) player.play().catch(() => {});
+  };
+  document.querySelectorAll(".sample-card").forEach((c) => c.addEventListener("click", (e) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+    e.preventDefault();
+    history.pushState({ slug: c.dataset.slug }, "", c.href);
+    show(samples[c.dataset.slug], true);
+    player.scrollIntoView({ behavior: "smooth", block: "center" });
+  }));
+  window.addEventListener("popstate", () => {
+    const slug = location.pathname.split("/")[2];
+    show(samples[slug] || Object.values(samples)[0], false);
+  });
+})();
+</script>
+{% endblock %}

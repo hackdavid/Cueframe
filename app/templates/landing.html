@@ -16,7 +16,7 @@
       </p>
       <div class="mt-8 flex flex-wrap justify-center gap-3">
         <a href="/dashboard" class="rounded-xl bg-sky-600 px-5 py-3 font-medium text-white hover:bg-sky-500">Open the dashboard</a>
-        <a href="#why" class="rounded-xl border border-white/10 px-5 py-3 font-medium text-zinc-200 hover:bg-white/5">Why it matters</a>
+        <a href="/samples" class="rounded-xl border border-white/10 px-5 py-3 font-medium text-zinc-200 hover:bg-white/5">▶ Watch sample videos</a>
       </div>
       <div class="mx-auto mt-14 max-w-3xl rounded-2xl border border-white/10 bg-zinc-900/70 p-4 text-left shadow-2xl">
         <div class="flex justify-end"><div class="rounded-2xl bg-zinc-800 px-4 py-2.5 text-sm">I need a 30-second captioned vertical video from these 3 clips.</div></div>
@@ -32,6 +32,34 @@
             </div>
           </div>
         </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Sample videos -->
+  <section id="samples" class="border-t border-white/10">
+    <div class="mx-auto max-w-6xl px-4 py-20">
+      <div class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h2 class="text-3xl font-semibold tracking-tight">Made by Cueframe, start to finish</h2>
+          <p class="mt-3 max-w-2xl text-zinc-400">Each of these started as one sentence in the chat. Cueframe did the task on a real website, checked every step, and narrated it. Nobody edited them.</p>
+        </div>
+        <a href="/samples" class="rounded-xl border border-white/10 px-4 py-2 text-sm hover:bg-white/5">All sample videos →</a>
+      </div>
+      <div class="mt-10 grid gap-5 md:grid-cols-3">
+        {% for s in samples %}
+        <a href="/samples/{{ s.slug }}" class="group block overflow-hidden rounded-2xl border border-white/10 bg-zinc-900/50 transition hover:-translate-y-0.5 hover:border-sky-400/50">
+          <div class="relative aspect-video overflow-hidden bg-black">
+            <img src="{{ s.poster }}" alt="{{ s.title }}" loading="lazy" class="h-full w-full object-cover opacity-90 transition group-hover:scale-[1.03] group-hover:opacity-100">
+            <span class="absolute inset-0 grid place-items-center"><span class="grid h-14 w-14 place-items-center rounded-full bg-white/90 text-xl text-zinc-900 shadow-lg transition group-hover:scale-110">▶</span></span>
+            <span class="absolute bottom-2 right-2 rounded-md bg-black/75 px-1.5 py-0.5 text-xs font-medium">{{ s.length }}</span>
+          </div>
+          <div class="p-4">
+            <p class="text-xs text-sky-400">{{ s.site }}</p>
+            <h3 class="mt-1 font-semibold">{{ s.title }}</h3>
+          </div>
+        </a>
+        {% endfor %}
       </div>
     </div>
   </section>
