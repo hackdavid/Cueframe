@@ -324,3 +324,16 @@ def test_rehearsal_fails_when_the_result_never_shows_what_was_asked(client, monk
     job = _wait(client, jid, {"succeeded", "failed"})
     assert job["status"] == "failed" and "no shadow" in job["error"]
     assert all(b["status"] == "terminated" for b in _sandboxes(client))
+
+
+def test_fix_is_not_remembered_when_the_rehearsal_fails_later(client, monkeypatch):
+    fix = StepFix(drop=False, before=[], fixable=True, reason="typo",
+                  step=_step("x", command="cowsay hi"))  # fmt: skip
+    out = Outcome(done=False, missing=["no shadow"], after="run", steps=[])
+    llm = StubLLM([_plan(GOOD), _plan(GOOD)], [fix, fix], outcomes=[out] * 8)
+    _setup(client, monkeypatch, llm)
+    _, jid = _send(client)
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "failed" and "no shadow" in job["error"]
+    assert client.app.state.store.app_notes(["cowsay"]) == []

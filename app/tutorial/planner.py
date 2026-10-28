@@ -556,6 +556,8 @@ def learned(spec: dict[str, Any], i: int, old: dict[str, Any], prev: dict[str, A
     if k:
         first = " then ".join(said(s) for s in steps[i : i + k])
         return new["id"], f"{said(old)} only works after {first}; without it: {why}"
+    if said(new) == said(old):  # the same step passed on a retry: nothing learned
+        return new["id"], ""
     return new["id"], f"{said(old)} failed ({why}); what works: {said(new)}"
 
 
@@ -720,7 +722,8 @@ async def settle(
         app = step_apps(spec)[i] or _software(spec)
         after = f"After {said(spec['steps'][i - 1])}, also" if i else "Also"
         looked.append((app, f"{after} {steps}, or the result doesn't show {'; '.join(missing)}"))
-    for app, note in looked:  # the result showed with these steps, so they're worth keeping
+    # every step passed and the result showed, so what it took is worth keeping
+    for app, note in state.pop("learned", []) + looked:
         if app:
             ctx.store.add_app_note(app, note, ctx.id)
     spec["rehearsal"] = {"repairs": state["repairs"], "reviews": state.get("reviews", 0),
@@ -737,7 +740,8 @@ async def _run_from(
     sid: str, box: Sandbox, i: int,
 ) -> str | None:  # fmt: skip
     """Run steps `i`.. in order, repairing failures in place; None when all passed. A fix
-    is remembered for its app once the fixed step passes."""
+    is noted for its app once the fixed step passes, and kept once the whole rehearsal
+    passes (a fix that only moved the failure later is not something to learn)."""
     proof = state.setdefault("proof", {})  # step id whose pass proves a fix -> (app, note)
     mgr = ctx._manager.sandboxes
     while i < len(spec["steps"]):
@@ -749,7 +753,7 @@ async def _run_from(
         mgr.touch(sid)
         if rec.ok:
             if (app_note := proof.pop(step["id"], None)) and app_note[0]:
-                ctx.store.add_app_note(*app_note, ctx.id)
+                state.setdefault("learned", []).append(app_note)
             i += 1
             continue
         why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
@@ -770,7 +774,7 @@ async def _run_from(
             await mgr.stop(sid, "rehearsal failed")
             return err
         pid, note = learned(spec, i, old, prev, n, brief)
-        proof[pid] = (app, note)
+        proof[pid] = (app if note else None, note)
         heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
              f"real output as {fixed(spec, i, n)}")  # fmt: skip
     return None
@@ -823,7 +827,7 @@ async def review(
         instructions=REVIEW, input=[{"role": "user", "content": content}],
         timeout=REVIEW_TIMEOUT, reasoning_effort=ctx.settings.plan_reasoning or None,
     )  # fmt: skip
-    if out.done or not out.steps:
+    if out.done:
         return None
     ids = [s["id"] for s in spec["steps"]]
     if out.after in ids:
