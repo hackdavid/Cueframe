@@ -5,6 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from app.auth import COOKIE, logout, optional_user
+from app.samples import BY_SLUG, SAMPLES
 
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 router = APIRouter(include_in_schema=False)
@@ -12,7 +13,33 @@ router = APIRouter(include_in_schema=False)
 
 @router.get("/", response_class=HTMLResponse)
 def landing(request: Request) -> Response:
-    return templates.TemplateResponse(request, "landing.html", {"user": optional_user(request)})
+    return templates.TemplateResponse(
+        request, "landing.html", {"user": optional_user(request), "samples": SAMPLES[:3]}
+    )
+
+
+@router.get("/samples/media/{name}")
+def sample_media(request: Request, name: str) -> Response:
+    """Public sample videos and posters: a short-lived signed R2 link (Range requests work)."""
+    slug, _, ext = name.rpartition(".")
+    storage = request.app.state.storage
+    if slug not in BY_SLUG or ext not in ("mp4", "jpg") or storage.backend != "r2":
+        raise HTTPException(404, "Not found")
+    url = storage.presign(storage.ref(f"samples/{slug}.{ext}")["key"], seconds=6 * 3600)
+    return RedirectResponse(url, 307, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@router.get("/samples", response_class=HTMLResponse)
+@router.get("/samples/{slug}", response_class=HTMLResponse)
+def samples_page(request: Request, slug: str | None = None) -> Response:
+    if slug is not None and slug not in BY_SLUG:
+        raise HTTPException(404, "Sample not found")
+    current = BY_SLUG[slug] if slug else SAMPLES[0]
+    return templates.TemplateResponse(
+        request,
+        "samples.html",
+        {"user": optional_user(request), "samples": SAMPLES, "current": current},
+    )
 
 
 @router.get("/login", response_class=HTMLResponse)
