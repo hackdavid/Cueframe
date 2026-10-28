@@ -25,6 +25,7 @@ from app.tutorial.build import COLS, PROMPT
 
 MAX_REPAIRS = 3  # per step
 MAX_TOTAL_REPAIRS = 10  # per rehearsal
+REPAIR_TIMEOUT = 90  # s per model call; a stalled call is retried sooner
 SANDBOX_TRIES = 2  # a sandbox that breaks mid-run is replaced this many times - 1
 MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
 
@@ -99,12 +100,11 @@ class StepFix(BaseModel):
 
     fixable: bool = Field(description="False if the task can't work in this sandbox")
     reason: str = Field(description="What went wrong, one sentence")
-    step: PlannedStep
     before: list[PlannedStep] = Field(
-        default_factory=list,
-        description="Up to 2 steps the plan is missing that must run first (e.g. dismiss a "
-        "start screen, open the menu or dialog the step types into); usually empty",
+        description="Steps the plan is missing that must run first, at most 2 (e.g. click a "
+        "start screen's button, open the menu or dialog the step uses); [] if none"
     )
+    step: PlannedStep
 
 
 SANDBOX = """The sandbox is a fresh Debian Linux desktop at 1920x1080 with
@@ -503,7 +503,7 @@ async def repair(
     for _ in range(3):
         fix, _ = await ctx.llm.parse(
             StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
-            instructions=FIX, input=ask,
+            instructions=FIX, input=ask, timeout=REPAIR_TIMEOUT,
         )  # fmt: skip
         if fix.before or not fix.fixable:
             break

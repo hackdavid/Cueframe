@@ -114,6 +114,7 @@ class MetaClient:
         max_tool_calls: int | None = None,
         include: list[str] | None = None,
         schema: type[BaseModel] | None = None,
+        timeout: float | None = None,
     ) -> LLMResponse:
         if not self.configured:
             raise LLMError("MODEL_API_KEY is not configured")
@@ -138,7 +139,9 @@ class MetaClient:
         started = time.monotonic()
         for attempt in range(self.max_retries + 1):
             try:
-                res = await self._http.post("/responses", json=body)
+                res = await self._http.post(
+                    "/responses", json=body, timeout=timeout or httpx.USE_CLIENT_DEFAULT
+                )
             except httpx.HTTPError as exc:
                 err: str = f"{type(exc).__name__}: {exc}"
             else:

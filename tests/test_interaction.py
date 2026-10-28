@@ -102,7 +102,7 @@ def test_gui_tutorial_repairs_a_missing_element_from_what_is_visible(client, mon
     monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
                                                 "browser": "Download Python"})  # fmt: skip
     monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
-    fix = planner.StepFix(fixable=True, reason="label", step=_step(
+    fix = planner.StepFix(before=[], fixable=True, reason="label", step=_step(
         "x", "click", app="browser", target="Download", expect="Download"))  # fmt: skip
     llm = StubLLM([_plan(GUI, intro=LONG)], [fix])
     _setup(client, monkeypatch, llm, fail=())
@@ -249,8 +249,8 @@ def test_a_repair_that_repeats_the_failed_step_is_asked_again(client, monkeypatc
     monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
                                                 "browser": "Download Python"})  # fmt: skip
     monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
-    same = planner.StepFix(fixable=True, reason="retry", step=GUI[-1].model_copy())
-    fix = planner.StepFix(fixable=True, reason="label", step=_step(
+    same = planner.StepFix(before=[], fixable=True, reason="retry", step=GUI[-1].model_copy())
+    fix = planner.StepFix(before=[], fixable=True, reason="label", step=_step(
         "x", "click", app="browser", target="Download", expect="Download"))  # fmt: skip
     llm = StubLLM([_plan(GUI, intro=LONG)], [same, fix])
     _setup(client, monkeypatch, llm, fail=())
