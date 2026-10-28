@@ -25,7 +25,7 @@ from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
 from app.sandbox.contracts import Action, live_path
 from app.sandbox.manager import SandboxLimit
-from app.tutorial import planner, qa, recipes, shown
+from app.tutorial import formats, planner, qa, recipes, shown
 from app.tutorial.build import build
 from app.tutorial.contracts import Tutorial
 from app.tutorial.render import render
@@ -401,9 +401,11 @@ async def make(
     goal: str | None = None,
     mode: planner.Mode = "tutorial",
     trending: bool = False,
+    seconds: int | None = None,
 ) -> dict[str, Any]:
     """Make a tutorial from a hand-written recipe, or plan one for `goal`. `mode` is
-    the narration style (tutorial or influencer); `trending` first finds today's item."""
+    the style (tutorial, influencer reel or explainer), `seconds` the target length (the
+    plan is then storyboarded first); `trending` first finds today's item."""
     missing = [k for k in ("ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID") if not os.environ.get(k)]
     if missing:
         raise RuntimeError(f"Tutorial narration needs {', '.join(missing)} on the server")
@@ -425,7 +427,7 @@ async def make(
             kicker = f"TRENDING · {found.source.upper()}"[:44]
             ctx.reply(f"**Trending pick: {found.name}** ({found.source}, {found.why_trending})"
                       f"\n\n{found.one_liner}\n\n{found.url}")  # fmt: skip
-        planned = await planner.plan(ctx, goal, mode=mode, brief=brief)
+        planned = await planner.plan(ctx, goal, mode=mode, brief=brief, seconds=seconds)
         if isinstance(planned, str):
             ctx.reply(f"I can't make that tutorial: {planned}")
             return {"routed": "make_tutorial", "planned": False, "reason": planned}
@@ -461,7 +463,12 @@ async def make(
     ctx.emit("tutorial.created", {"tutorial_id": tid})
     if recipe_id == "planned":
         row = await first_take(ctx, row, answers, heal)
-    return await produce(ctx, row, heal)
+    out = await produce(ctx, row, heal)
+    sb = (row.get("spec") or spec).get("storyboard") or {}
+    if sb.get("caption") and isinstance(out, dict):
+        ctx.reply(formats.social(sb))
+        out["social"] = {"caption": sb["caption"], "hashtags": sb.get("hashtags") or []}
+    return out
 
 
 def _hidden(spec: dict[str, Any], answers: dict[str, bool]) -> list[str]:
@@ -542,7 +549,8 @@ async def replanned(
     rehearse the new plan."""
     heal(f"The first plan couldn't work here ({why}); planned the tutorial again around it")
     again = await planner.plan(ctx, spec["goal"], avoid=why, mode=spec.get("mode", "tutorial"),
-                               brief=spec.get("brief", ""))  # fmt: skip
+                               brief=spec.get("brief", ""), seconds=spec.get("seconds"),
+                               board=spec.get("storyboard"))  # fmt: skip
     if isinstance(again, str):
         raise JobFailed(f"The rehearsal failed, so nothing was recorded: {why}. {again}",
                         {"rehearsal": why})  # fmt: skip

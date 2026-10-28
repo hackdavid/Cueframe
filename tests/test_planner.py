@@ -50,7 +50,7 @@ class StubLLM:
     async def parse(self, schema, **kw):
         self.inputs.append((schema.__name__, kw.get("input", "")))
         if schema is Route:
-            return Route(intent="make_tutorial"), None
+            return Route(intent="make_tutorial", format="tutorial", seconds=90), None
         if schema is TutorialPlan:
             return self.plans.pop(0), None
         if schema is StepFix:
@@ -152,7 +152,7 @@ def test_unfixable_rehearsal_records_nothing(client, monkeypatch):
     job = _wait(client, jid, {"succeeded", "failed"})
     assert job["status"] == "failed" and "failed twice" in job["error"]
     assert "needs a GPU" in job["error"]
-    assert "failed when run for real" in llm.inputs[3][1]  # the re-plan saw the failure
+    assert "failed when run for real" in plans(llm)[1]  # the re-plan saw the failure
     boxes = _sandboxes(client)
     assert len(boxes) == 2 and all(b["status"] == "terminated" for b in boxes)  # no recording
     assert client.get("/api/tutorials", headers=_auth(client)).json() == []

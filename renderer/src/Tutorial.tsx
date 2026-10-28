@@ -133,6 +133,8 @@ const Screen: React.FC<{ t: Tutorial; s: State }> = ({ t, s }) => {
   const tx = CARD.w / 2 - c.cx * K * c.zoom;
   const ty = CARD.h / 2 - c.cy * K * c.zoom;
   const src0 = s.source!;
+  // Narration edited to run longer than the captured step: hold its last frame.
+  const last = Math.floor(((src0.t_out - src0.t_in) / src0.rate) * fps) - 1;
   return (
     <div
       style={{
@@ -153,13 +155,12 @@ const Screen: React.FC<{ t: Tutorial; s: State }> = ({ t, s }) => {
               style={{ width: SRC_W * K, height: SRC_H * K }}
             />
           );
-          // Narration edited to run longer than the captured step: hold its last frame.
-          const last = Math.floor(((src0.t_out - src0.t_in) / src0.rate) * fps) - 1;
           return f > last ? <Freeze frame={last}>{video}</Freeze> : video;
         })()}
         {s.highlights.map((h, i) => <HighlightBox key={i} h={h} tt={tt} zoom={c.zoom} />)}
       </div>
       {s.badge && <Badge text={s.badge} s={s} />}
+      {src0.rate > 1 && f <= last && <FastForward rate={src0.rate} />}
     </div>
   );
 };
@@ -371,3 +372,18 @@ const Outro: React.FC<{ t: Tutorial }> = ({ t }) => {
     </AbsoluteFill>
   );
 };
+
+// The storyboard sped this stretch of the real recording up: say so on screen.
+function FastForward({ rate }: { rate: number }) {
+  return (
+    <div
+      style={{
+        position: "absolute", right: 24, top: 24, padding: "8px 18px", borderRadius: 999,
+        background: "rgba(10,12,20,.72)", color: "#fff", fontSize: 30, fontWeight: 700,
+        letterSpacing: 1, fontFamily: "inherit", boxShadow: "0 0 0 1px rgba(255,255,255,.18)",
+      }}
+    >
+      {"\u25B6\u25B6 "}{rate >= 10 ? Math.round(rate) : Math.round(rate * 10) / 10}{"\u00D7"}
+    </div>
+  );
+}
