@@ -114,6 +114,19 @@ CREATE TABLE IF NOT EXISTS tutorials (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_tutorials_conv ON tutorials(conversation_id, created_at);
+CREATE TABLE IF NOT EXISTS app_notes (
+    app TEXT NOT NULL,
+    note TEXT NOT NULL,
+    job_id TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (app, note)
+);
+CREATE TABLE IF NOT EXISTS plans (
+    goal TEXT PRIMARY KEY,
+    spec TEXT NOT NULL,
+    job_id TEXT,
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT,
@@ -394,6 +407,34 @@ class Store:
         cols = ", ".join(f"{k} = ?" for k in fields)
         self._exec(f"UPDATE tutorials SET {cols} WHERE id = ?", (*fields.values(), tid))
         return self.get_tutorial(tid)  # type: ignore[return-value]
+
+    def delete_tutorial(self, tid: str) -> None:
+        self._exec("DELETE FROM tutorials WHERE id = ?", (tid,))
+
+    # what rehearsals learned about apps, and plans that worked
+    def add_app_note(self, app: str, note: str, job_id: str | None) -> None:
+        self._exec(
+            "INSERT OR IGNORE INTO app_notes VALUES (?, ?, ?, ?)", (app, note, job_id, now())
+        )
+
+    def app_notes(self, apps: Collection[str], limit: int = 12) -> list[str]:
+        out: list[str] = []
+        for app in apps:
+            rows = self._all("SELECT note FROM app_notes WHERE app = ? ORDER BY created_at DESC "
+                             "LIMIT ?", (app, limit))  # fmt: skip
+            out += [f"{app}: {r['note']}" for r in reversed(rows)]
+        return out
+
+    def known_apps(self) -> list[str]:
+        return [r["app"] for r in self._all("SELECT DISTINCT app FROM app_notes")]
+
+    def save_plan(self, goal: str, spec: dict[str, Any], job_id: str | None) -> None:
+        self._exec("INSERT OR REPLACE INTO plans VALUES (?, ?, ?, ?)",
+                   (goal, json.dumps(spec), job_id, now()))  # fmt: skip
+
+    def get_plan(self, goal: str) -> dict[str, Any] | None:
+        row = self._one("SELECT spec FROM plans WHERE goal = ?", (goal,))
+        return json.loads(row["spec"]) if row else None
 
     # jobs
     def create_job(

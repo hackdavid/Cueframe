@@ -9,9 +9,11 @@ plan whose every step passed is recorded, so the video never shows guesswork.
 
 import asyncio
 import base64
+import copy
 import re
 import shlex
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -19,7 +21,7 @@ from app.agents.contracts import ResearchRequest
 from app.agents.docs_research import DocsResearchAgent
 from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
-from app.sandbox.base import ANSI, Sandbox, menu_path
+from app.sandbox.base import ANSI, FOCUS, Sandbox, menu_path
 from app.sandbox.contracts import Action, ActionRecord, live_path
 from app.sandbox.manager import SandboxLimit
 from app.tutorial.build import COLS, PROMPT
@@ -420,8 +422,19 @@ async def plan(ctx: JobContext, goal: str, avoid: str = "") -> dict[str, Any] | 
     a failure from a previous plan's rehearsal; the new plan must work around it."""
     if ctx.llm is None or not ctx.llm.configured:
         return "Planning a new tutorial needs MODEL_API_KEY on the server."
-    ctx.phase("research", "Reading the official docs")
-    ref = await research(ctx, goal)
+    if not avoid and (hit := ctx.store.get_plan(goal_key(goal))):
+        ctx.thinking("Plan", "Reusing the plan that was rehearsed for this exact task before")
+        return {**copy.deepcopy(hit), "goal": goal, "reused": True}
+    low = goal.lower()
+    apps = [a for a in ctx.store.known_apps() if re.search(rf"\b{re.escape(a)}\b", low)]
+    notes = ctx.store.app_notes(apps)
+    if notes:  # an app seen in earlier rehearsals: what they found beats the docs
+        ref = ("Seen for real in earlier rehearsals of these apps (follow it):\n"
+               + "\n".join(f"- {n}" for n in notes))  # fmt: skip
+        ctx.thinking("Plan", f"Using {len(notes)} things learned about {', '.join(apps)}")
+    else:
+        ctx.phase("research", "Reading the official docs")
+        ref = await research(ctx, goal)
     ctx.phase("plan", "Planning the tutorial steps")
     prompt = f"Task: {goal}\n\n{ref}".strip()
     if avoid:
@@ -431,13 +444,14 @@ async def plan(ctx: JobContext, goal: str, avoid: str = "") -> dict[str, Any] | 
         p, _res = await ctx.llm.parse(
             TutorialPlan, purpose="tutorial.plan", model=ctx.settings.research_model,
             instructions=RULES, input=prompt,
+            reasoning_effort=ctx.settings.plan_reasoning or None,
         )  # fmt: skip
         if not p.feasible:
             return p.reason or "That task can't be shown in a Linux terminal and browser."
         issues = problems(p)
         ctx.thinking("Plan", "; ".join(issues) or f"{len(p.steps)} steps: {p.title}")
         if not issues:
-            return to_spec(p, goal)
+            return {**to_spec(p, goal), "notes": notes}
         prompt += f"\n\nYour previous plan had problems, fix them: {'; '.join(issues)}"
     return f"I couldn't produce a safe, runnable plan ({'; '.join(issues)})."
 
@@ -500,6 +514,51 @@ def fixed(spec: dict[str, Any], i: int, n_before: int) -> str:
     )
 
 
+def goal_key(goal: str) -> str:
+    return " ".join(goal.lower().split())
+
+
+def step_apps(spec: dict[str, Any]) -> list[str | None]:
+    """The app each step works in: a site's name ('photopea'), a desktop app's command,
+    or None for the terminal."""
+    site, out = None, []
+    for s in spec["steps"]:
+        a = s["action"]
+        if a["kind"] == "open_url":
+            host = (urlparse(a.get("url") or "").hostname or "").removeprefix("www.")
+            site = host.split(".")[0] or None
+            out.append(site)
+        elif a["kind"] == "launch":
+            out.append((a.get("command") or "").split(" ")[0] or None)
+        elif a["kind"] == "terminal":
+            out.append(None)
+        else:
+            out.append(site if a.get("app") in ("browser", "", None) else a.get("app"))
+    return out
+
+
+def said(step: dict[str, Any]) -> str:
+    a = step["action"]
+    check = f" (check '{a['expect']}')" if a.get("expect") else ""
+    return f"{a['kind']} `{what(step)}`{check}"
+
+
+def learned(spec: dict[str, Any], i: int, old: dict[str, Any], prev: dict[str, Any] | None,
+            n: int, why: str) -> tuple[str, str]:  # fmt: skip
+    """After a fix of step `i` (was `old`, plan had `n` steps): (id of the step whose pass
+    proves the fix, what to remember)."""
+    steps, k = spec["steps"], len(spec["steps"]) - n
+    if k < 0:
+        after = f" after {said(prev)}" if prev else ""
+        nxt = steps[i]["id"] if i < len(steps) else ""
+        return nxt, f"{said(old)} is not needed{after}: {why}. Leave it out"
+    new = steps[i + k]
+    if k:
+        first = " then ".join(said(s) for s in steps[i : i + k])
+        return new["id"], f"{said(old)} only works after {first}; without it: {why}"
+    return new["id"], f"{said(old)} failed ({why}); what works: {said(new)}"
+
+
 def what(step: dict[str, Any]) -> str:
     a = step["action"]
     return (a.get("command") or a.get("url") or a.get("keys") or a.get("text")
@@ -534,6 +593,10 @@ async def repair(
     goal = spec.get("goal") or spec["title"]
     ask = (f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step {i + 1} "
            f"({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}")  # fmt: skip
+    if spec.get("notes"):
+        ask += "\n\nSeen for real in earlier rehearsals:\n" + "\n".join(
+            f"- {n}" for n in spec["notes"]
+        )
     prev = spec["steps"][i - 1]["action"] if i else None
     if "No element matching" in why and CONFIRM.match(step["action"].get("target") or ""):
         ask += (
@@ -603,7 +666,7 @@ async def rehearse(ctx: JobContext, spec: dict[str, Any], heal: Healer | None = 
     every step passed, else why it can't be done. Updates `spec` with the fixes. A
     sandbox that breaks (not a step that fails) is replaced and the rehearsal restarts."""
     heal = heal or Healer(ctx)
-    state = {"repairs": 0}
+    state: dict[str, Any] = {"repairs": 0}
     for attempt in range(1, SANDBOX_TRIES + 1):
         try:
             return await _rehearse(ctx, spec, heal, state)
@@ -615,40 +678,66 @@ async def rehearse(ctx: JobContext, spec: dict[str, Any], heal: Healer | None = 
 
 
 async def _rehearse(
-    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, int]
+    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, Any]
 ) -> str | None:
     mgr = ctx._manager.sandboxes
     ctx.phase("rehearse", "Rehearsing every step in a private sandbox (not recorded)")
     async with mgr.session(ctx.id, ctx.conversation_id) as (sid, box):
         ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
         await put_files(box, spec)
-        i = 0
-        while True:
-            if (err := await _run_from(ctx, spec, heal, state, sid, box, i)) is not None:
-                return err
-            async with mgr.busy(sid):
-                found = await review(ctx, box, spec)
-            if found is None:
-                break
-            i, missing, added = found
-            if not added or state.setdefault("reviews", 0) >= MAX_REVIEWS:
-                await mgr.stop(sid, "rehearsal failed")
-                return f"the finished result doesn't show: {'; '.join(missing)}"
-            state["reviews"] += 1
-            steps = " → ".join(f"`{what(s)}`" for s in spec["steps"][i : i + added])
-            heal(f"Rehearsal: every step passed, but the result didn't show "
-                 f"{'; '.join(missing)}; added {steps}")  # fmt: skip
+        err, _ = await settle(ctx, spec, heal, state, sid, box, 0)
+        if err:
+            return err
         await mgr.stop(sid, "rehearsal passed")
-    spec["rehearsal"] = {"repairs": state["repairs"], "reviews": state.get("reviews", 0),
-                         "sandbox_id": sid}  # fmt: skip
     return None
 
 
+async def settle(
+    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, Any],
+    sid: str, box: Sandbox, i: int | None,
+) -> tuple[str | None, bool]:  # fmt: skip
+    """Finish a rehearsal in `box`: run steps `i`.. repairing failures (None: every step
+    already ran), then look at the result and add what's missing. (why it can't be done
+    or None, whether the review changed the plan). The sandbox is stopped on failure."""
+    mgr, changed, looked = ctx._manager.sandboxes, False, []
+    while True:
+        if i is not None and (err := await _run_from(ctx, spec, heal, state, sid, box, i)):
+            return err, changed
+        async with mgr.busy(sid):
+            found = await review(ctx, box, spec)
+        if found is None:
+            break
+        i, missing, added = found
+        if not added or state.setdefault("reviews", 0) >= MAX_REVIEWS:
+            await mgr.stop(sid, "rehearsal failed")
+            return f"the finished result doesn't show: {'; '.join(missing)}", changed
+        state["reviews"] += 1
+        changed = True
+        steps = " → ".join(f"`{what(s)}`" for s in spec["steps"][i : i + added])
+        heal(f"Rehearsal: every step passed, but the result didn't show "
+             f"{'; '.join(missing)}; added {steps}")  # fmt: skip
+        app = step_apps(spec)[i] or _software(spec)
+        after = f"After {said(spec['steps'][i - 1])}, also" if i else "Also"
+        looked.append((app, f"{after} {steps}, or the result doesn't show {'; '.join(missing)}"))
+    for app, note in looked:  # the result showed with these steps, so they're worth keeping
+        if app:
+            ctx.store.add_app_note(app, note, ctx.id)
+    spec["rehearsal"] = {"repairs": state["repairs"], "reviews": state.get("reviews", 0),
+                         "sandbox_id": sid}  # fmt: skip
+    return None, changed
+
+
+def _software(spec: dict[str, Any]) -> str | None:
+    return (spec.get("software") or "").lower().split(" ")[0] or None
+
+
 async def _run_from(
-    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, int],
+    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, Any],
     sid: str, box: Sandbox, i: int,
 ) -> str | None:  # fmt: skip
-    """Run steps `i`.. in order, repairing failures in place; None when all passed."""
+    """Run steps `i`.. in order, repairing failures in place; None when all passed. A fix
+    is remembered for its app once the fixed step passes."""
+    proof = state.setdefault("proof", {})  # step id whose pass proves a fix -> (app, note)
     mgr = ctx._manager.sandboxes
     while i < len(spec["steps"]):
         step = spec["steps"][i]
@@ -658,6 +747,8 @@ async def _run_from(
             rec = await check(box, step, await box.run(i, Action.model_validate(step["action"])))
         mgr.touch(sid)
         if rec.ok:
+            if (app_note := proof.pop(step["id"], None)) and app_note[0]:
+                ctx.store.add_app_note(*app_note, ctx.id)
             i += 1
             continue
         why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
@@ -670,12 +761,15 @@ async def _run_from(
         state["repairs"] += 1
         state[step["id"]] = tries + 1
         ctx.phase("plan", f"Fixing step {i + 1} from its real output")
-        n = len(spec["steps"])
+        n, old, prev = len(spec["steps"]), copy.deepcopy(step), spec["steps"][i - 1] if i else None
+        app = step_apps(spec)[i] or _software(spec)
         async with mgr.busy(sid):  # the sandbox waits for the fix; no idle shutdown
             err = await repair(ctx, spec, i, rec)
         if err:
             await mgr.stop(sid, "rehearsal failed")
             return err
+        pid, note = learned(spec, i, old, prev, n, brief)
+        proof[pid] = (app, note)
         heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
              f"real output as {fixed(spec, i, n)}")  # fmt: skip
     return None
@@ -703,6 +797,13 @@ async def review(
     if ctx.llm is None or not ctx.llm.configured:
         return None
     goal = spec.get("goal") or spec["title"]
+    if spec["steps"] and spec["steps"][-1]["action"]["kind"] == "terminal":
+        gui = [s["action"] for s in spec["steps"] if s["action"]["kind"] != "terminal"]
+        if gui:  # a closing terminal check covers the result; look at the app instead
+            a = gui[-1]
+            app = (a.get("command") or "").split(" ")[0] if a["kind"] == "launch" else (
+                a.get("app") or "browser")  # fmt: skip
+            await box.exec(FOCUS.get(app) or f"/opt/cf/focus.sh {shlex.quote(app)}", 20)
     await box.screenshot()
     content: list[dict[str, str]] = [
         {"type": "input_text", "text": f"Task: {goal}\nPlan:\n{describe_plan(spec)}"},

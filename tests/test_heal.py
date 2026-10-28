@@ -92,7 +92,7 @@ def test_step_failing_while_recording_is_fixed_and_recorded_again(client, monkey
     async def check(box, step, rec):
         if step["action"].get("command") == "flaky":
             seen.append(1)
-            if len(seen) == 2:  # passes in rehearsal, fails in the first recording take
+            if len(seen) in (1, 3):  # fails in the recorded rehearsal and the next take
                 rec.ok, rec.returncode, rec.output_tail = False, 100, "E: mirror timeout\n"
         return await inner(box, step, rec)
 
@@ -188,5 +188,5 @@ def test_interrupted_tutorial_resumes_after_restart(client, monkeypatch):
     notes = tut["output"]["healing"]
     assert notes[0] == "Upload of x failed; retrying" and "server restarted" in notes[1]
     assert tut["spec"]["healing"] == notes
-    assert len(client.get("/api/sandboxes", headers=_auth(client)).json()) == 2  # no re-record
+    assert len(client.get("/api/sandboxes", headers=_auth(client)).json()) == 1  # no re-record
     assert store.get_tutorial(other["id"])["status"] == "capturing"
