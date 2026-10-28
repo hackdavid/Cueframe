@@ -557,14 +557,87 @@ async def plan(
         )  # fmt: skip
         if not p.feasible:
             return p.reason or "That task can't be shown in a Linux terminal and browser."
-        issues = problems(p, mode)
-        if brief and not issues:
-            issues = await ungrounded(ctx, p, brief)
+        issues = await _checked(ctx, p, mode, brief)
+        for _ in range(RETELLS):  # wording only: a quick narration rewrite, not a new plan
+            if not issues or not all(SPOKEN_ISSUE.search(x) for x in issues):
+                break
+            ctx.thinking("Plan", f"{'; '.join(issues)}; rewriting just the narration")
+            if not await retell(ctx, p, issues, mode, brief):
+                break
+            issues = await _checked(ctx, p, mode, brief)
         ctx.thinking("Plan", "; ".join(issues) or f"{len(p.steps)} steps: {p.title}")
         if not issues:
             return to_spec(p, goal, mode)
         prompt += f"\n\nYour previous plan had problems, fix them: {'; '.join(issues)}"
     return f"I couldn't produce a safe, runnable plan ({'; '.join(issues)})."
+
+
+RETELLS = 2
+SPOKEN_ISSUE = re.compile(r"^narration (is \d+ words|not backed by the source)")
+
+RETELL = """You rewrite only the spoken narration of a tutorial video plan; the steps, their
+order and what they do stay exactly as they are. Fix the problems listed, keep the same
+voice and style, and say only what the steps really show (and, given a source brief,
+only facts from it). Narration is read by a text-to-speech voice: short sentences, no
+markdown, names written the way they're said. Return every step's narration (and its
+`after` line, '' if none) by step id, plus the intro and outro."""
+
+
+class SpokenLine(BaseModel):
+    id: str
+    narration: str = Field(description="2 short spoken sentences while the step runs")
+    after: str = Field(description="1 sentence after a slow command ends; usually ''")
+
+
+class Retold(BaseModel):
+    """LLM contract: new narration for an otherwise unchanged plan."""
+
+    intro: str
+    outro: str
+    steps: list[SpokenLine]
+
+
+async def _checked(ctx: JobContext, p: TutorialPlan, mode: Mode, brief: str) -> list[str]:
+    issues = problems(p, mode)
+    if brief and not issues:
+        issues = await ungrounded(ctx, p, brief)
+    return issues
+
+
+async def retell(
+    ctx: JobContext, p: TutorialPlan, issues: list[str], mode: Mode, brief: str
+) -> bool:
+    """Rewrite `p`'s narration in place to fix wording-only `issues` (length, unsupported
+    claims) with one quick call; False when the answer doesn't fit the plan."""
+    words = (f"{REEL_WORDS[0]}-{REEL_WORDS[1]}" if mode == "influencer"
+             else f"at least {MIN_WORDS}")  # fmt: skip
+    ask = (f"Problems: {'; '.join(issues)}\nTotal spoken words needed: {words}.\n\n"
+           f"{'BRIEF:' + chr(10) + brief + chr(10) * 2 if brief else ''}"
+           f"PLAN:\nintro: {p.intro}\n{describe_steps(p)}\noutro: {p.outro}")  # fmt: skip
+    try:
+        r, _ = await ctx.llm.parse(
+            Retold, purpose="tutorial.retell", model=ctx.settings.research_model,
+            instructions=RETELL, input=ask, timeout=REPAIR_TIMEOUT,
+            reasoning_effort=ctx.settings.fix_reasoning or None,
+        )  # fmt: skip
+    except Exception as exc:
+        ctx.thinking("Plan", f"narration rewrite failed ({short(str(exc))})")
+        return False
+    by_id = {s.id: s for s in r.steps}
+    if set(by_id) != {s.id for s in p.steps} or not r.intro.strip() or not r.outro.strip():
+        return False
+    p.intro, p.outro = r.intro, r.outro
+    for s in p.steps:
+        s.narration, s.after = by_id[s.id].narration, by_id[s.id].after
+    return True
+
+
+def describe_steps(p: TutorialPlan) -> str:
+    return "\n".join(
+        f"{s.id} ({s.kind}: {s.command or s.url or s.target or s.text or s.keys}): "
+        f"narration={s.narration!r} after={s.after!r}"
+        for s in p.steps
+    )
 
 
 def output_lines(rec: ActionRecord | dict[str, Any], command: str) -> list[str]:
@@ -683,7 +756,7 @@ async def repair(
         fix, _ = await ctx.llm.parse(
             StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
             instructions=FIX, input=ask, timeout=REPAIR_TIMEOUT,
-            reasoning_effort=ctx.settings.plan_reasoning or None,
+            reasoning_effort=ctx.settings.fix_reasoning or None,
         )  # fmt: skip
         if any(b.kind == "click" and CONSENT.search(b.target) for b in (*fix.before, fix.step)):
             ask += (
