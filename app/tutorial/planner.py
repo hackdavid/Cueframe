@@ -615,6 +615,7 @@ async def repair(
         fix, _ = await ctx.llm.parse(
             StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
             instructions=FIX, input=ask, timeout=REPAIR_TIMEOUT,
+            reasoning_effort=ctx.settings.plan_reasoning or None,
         )  # fmt: skip
         if prev and any(action(b) == prev for b in fix.before):
             ask += (
@@ -819,7 +820,7 @@ async def review(
     out, _ = await ctx.llm.parse(
         Outcome, purpose="tutorial.review", model=ctx.settings.research_model,
         instructions=REVIEW, input=[{"role": "user", "content": content}],
-        timeout=REVIEW_TIMEOUT,
+        timeout=REVIEW_TIMEOUT, reasoning_effort=ctx.settings.plan_reasoning or None,
     )  # fmt: skip
     if out.done or not out.steps:
         return None
