@@ -9,11 +9,9 @@ plan whose every step passed is recorded, so the video never shows guesswork.
 
 import asyncio
 import base64
-import copy
 import re
 import shlex
 from typing import Any, Literal
-from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field
 
@@ -422,19 +420,8 @@ async def plan(ctx: JobContext, goal: str, avoid: str = "") -> dict[str, Any] | 
     a failure from a previous plan's rehearsal; the new plan must work around it."""
     if ctx.llm is None or not ctx.llm.configured:
         return "Planning a new tutorial needs MODEL_API_KEY on the server."
-    if not avoid and (hit := ctx.store.get_plan(goal_key(goal))):
-        ctx.thinking("Plan", "Reusing the plan that was rehearsed for this exact task before")
-        return {**copy.deepcopy(hit), "goal": goal, "reused": True}
-    low = goal.lower()
-    apps = [a for a in ctx.store.known_apps() if re.search(rf"\b{re.escape(a)}\b", low)]
-    notes = ctx.store.app_notes(apps)
-    if notes:  # an app seen in earlier rehearsals: what they found beats the docs
-        ref = ("Seen for real in earlier rehearsals of these apps (follow it):\n"
-               + "\n".join(f"- {n}" for n in notes))  # fmt: skip
-        ctx.thinking("Plan", f"Using {len(notes)} things learned about {', '.join(apps)}")
-    else:
-        ctx.phase("research", "Reading the official docs")
-        ref = await research(ctx, goal)
+    ctx.phase("research", "Reading the official docs")
+    ref = await research(ctx, goal)
     ctx.phase("plan", "Planning the tutorial steps")
     prompt = f"Task: {goal}\n\n{ref}".strip()
     if avoid:
@@ -451,7 +438,7 @@ async def plan(ctx: JobContext, goal: str, avoid: str = "") -> dict[str, Any] | 
         issues = problems(p)
         ctx.thinking("Plan", "; ".join(issues) or f"{len(p.steps)} steps: {p.title}")
         if not issues:
-            return {**to_spec(p, goal), "notes": notes}
+            return to_spec(p, goal)
         prompt += f"\n\nYour previous plan had problems, fix them: {'; '.join(issues)}"
     return f"I couldn't produce a safe, runnable plan ({'; '.join(issues)})."
 
@@ -514,53 +501,6 @@ def fixed(spec: dict[str, Any], i: int, n_before: int) -> str:
     )
 
 
-def goal_key(goal: str) -> str:
-    return " ".join(goal.lower().split())
-
-
-def step_apps(spec: dict[str, Any]) -> list[str | None]:
-    """The app each step works in: a site's name ('photopea'), a desktop app's command,
-    or None for the terminal."""
-    site, out = None, []
-    for s in spec["steps"]:
-        a = s["action"]
-        if a["kind"] == "open_url":
-            host = (urlparse(a.get("url") or "").hostname or "").removeprefix("www.")
-            site = host.split(".")[0] or None
-            out.append(site)
-        elif a["kind"] == "launch":
-            out.append((a.get("command") or "").split(" ")[0] or None)
-        elif a["kind"] == "terminal":
-            out.append(None)
-        else:
-            out.append(site if a.get("app") in ("browser", "", None) else a.get("app"))
-    return out
-
-
-def said(step: dict[str, Any]) -> str:
-    a = step["action"]
-    check = f" (check '{a['expect']}')" if a.get("expect") else ""
-    return f"{a['kind']} `{what(step)}`{check}"
-
-
-def learned(spec: dict[str, Any], i: int, old: dict[str, Any], prev: dict[str, Any] | None,
-            n: int, why: str) -> tuple[str, str]:  # fmt: skip
-    """After a fix of step `i` (was `old`, plan had `n` steps): (id of the step whose pass
-    proves the fix, what to remember)."""
-    steps, k, why = spec["steps"], len(spec["steps"]) - n, why.rstrip(". ")
-    if k < 0:
-        after = f" after {said(prev)}" if prev else ""
-        nxt = steps[i]["id"] if i < len(steps) else ""
-        return nxt, f"{said(old)} is not needed{after}: {why}. Leave it out"
-    new = steps[i + k]
-    if k:
-        first = " then ".join(said(s) for s in steps[i : i + k])
-        return new["id"], f"{said(old)} only works after {first}; without it: {why}"
-    if said(new) == said(old):  # the same step passed on a retry: nothing learned
-        return new["id"], ""
-    return new["id"], f"{said(old)} failed ({why}); what works: {said(new)}"
-
-
 def what(step: dict[str, Any]) -> str:
     a = step["action"]
     return (a.get("command") or a.get("url") or a.get("keys") or a.get("text")
@@ -595,10 +535,6 @@ async def repair(
     goal = spec.get("goal") or spec["title"]
     ask = (f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step {i + 1} "
            f"({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}")  # fmt: skip
-    if spec.get("notes"):
-        ask += "\n\nSeen for real in earlier rehearsals:\n" + "\n".join(
-            f"- {n}" for n in spec["notes"]
-        )
     prev = spec["steps"][i - 1]["action"] if i else None
     if "No element matching" in why and CONFIRM.match(step["action"].get("target") or ""):
         ask += (
@@ -702,7 +638,7 @@ async def settle(
     """Finish a rehearsal in `box`: run steps `i`.. repairing failures (None: every step
     already ran), then look at the result and add what's missing. (why it can't be done
     or None, whether the review changed the plan). The sandbox is stopped on failure."""
-    mgr, changed, looked = ctx._manager.sandboxes, False, []
+    mgr, changed = ctx._manager.sandboxes, False
     while True:
         if i is not None and (err := await _run_from(ctx, spec, heal, state, sid, box, i)):
             return err, changed
@@ -719,30 +655,16 @@ async def settle(
         steps = " → ".join(f"`{what(s)}`" for s in spec["steps"][i : i + added])
         heal(f"Rehearsal: every step passed, but the result didn't show "
              f"{'; '.join(missing)}; added {steps}")  # fmt: skip
-        app = step_apps(spec)[i] or _software(spec)
-        after = f"After {said(spec['steps'][i - 1])}, also" if i else "Also"
-        looked.append((app, f"{after} {steps}, or the result doesn't show {'; '.join(missing)}"))
-    # every step passed and the result showed, so what it took is worth keeping
-    for app, note in state.pop("learned", []) + looked:
-        if app:
-            ctx.store.add_app_note(app, note, ctx.id)
     spec["rehearsal"] = {"repairs": state["repairs"], "reviews": state.get("reviews", 0),
                          "sandbox_id": sid}  # fmt: skip
     return None, changed
-
-
-def _software(spec: dict[str, Any]) -> str | None:
-    return (spec.get("software") or "").lower().split(" ")[0] or None
 
 
 async def _run_from(
     ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, Any],
     sid: str, box: Sandbox, i: int,
 ) -> str | None:  # fmt: skip
-    """Run steps `i`.. in order, repairing failures in place; None when all passed. A fix
-    is noted for its app once the fixed step passes, and kept once the whole rehearsal
-    passes (a fix that only moved the failure later is not something to learn)."""
-    proof = state.setdefault("proof", {})  # step id whose pass proves a fix -> (app, note)
+    """Run steps `i`.. in order, repairing failures in place; None when all passed."""
     mgr = ctx._manager.sandboxes
     while i < len(spec["steps"]):
         step = spec["steps"][i]
@@ -752,8 +674,6 @@ async def _run_from(
             rec = await check(box, step, await box.run(i, Action.model_validate(step["action"])))
         mgr.touch(sid)
         if rec.ok:
-            if (app_note := proof.pop(step["id"], None)) and app_note[0]:
-                state.setdefault("learned", []).append(app_note)
             i += 1
             continue
         why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
@@ -766,15 +686,12 @@ async def _run_from(
         state["repairs"] += 1
         state[step["id"]] = tries + 1
         ctx.phase("plan", f"Fixing step {i + 1} from its real output")
-        n, old, prev = len(spec["steps"]), copy.deepcopy(step), spec["steps"][i - 1] if i else None
-        app = step_apps(spec)[i] or _software(spec)
+        n = len(spec["steps"])
         async with mgr.busy(sid):  # the sandbox waits for the fix; no idle shutdown
             err = await repair(ctx, spec, i, rec)
         if err:
             await mgr.stop(sid, "rehearsal failed")
             return err
-        pid, note = learned(spec, i, old, prev, n, brief)
-        proof[pid] = (app if note else None, note)
         heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
              f"real output as {fixed(spec, i, n)}")  # fmt: skip
     return None
@@ -810,9 +727,8 @@ async def review(
                 a.get("app") or "browser")  # fmt: skip
             await box.exec(FOCUS.get(app) or f"/opt/cf/focus.sh {shlex.quote(app)}", 20)
     await box.screenshot()
-    seen = "".join(f"\nSeen for real in earlier rehearsals: {n}" for n in spec.get("notes") or [])
     content: list[dict[str, str]] = [
-        {"type": "input_text", "text": f"Task: {goal}\nPlan:\n{describe_plan(spec)}" + seen},
+        {"type": "input_text", "text": f"Task: {goal}\nPlan:\n{describe_plan(spec)}"},
         {"type": "input_text", "text": "Final screen:"},
     ]
     if shot := await _image(box, "/tmp/cf/shot.png"):

@@ -468,21 +468,12 @@ async def first_take(
     if cap and cap["rehearsal"]["clean"]:
         path = work_dir(ctx, tid) / "public" / tid / "recording.mp4"
         if not (issues := await qa.recording(path, cap["records"])):
-            remember(ctx, spec)
             cap["take"] = 1
             return ctx.store.update_tutorial(tid, spec=spec, voice=voice, capture=cap,
                                              assets={"recording": cap["recording"]})  # fmt: skip
         heal(f"Quality check of the rehearsal take: {'; '.join(issues)}. Recording again")
-    remember(ctx, spec)
     spec["hidden"] = _hidden(spec, answers)
     return ctx.store.update_tutorial(tid, title=spec["title"], spec=spec, voice=voice)
-
-
-def remember(ctx: JobContext, spec: dict[str, Any]) -> None:
-    """Keep a plan whose rehearsal passed, for the next request of the same task."""
-    keep = {k: v for k, v in spec.items()
-            if k not in ("files", "healing", "hidden", "rehearsal", "reused", "notes")}  # fmt: skip
-    ctx.store.save_plan(planner.goal_key(spec["goal"]), keep, ctx.id)
 
 
 async def intake(ctx: JobContext, spec: dict[str, Any], answers: dict[str, bool]) -> bool:

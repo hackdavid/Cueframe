@@ -141,40 +141,6 @@ def test_clean_rehearsal_take_is_the_video(client, monkeypatch):
     assert len(boxes) == 1 and boxes[0]["status"] == "terminated"  # one take, no re-record
 
 
-def test_fixes_are_remembered_for_the_app_and_plans_reused(client, monkeypatch):
-    fix = StepFix(drop=False, before=[], fixable=True, reason="typo",
-                  step=_step("x", command="cowsay hi", output_label="Output"))  # fmt: skip
-    llm = StubLLM([_plan(GOOD), _plan([GOOD[0], _step("run", command="cowsay hey")])], [fix])
-    _setup(client, monkeypatch, llm)
-    read = []
-
-    async def research(ctx, goal):
-        read.append(goal)
-        return ""
-
-    monkeypatch.setattr(planner, "research", research)
-    for text, answer in [("Make a tutorial: say hi with cowsay", pipeline.SHOW),
-                         ("Make a tutorial: a cowsay greeting", pipeline.SKIP),
-                         ("Make a tutorial:  Say hi with COWSAY", pipeline.SHOW)]:  # fmt: skip
-        _, jid = _send(client, text)
-        job = _wait(client, jid, {"waiting_input", "failed"})
-        ask = {"input_id": job["pending_input"]["input_id"], "value": answer}
-        client.post(f"/api/jobs/{jid}/answer", headers=_auth(client), json=ask)
-        job = _wait(client, jid, {"succeeded", "failed"})
-        assert job["status"] == "succeeded", job["error"]
-    store = client.app.state.store
-    [note] = store.app_notes(["cowsay"])
-    assert "`badcmd`" in note and "what works: terminal `cowsay hi`" in note
-    assert len(read) == 1  # the second plan used what was learned instead of the docs
-    assert "Seen for real" in plans(llm)[1] and "`badcmd`" in plans(llm)[1]
-    assert len(plans(llm)) == 2 and len(fixes(llm)) == 1  # the third reused the fixed plan
-    tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
-    assert tut["spec"]["reused"] and tut["capture"]["take"] == 1
-    assert next(s for s in tut["spec"]["steps"] if s["id"] == "run")["action"]["command"] == (
-        "cowsay hi"
-    )
-
-
 def test_unfixable_rehearsal_records_nothing(client, monkeypatch):
     fix = StepFix(
         drop=False, before=[], fixable=False, reason="needs a GPU", step=_step("run", command="x")
@@ -324,16 +290,3 @@ def test_rehearsal_fails_when_the_result_never_shows_what_was_asked(client, monk
     job = _wait(client, jid, {"succeeded", "failed"})
     assert job["status"] == "failed" and "no shadow" in job["error"]
     assert all(b["status"] == "terminated" for b in _sandboxes(client))
-
-
-def test_fix_is_not_remembered_when_the_rehearsal_fails_later(client, monkeypatch):
-    fix = StepFix(drop=False, before=[], fixable=True, reason="typo",
-                  step=_step("x", command="cowsay hi"))  # fmt: skip
-    out = Outcome(done=False, missing=["no shadow"], after="run", steps=[])
-    llm = StubLLM([_plan(GOOD), _plan(GOOD)], [fix, fix], outcomes=[out] * 8)
-    _setup(client, monkeypatch, llm)
-    _, jid = _send(client)
-    _answer(client, jid, pipeline.SHOW)
-    job = _wait(client, jid, {"succeeded", "failed"})
-    assert job["status"] == "failed" and "no shadow" in job["error"]
-    assert client.app.state.store.app_notes(["cowsay"]) == []
