@@ -23,8 +23,40 @@ import sys
 import time
 import urllib.request
 
+# Shared page helpers: elements inside (open) shadow DOM too, and what is really on top.
+DEEP_JS = r"""
+  const kids = (root) => {
+    const out = [];
+    const walk = (r) => {
+      for (const e of r.querySelectorAll("*")) {
+        out.push(e);
+        if (e.shadowRoot) walk(e.shadowRoot);
+      }
+    };
+    walk(root);
+    return out;
+  };
+  const up = (e) => e.parentElement || (e.parentNode && e.parentNode.host) || null;
+  const within = (a, b) => {
+    for (let e = b; e; e = up(e)) if (e === a) return true;
+    return false;
+  };
+  const hitAt = (x, y) => {
+    let h = document.elementFromPoint(x, y);
+    while (h && h.shadowRoot) {
+      const d = h.shadowRoot.elementFromPoint(x, y);
+      if (!d || d === h) break;
+      h = d;
+    }
+    return h;
+  };
+  const textOf = (e) => (e.innerText || "") + kids(e).filter((k) => k.shadowRoot)
+    .map((k) => [...k.shadowRoot.children].filter((c) => !c.matches("style,script,link"))
+      .map((c) => c.innerText || "").join("\n")).join("\n");
+"""
 FIND_JS = r"""
 (([target, mode]) => {
+  /*DEEP*/
   const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
   const want = norm(target);
   const name = (el) => {
@@ -42,13 +74,18 @@ FIND_JS = r"""
     el.matches("input:not([type=hidden]),textarea,select,[contenteditable=true]");
   const active = (el) => field(el) || el.matches("a,button,summary,label,[onclick]," +
     "[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option]");
-  const els = [...document.querySelectorAll("body *")].filter(shown);
+  // Off the page entirely (e.g. "Skip to search" links parked at top: -300px) can't be used.
+  const onPage = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.bottom + scrollY > 0 && r.right + scrollX > 0;
+  };
+  const els = kids(document.body).filter(shown).filter(onPage);
   let best = null, score = 0;
   if (want === "canvas") {  // the drawing area: largest canvas, preferring ones not covered
     const all = els.filter((e) => e.tagName === "CANVAS");
     const onTop = all.filter((e) => {  // e.g. a dialog's canvas over the editor's
       const r = e.getBoundingClientRect();
-      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === e;
+      return hitAt(r.left + r.width / 2, r.top + r.height / 2) === e;
     });
     for (const el of onTop.length ? onTop : all) {
       const r = el.getBoundingClientRect();
@@ -72,7 +109,8 @@ FIND_JS = r"""
     if (s > score) { best = el; score = s; }
   }
   if (best && mode === "type" && !field(best)) {
-    const inner = best.querySelector("input,textarea,[contenteditable=true]") ||
+    const q = "input,textarea,[contenteditable=true]";
+    const inner = best.querySelector(q) || (best.shadowRoot && best.shadowRoot.querySelector(q)) ||
       (best.htmlFor && document.getElementById(best.htmlFor));
     if (inner) best = inner;
   }
@@ -83,15 +121,15 @@ FIND_JS = r"""
   best.scrollIntoView({block: "center", inline: "center"});
   const r = best.getBoundingClientRect();
   // Something else on top (a dialog, a banner) would get the click: say what it is.
-  const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-  if (hit && !best.contains(hit) && !hit.contains(best)) {
+  const hit = hitAt(r.left + r.width / 2, r.top + r.height / 2);
+  if (hit && !within(best, hit) && !within(hit, best)) {
     let cover = hit;
-    while (cover.parentElement && !cover.parentElement.contains(best)) cover = cover.parentElement;
+    while (up(cover) && !within(up(cover), best)) cover = up(cover);
     const c = cover.getBoundingClientRect(), cs = getComputedStyle(cover);
     const big = c.width * c.height >= Math.max(4 * r.width * r.height, 30000);
     if (big || cs.position === "fixed" || cover.matches("[role=dialog],[aria-modal=true]")) {
-      const inside = [...cover.querySelectorAll("*")].filter(shown).filter(active);
-      return {found: false, covered: norm(cover.innerText).slice(0, 160),
+      const inside = kids(cover).filter(shown).filter(active);
+      return {found: false, covered: norm(textOf(cover)).slice(0, 160),
               seen: [...new Set(inside.map(name).filter(Boolean))].slice(0, 30)};
     }
   }
@@ -102,6 +140,7 @@ FIND_JS = r"""
 # The banner's least-sharing choice, never "accept"; only a button that is really on top.
 POPUP_JS = r"""
 (() => {
+  /*DEEP*/
   const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
   const KEY = /cookie|consent|gdpr|privacy|personal (data|info)|tracking|your choices/i;
   const MARK = /cookie|consent|cmp|gdpr|onetrust|didomi|usercentrics|cookiebot|truste|sp_message/i;
@@ -112,25 +151,25 @@ POPUP_JS = r"""
   const cls = (e) => (e.id || "") + " " + (typeof e.className === "string" ? e.className : "");
   const view = innerWidth * innerHeight;
   const banner = (el) => {
-    for (let e = el; e && e !== document.body; e = e.parentElement) {
+    for (let e = el; e && e !== document.body; e = up(e)) {
       const cs = getComputedStyle(e), r = e.getBoundingClientRect();
       const marked = MARK.test(cls(e)) || e.matches("[role=dialog],[aria-modal=true]");
       if (marked || ((cs.position === "fixed" || cs.position === "sticky") &&
                      r.width * r.height < 0.6 * view))
-        return KEY.test(norm(e.innerText).slice(0, 3000) + " " + cls(e)) ? e : null;
+        return KEY.test(norm(textOf(e)).slice(0, 3000) + " " + cls(e)) ? e : null;
     }
     return null;
   };
   let best = null, rank = PICK.length;
-  for (const b of document.querySelectorAll(
-      "button,a,[role=button],input[type=button],input[type=submit]")) {
+  const sel = "button,a,[role=button],input[type=button],input[type=submit]";
+  for (const b of kids(document).filter((e) => e.matches(sel))) {
     const r = b.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) continue;
     const lab = norm(b.getAttribute("aria-label") || b.innerText || b.value || b.title);
     const k = PICK.findIndex((p) => lab === p || (p.length > 3 && lab.startsWith(p + " ")));
     if (k < 0 || k >= rank || !banner(b)) continue;
-    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-    if (!hit || !(b.contains(hit) || hit.contains(b))) continue;
+    const hit = hitAt(r.left + r.width / 2, r.top + r.height / 2);
+    if (!hit || !(within(b, hit) || within(hit, b))) continue;
     best = b; rank = k;
   }
   if (!best) return null;
@@ -144,11 +183,17 @@ SETTLE_JS = (
     "document.getElementsByTagName('*').length]"
 )
 # Typed text lives in field values, not innerText; passwords are never read back.
-TEXT_JS = (
-    "location.href + '\\n' + document.title + '\\n' + document.body.innerText + '\\n' + "
-    "[...document.querySelectorAll('input, textarea, select')]"
-    ".filter((e) => !['password', 'hidden'].includes(e.type) && e.value)"
-    ".map((e) => e.value).join('\\n')"
+TEXT_JS = r"""
+(() => {
+  /*DEEP*/
+  return location.href + "\n" + document.title + "\n" + textOf(document.body) + "\n" +
+    kids(document).filter((e) => e.matches("input,textarea,select"))
+      .filter((e) => !["password", "hidden"].includes(e.type) && e.value)
+      .map((e) => e.value).join("\n");
+})()
+"""
+FIND_JS, POPUP_JS, TEXT_JS = (
+    js.replace("/*DEEP*/", DEEP_JS) for js in (FIND_JS, POPUP_JS, TEXT_JS)
 )
 
 
@@ -210,7 +255,11 @@ def _recv(s: socket.socket) -> str:
 
 
 def cdp_eval(expr: str) -> object:
-    pages = json.load(urllib.request.urlopen("http://127.0.0.1:9222/json", timeout=5))
+    pages = json.load(
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{os.environ.get('CF_CDP_PORT', '9222')}/json", timeout=5
+        )
+    )
     page = next(p for p in pages if p.get("type") == "page")
     s = _ws(page["webSocketDebuggerUrl"])
     _send(
