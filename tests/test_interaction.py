@@ -321,3 +321,22 @@ def test_a_repair_can_drop_a_step_that_isnt_needed(client, monkeypatch):
     tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
     assert "download" not in [s["id"] for s in tut["graph"]["states"]]
     assert "step was dropped" in str(client.app.state.store.get_job(jid))
+
+
+def test_browser_steps_wait_for_the_page_and_close_consent_banners():
+    from app.sandbox.base import BROWSER_READY
+
+    opened = _script(Action(kind="open_url", url="https://example.com"))
+    assert opened.endswith(BROWSER_READY) and "ui.py settle browser" in BROWSER_READY
+    click = _script(Action(kind="click", target="Go", app="browser"))
+    assert click.startswith(BROWSER_READY) and "ui.py popup browser" in click
+    assert not _script(Action(kind="click", target="7", app="galculator")).startswith(BROWSER_READY)
+    out = f"{MARK} 1 2 3 0\n__CFPOP 10 20 30 40 reject all\n__CFBOX 1 2 3 4\nok"
+    rec = _record(0, Action(kind="click", target="Go"), ExecResult(returncode=0, stdout=out))
+    assert rec.popups == ["reject all"] and rec.box == [1, 2, 3, 4]
+    assert "__CFPOP" not in rec.output_tail
+
+
+def test_plans_never_click_consent_banners():
+    plan = _plan([_step("ok", "click", app="browser", target="Do not consent", expect="x")] * 3)
+    assert any("consent" in p for p in planner.problems(plan))

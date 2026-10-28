@@ -80,6 +80,7 @@ class ActionRecord(BaseModel):
     screenshot_url: str | None = None
     box: list[int] | None = None  # screen pixels (x, y, w, h) of the element acted on
     path: list[int] | None = None  # drag: screen pixels (x1, y1, x2, y2) pressed and released
+    popups: list[str] = []  # cookie/consent banners closed first, by the button clicked
 
 
 class Answer(BaseModel):

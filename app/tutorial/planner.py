@@ -189,6 +189,9 @@ visible action each, for a 2-4 minute video:
 - A dialog a step opens (e.g. 'Layer > Layer Style > Drop Shadow') stays open until its
   'OK' is clicked: plan that click before the next menu. A title must be readable at a
   glance: size and place it (e.g. 'W:' about half the image width) clear of the subject.
+- Pages are waited on until they finish loading, and cookie or consent banners are
+  closed automatically with their least-sharing choice (Reject all, Dismiss): never plan
+  steps for cookie, consent or privacy banners.
 - Mark every software install with installs=true; the user is asked about it first.
 - Give each terminal step a concrete `expect` text when the exit code alone doesn't
   prove it worked. End with a step that proves the result (e.g. curl, --version, ls).
@@ -211,7 +214,10 @@ start screen to dismiss, a dialog or menu to open), keep the step as it is and p
 those missing steps in `before`; never replace a step with one that drops its purpose.
 If the step is not needed at all because an earlier step already did what it is for
 (e.g. it clicks a confirm button that doesn't exist since the change applied at once),
-set `drop` instead.
+set `drop` instead. When the failure says the element is covered by something (a dialog,
+a panel, a pop-up), close that first with one of its own buttons (Close, Cancel, ×) in
+`before`, unless the step needs what that dialog offers. Cookie and consent banners are
+closed automatically: never add steps for them.
 {SANDBOX}"""
 
 REVIEW = f"""A tutorial plan was just rehearsed for real and every step passed its own
@@ -231,6 +237,10 @@ APP_CMD = re.compile(r"[a-z0-9][a-z0-9.+_-]*( [\w./=:-]+){0,3}")
 BAD_URL = re.compile(
     r"^\s*(file|javascript|data|chrome|about|view-source):|169\.254\.|metadata\.google|"
     r"//[^/]*@",
+    re.I,
+)
+CONSENT = re.compile(
+    r"\b(cookies?|consent|accept all|reject all|do not sell|don'?t sell|personal info|gdpr)\b",
     re.I,
 )
 UNSAFE_TARGET = re.compile(
@@ -279,6 +289,9 @@ def problems(plan: TutorialPlan) -> list[str]:
             out.append(f"step {s.id}: {s.kind} needs the target's visible words")
         if s.kind == "type" and not s.text:
             out.append(f"step {s.id}: type needs text")
+        if s.kind == "click" and CONSENT.search(s.target):
+            out.append(f"step {s.id}: cookie/consent banners are closed automatically; "
+                       "drop that step")  # fmt: skip
         if s.kind in ("click", "type", "menu", "drag") and UNSAFE_TARGET.search(s.target):
             out.append(f"step {s.id}: no logins, sign-ups, passwords or purchases")
         if s.kind == "type" and (SECRETISH.search(s.text) or "\n" in s.text):
@@ -542,6 +555,12 @@ async def repair(
             f"{step['action']['target']!r} button appeared. Many apps apply a change at once "
             "with no confirm button; if that is the case here, set `drop`."
         )
+    elif "covered by" in why:
+        ask += (
+            "\n\nThe element is there but something is open over it, so a click would land "
+            "on that instead. Put the click that closes it (one of its listed buttons) in "
+            "`before`, unless the step needs that dialog."
+        )
     elif "No element matching" in why:
         ask += (
             "\n\nThe element isn't on screen at all, so aiming at it differently won't help. "
@@ -555,7 +574,12 @@ async def repair(
             instructions=FIX, input=ask, timeout=REPAIR_TIMEOUT,
             reasoning_effort=ctx.settings.plan_reasoning or None,
         )  # fmt: skip
-        if prev and any(action(b) == prev for b in fix.before):
+        if any(b.kind == "click" and CONSENT.search(b.target) for b in (*fix.before, fix.step)):
+            ask += (
+                "\n\nCookie and consent banners are closed automatically before every "
+                "browser step; don't click them. Fix the step another way."
+            )
+        elif prev and any(action(b) == prev for b in fix.before):
             ask += (
                 "\n\nYour `before` repeats the previous step, which already ran and passed; "
                 "running it again would do it twice. Use a different step, or `drop`."
@@ -673,6 +697,8 @@ async def _run_from(
         async with mgr.busy(sid):
             rec = await check(box, step, await box.run(i, Action.model_validate(step["action"])))
         mgr.touch(sid)
+        if rec.popups:
+            ctx.thinking("Rehearsal", f"Closed a cookie/consent banner ({', '.join(rec.popups)})")
         if rec.ok:
             i += 1
             continue
