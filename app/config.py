@@ -41,6 +41,9 @@ class Settings:
     sandbox_term_font: int = 12
     sandbox_apt_extra: tuple[str, ...] = ()
     sandbox_usd_per_hour: float = 0.11
+    sandbox_max_active: int = 4  # across all users: caps what can be billed at once
+    user_max_sandboxes: int = 2  # running at once per user
+    user_daily_sandbox_minutes: float = 60  # sandbox time per user per rolling 24 h
     ask_timeout_seconds: float = 900
     r2_endpoint: str | None = None
     r2_key_id: str | None = None
@@ -91,6 +94,9 @@ def get_settings() -> Settings:
         sandbox_term_font=_int("CUEFRAME_SANDBOX_TERM_FONT", 12),
         sandbox_apt_extra=tuple(os.environ.get("CUEFRAME_SANDBOX_APT_EXTRA", "").split()),
         sandbox_usd_per_hour=_float("CUEFRAME_SANDBOX_USD_PER_HOUR", 0.11),
+        sandbox_max_active=_int("CUEFRAME_SANDBOX_MAX_ACTIVE", 4),
+        user_max_sandboxes=_int("CUEFRAME_USER_MAX_SANDBOXES", 2),
+        user_daily_sandbox_minutes=_float("CUEFRAME_USER_DAILY_SANDBOX_MINUTES", 60),
         ask_timeout_seconds=_float("CUEFRAME_ASK_TIMEOUT_SECONDS", 900),
         r2_endpoint=os.environ.get("R2_ENDPOINT_URL") or None,
         r2_key_id=os.environ.get("R2_ACCESS_KEY_ID") or None,

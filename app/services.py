@@ -5,6 +5,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.sandbox.contracts import live_path
+
 DEFAULT_JOB = "assistant.reply"
 
 
@@ -30,7 +32,7 @@ def conversation_state(s: Any, cid: str, user: dict[str, Any]) -> dict[str, Any]
     for j in active:
         sb = s.store.get_sandbox(j["sandbox_id"]) if j.get("sandbox_id") else None
         if sb and sb["status"] == "running":
-            j["live_url"] = sb["live_url"]
+            j["live_url"] = live_path(j["id"])
     return {
         **conv,
         "messages": s.store.list_messages(cid),

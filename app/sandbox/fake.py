@@ -15,6 +15,9 @@ _ids = itertools.count(1)
 
 class FakeSandbox(Sandbox):
     provider = "fake"
+    # What `ui.py text APP` shows per app, and element targets that aren't on screen.
+    screen: dict[str, str] = {}
+    missing: set[str] = set()
 
     def __init__(self, fail_on: set[int] | None = None):
         self.provider_id = f"fake-{next(_ids)}"
@@ -35,6 +38,9 @@ class FakeSandbox(Sandbox):
         self.scripts.append(script)
         if "http_code" in script:
             return ExecResult(returncode=0, stdout="200")
+        if "/opt/cf/ui.py text" in script:
+            app = next((a for a in self.screen if f"text {a} " in script), None)
+            return ExecResult(returncode=0, stdout=self.screen.get(app or "", ""))
         return ExecResult(returncode=0, stdout=f"{time.time()}\n")
 
     async def read_file(self, path: str) -> bytes:
@@ -56,7 +62,12 @@ class FakeSandbox(Sandbox):
         rc = 1 if index in self.fail_on else 0
         if action.kind == "terminal" and on_output:
             await on_output(f"$ {action.command}")
-        res = ExecResult(returncode=0, stdout=f"{MARK} {s} {s + 0.4} {s + 0.6} {rc}\nok")
+        body = "ok"
+        if action.target in self.missing:
+            rc, body = 3, f"No element matching {action.target!r} on screen. Visible: download"
+        elif action.target:
+            body = "__CFBOX 100 200 50 20\nok"
+        res = ExecResult(returncode=0, stdout=f"{MARK} {s} {s + 0.4} {s + 0.6} {rc}\n{body}")
         return _record(index, action, res)
 
     async def terminate(self) -> None:

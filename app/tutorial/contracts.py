@@ -57,7 +57,7 @@ class Source(BaseModel):
 class State(BaseModel):
     id: str
     kind: Literal["title", "action", "wait", "outro"] = "action"
-    app: Literal["browser", "terminal"] | None = None
+    app: str | None = None  # "browser", "terminal" or a desktop app name
     label: str = ""
     narration: list[Narration] = []
     source: Source | None = None

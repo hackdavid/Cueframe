@@ -7,7 +7,7 @@ export type Sfx = { t: number; kind: "click" | "keys" | "whoosh" | "success" | "
 export type State = {
   id: string;
   kind: "title" | "action" | "wait" | "outro";
-  app: "browser" | "terminal" | null;
+  app: string | null; // "browser", "terminal" or a desktop app name
   label: string;
   narration: Narration[];
   source: { t_in: number; t_out: number; rate: number } | null;

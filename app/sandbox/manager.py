@@ -7,6 +7,7 @@ import collections
 import contextlib
 import time
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.config import Settings
@@ -15,6 +16,12 @@ from app.log import fields, get_logger
 from app.sandbox.base import Sandbox
 
 RELEASE_RETRY_DELAYS = (10.0, 30.0, 60.0)
+
+
+class SandboxLimit(RuntimeError):
+    """A spending or concurrency limit stops a new sandbox; never retried."""
+
+
 log = get_logger("sandbox")
 
 
@@ -73,6 +80,7 @@ class SandboxManager:
         settings: Settings | None = None,
     ) -> AsyncIterator[tuple[str, Sandbox]]:
         """`settings` overrides the desktop (size, CPU) for this one sandbox."""
+        self.check_limits(conversation_id)
         rec = self.store.create_sandbox(job_id, conversation_id, self.provider.provider)
         sid = rec["id"]
         self.store.update_job(job_id, sandbox_id=sid)
@@ -106,6 +114,26 @@ class SandboxManager:
             raise
         finally:
             await asyncio.shield(self.stop(sid, reason))
+
+    def check_limits(self, conversation_id: str | None) -> None:
+        conv = self.store.get_conversation(conversation_id) if conversation_id else None
+        uid = conv["user_id"] if conv else None
+        since = (datetime.now(UTC) - timedelta(days=1)).isoformat(timespec="milliseconds")
+        use = self.store.sandbox_usage(uid, since)
+        s = self.settings
+        if use["active"] + self._starting >= s.sandbox_max_active:
+            raise SandboxLimit(
+                f"All {s.sandbox_max_active} sandboxes are busy right now; try again shortly"
+            )
+        if uid and use["mine"] >= s.user_max_sandboxes:
+            raise SandboxLimit(
+                f"You already have {use['mine']} sandboxes running (limit {s.user_max_sandboxes})"
+            )
+        if uid and use["seconds"] / 60 >= s.user_daily_sandbox_minutes:
+            raise SandboxLimit(
+                f"Daily sandbox limit reached ({use['seconds'] / 60:.0f} of "
+                f"{s.user_daily_sandbox_minutes:.0f} min in the last 24 h)"
+            )
 
     async def stop(self, sid: str, reason: str) -> dict[str, Any] | None:
         box = self._live.pop(sid, None)

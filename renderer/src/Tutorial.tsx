@@ -218,7 +218,7 @@ const TopBar: React.FC<{ s: State; steps: string[] }> = ({ s, steps }) => {
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 18px", borderRadius: 999, background: "rgba(255,255,255,.08)",
         border: "1px solid rgba(255,255,255,.12)", fontSize: 20, fontWeight: 600, opacity: p }}>
         <AppIcon app={s.app} />
-        {s.app === "terminal" ? "Terminal" : "Browser"}
+        {appName(s.app)}
       </div>
       <div style={{ fontSize: 26, fontWeight: 800, letterSpacing: -0.3, transform: `translateX(${(1 - p) * 30}px)`, opacity: p }}>
         <span style={{ color: ACCENT }}>Step {cur + 1}</span>
@@ -236,8 +236,14 @@ const TopBar: React.FC<{ s: State; steps: string[] }> = ({ s, steps }) => {
   );
 };
 
+const appName = (app: State["app"]) =>
+  app === "terminal" ? "Terminal" : !app || app === "browser" ? "Browser"
+    : app.replace(/^gnome-/, "").replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
 const AppIcon: React.FC<{ app: State["app"] }> = ({ app }) =>
-  app === "terminal" ? (
+  app && !["terminal", "browser"].includes(app) ? (
+    <span style={{ width: 22, height: 18, borderRadius: 4, background: "#334155", border: "2px solid #94a3b8", display: "inline-block" }} />
+  ) : app === "terminal" ? (
     <span style={{ fontFamily: MONO, fontSize: 16, background: "#0d1117", border: "1px solid #3b4250", borderRadius: 6, padding: "1px 6px", color: "#7ee787" }}>{">_"}</span>
   ) : (
     <span style={{ width: 22, height: 22, borderRadius: 99, background: "conic-gradient(#ea4335 0 33%, #fbbc05 0 66%, #34a853 0)", display: "inline-block", boxShadow: "inset 0 0 0 5px rgba(0,0,0,0)", position: "relative" }}>
@@ -285,6 +291,7 @@ const TitleCard: React.FC<{ t: Tutorial }> = ({ t }) => {
   const words = t.title.split(" ");
   const apps = new Set(t.states.map((s) => s.app));
   const chips = ["Linux", ...(apps.has("terminal") ? ["Terminal"] : []), ...(apps.has("browser") ? ["Browser"] : []),
+    ...[...apps].filter((a): a is string => !!a && !["terminal", "browser"].includes(a)).map(appName),
     ...(t.software && !["linux", "terminal", "browser"].includes(t.software.toLowerCase()) ? [t.software] : [])];
   return (
     <AbsoluteFill style={{ alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 34 }}>

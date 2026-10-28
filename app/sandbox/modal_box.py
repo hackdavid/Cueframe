@@ -19,6 +19,7 @@ BIN = Path(__file__).parent / "bin"
 APT = [
     "xvfb", "x11vnc", "novnc", "websockify", "fluxbox", "xdotool", "ffmpeg", "chromium",
     "xterm", "fonts-dejavu-core", "fonts-noto-color-emoji", "x11-utils", "procps", "curl",
+    "dbus-x11", "at-spi2-core", "python3-pyatspi", "libatk-adaptor",
 ]  # fmt: skip
 CHUNK = 6 * 1024 * 1024
 
@@ -40,7 +41,7 @@ def desktop_image(modal: Any, settings: Settings) -> Any:
         modal.Image.debian_slim()
         .apt_install(*APT, *settings.sandbox_apt_extra)
         .add_local_dir(BIN, "/opt/cf", copy=True)
-        .run_commands("chmod +x /opt/cf/*.sh && mkdir -p /work /tmp/cf")
+        .run_commands("chmod +x /opt/cf/*.sh /opt/cf/*.py && mkdir -p /work /tmp/cf")
     )
 
 
