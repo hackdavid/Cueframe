@@ -2,6 +2,61 @@
 
 SAMPLES = [
     {
+        "slug": "reel-google-trends",
+        "title": "Reel: a 1M-search trend you can make content about today",
+        "site": "trends.google.com · reel, 60 s",
+        "request": "Give me a trending topic to make content about",
+        "steps": [
+            "Open Trending Now",
+            "Filter past day",
+            "Open top trend",
+            "Compare smaller trends",
+            "Open export menu",
+            "Save this trend",
+        ],
+        "length": "0:48",
+        "made_in": "6.3 min",
+        "fixes": 1,
+    },
+    {
+        "slug": "tutorial-text-classifier-paced",
+        "title": "Tutorial: train and tune a text classifier, installs fast-forwarded",
+        "site": "Linux terminal · tutorial, 90 s",
+        "request": (
+            "Make a video showing how to train a small text classifier in Python with scikit-learn"
+        ),
+        "steps": [
+            "Install sklearn",
+            "Write classifier script",
+            "Show the code",
+            "Train and predict",
+            "Write tuning script",
+            "Tune hyperparameters",
+            "Show final results",
+        ],
+        "length": "1:26",
+        "made_in": "11.0 min",
+        "fixes": 2,
+    },
+    {
+        "slug": "explainer-chronoreplay",
+        "title": "Explainer: today's #1 AI paper on Hugging Face, in a minute",
+        "site": "huggingface.co · explainer, 60 s",
+        "request": "Make an explainer video about today's top trending AI paper",
+        "steps": [
+            "Top paper today",
+            "One side not enough",
+            "Open project page",
+            "See Overview fix",
+            "Time order matters",
+            "All three rise",
+            "Smarter frames win",
+        ],
+        "length": "0:59",
+        "made_in": "15.4 min",
+        "fixes": 7,
+    },
+    {
         "slug": "trending-repo-thinkrail",
         "title": "Influencer video: today's #1 trending GitHub repo",
         "site": "github.com · influencer mode",
