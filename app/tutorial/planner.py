@@ -139,11 +139,12 @@ terminal, a Chromium browser, and Debian desktop apps you install with apt-get a
 with a launch step (GTK3 apps work best, e.g. mousepad, galculator, thunar,
 gnumeric, because their buttons and fields are found through the accessibility tree).
 Every app fills the screen and only one is shown at a time. The working directory is
-/work. Package manager: apt-get (index is already updated). Python 3 is installed, pip is
-not: install Python libraries as Debian packages (e.g. `apt-get install -y python3-sklearn`,
-installs=true). To show a short program, write it with ONE `printf '%s\n' 'line 1' 'line 2'
-> /work/name.py` command (each code line one quoted argument, no tabs), then `cat -n` it and
-run it with `python3`; keep it under 12 lines.
+/work. Package manager: apt-get (index is already updated). `python3` is Python 3.12
+with pip: install Python libraries with `python3 -m pip install --quiet <names>`
+(installs=true; not apt, whose Python packages belong to another interpreter). To show a
+short program, write it with ONE `printf '%s\n' 'line 1' 'line 2' > /work/name.py` command
+(each code line one quoted argument, no tabs), then `cat -n` it and run it with `python3`;
+keep it under 12 lines.
 Files the user attached to the request are already in /work under their own names.
 Browser downloads are saved to /root/Downloads without asking. A browser file-open dialog
 (GTK) accepts a typed full path: a type step with target '' and enter=true, e.g. text
@@ -761,6 +762,8 @@ async def settle(
     while True:
         if i is not None and (err := await _run_from(ctx, spec, heal, state, sid, box, i)):
             return err, changed
+        if spec.get("mode") == "influencer":  # a walkthrough: every step already checked
+            break  # what it shows; extra end steps would push it past a minute
         async with mgr.busy(sid):
             found = await review(ctx, box, spec)
         if found is None:
