@@ -110,10 +110,58 @@ async def storyboard(
         return None
     if not sb.beats:
         return None
-    tags = (re.sub(r"[^\w]", "", h) for h in sb.hashtags)
-    sb.hashtags = list(dict.fromkeys(t for t in tags if t))[:8]
+    seen = [goal, ref, sb.angle, sb.caption, *(f"{b.on_screen} {b.line}" for b in sb.beats)]
+    sb.hashtags = hashtags(sb.hashtags, " ".join(seen))
     ctx.thinking("Storyboard", f"{len(sb.beats)} beats: {sb.angle}")
     return sb
+
+
+_COMMON = (
+    "ai ml llm llms tech dev devs tips ideas idea content creator creators trend trends "
+    "trending now today daily news new learn learning coding code tutorial tutorials howto "
+    "how to explained explainer research paper papers science open source github python "
+    "machine deep data model models vision language agents agent tools tool fact facts "
+    "shorts reels viral video videos build software programming web search google world "
+    "nlp classification text deeplearning datascience opensource machinelearning"
+)
+COMMON_TAGS = set(_COMMON.split())
+
+
+def _spelled(tag: str, vocab: set[str]) -> bool:
+    """True when `tag` splits into known words (or numbers), e.g. 'googletrends'."""
+    t = tag.lower()
+    ok = [True] + [False] * len(t)
+    for i in range(1, len(t) + 1):
+        for j in range(max(0, i - 24), i):
+            w = t[j:i]
+            if ok[j] and (w.isdigit() or (len(w) > 1 and w in vocab) or w == "a"):
+                ok[i] = True
+                break
+    return ok[-1]
+
+
+def _respelled(tag: str, vocab: set[str]) -> str | None:
+    """The tag itself when it is spelled from known words, else the same tag with one
+    doubled letter removed when that is ('googlettrends' -> 'googletrends'), else None."""
+    if _spelled(tag, vocab):
+        return tag
+    for i in range(1, len(tag)):
+        if tag[i].lower() == tag[i - 1].lower() and _spelled(t := tag[:i] + tag[i + 1 :], vocab):
+            return t
+    return None
+
+
+def hashtags(tags: list[str], text: str) -> list[str]:
+    """Clean hashtags: plain characters, no repeats (any case), and each one spelled from
+    words in the request, source or storyboard or common post words; a typo is fixed when
+    it's a doubled letter and the tag dropped otherwise."""
+    vocab = COMMON_TAGS | {w for w in re.findall(r"[a-z]+", text.lower()) if len(w) > 1}
+    out: dict[str, str] = {}
+    for h in tags:
+        t = re.sub(r"[^\w]", "", h).strip("_")
+        if t and (t := _respelled(t, vocab)) and t.lower() not in out:
+            out[t.lower()] = t
+    return list(out.values())[:8]
 
 
 def board_text(sb: Storyboard) -> str:

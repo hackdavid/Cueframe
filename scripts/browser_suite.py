@@ -33,7 +33,7 @@ def run(c: httpx.Client, cid: str, text: str, limit: float) -> dict:
         ask = job.get("pending_input") or {}
         if job["status"] == "waiting_input" and ask.get("input_id") not in answered:
             value = next((o for o in ask.get("options") or [] if "record" in o.lower()), None)
-            value = value or (ask.get("options") or ["Yes, run it and record the tutorial"])[0]
+            value = value or (ask.get("options") or ["Yes, run it and record the video"])[0]
             c.post(f"/api/jobs/{jid}/answer", json={"input_id": ask["input_id"], "value": value})
             answered.add(ask["input_id"])
         if job["status"] in ("succeeded", "failed", "cancelled"):

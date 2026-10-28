@@ -33,7 +33,7 @@ from app.tutorial.voice import sound, speak
 
 SKIP = "Already installed - leave the install out of the video"
 SHOW = "Not installed - show me how to install it"
-RUN = "Yes, run it and record the tutorial"
+RUN = "Yes, run it and record the video"
 CANCEL = "No, cancel"
 DESKTOP = {"sandbox_width": 1920, "sandbox_height": 1080, "sandbox_scale": 1.5,
            "sandbox_term_font": 22, "sandbox_cpu": 4}  # fmt: skip
@@ -103,6 +103,11 @@ async def ensure_sfx(ctx: JobContext, audio: Path) -> None:
             cached.write_bytes(data)  # type: ignore[arg-type]
         if not (audio / name).exists():
             (audio / name).write_bytes(cached.read_bytes())
+
+
+def kind(spec: dict[str, Any]) -> str:
+    """What the user asked for, in their words: tutorial, reel or explainer."""
+    return formats.NAMES.get(spec.get("mode") or "tutorial", "video")
 
 
 def _lively(spec: dict[str, Any]) -> bool:
@@ -447,7 +452,7 @@ async def make(
     asked = await intake(ctx, spec, answers)
     if recipe_id == "planned" and not asked:
         ans = await ctx.ask(
-            "This tutorial runs the steps above in a private Linux sandbox. Shall I go ahead?",
+            f"This {kind(spec)} runs the steps above in a private Linux sandbox. Shall I go ahead?",
             [RUN, CANCEL],
             key="confirm",
         )
@@ -523,7 +528,7 @@ async def intake(ctx: JobContext, spec: dict[str, Any], answers: dict[str, bool]
         a = step["action"]
         if a["kind"] == "terminal" and a.get("ask", True) and a["command"] not in answers:
             ans = await ctx.ask(
-                f"This tutorial runs `{a['command']}` in a terminal. "
+                f"This {kind(spec)} runs `{a['command']}` in a terminal. "
                 f"Is {spec.get('software') or 'it'} already installed on your machine?",
                 [SKIP, SHOW],
                 key=f"install_{step['id']}" + (f"_{len(answers)}" if answers else ""),

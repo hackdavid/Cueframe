@@ -368,6 +368,21 @@ BLOCKED = re.compile(
 )
 
 
+FIRST_PERSON = re.compile(
+    r"^\W*(i\s+will|i'll|i\s+am\s+going|i'm\s+going|let\s+me|i\s+need\s+to)\b", re.I
+)
+FIRST_PERSON_ISSUE = "narration speaks as the operator"
+
+
+def viewer_voice(line: str) -> str:
+    """'I will open the menu.' -> 'Open the menu.': a last resort when a rewrite still
+    speaks as the operator."""
+    if not FIRST_PERSON.search(line):
+        return line
+    rest = FIRST_PERSON.sub("", line).lstrip(" ,:-")
+    return rest[:1].upper() + rest[1:] if rest else line
+
+
 def problems(plan: TutorialPlan, mode: Mode = "tutorial", seconds: int | None = None) -> list[str]:
     out = []
     if not 2 <= len(plan.steps) <= MAX_STEPS:
@@ -418,6 +433,9 @@ def problems(plan: TutorialPlan, mode: Mode = "tutorial", seconds: int | None = 
                 out.append(f"step {s.id}: launch needs a desktop app command like 'mousepad'")
         if not s.narration.strip():
             out.append(f"step {s.id}: narration is empty")
+        elif FIRST_PERSON.search(s.narration):
+            out.append(f"step {s.id}: {FIRST_PERSON_ISSUE} ({s.narration.split('.')[0]!r}); "
+                       "talk to the viewer about what the screen shows")  # fmt: skip
     spoken = " ".join([plan.intro, plan.outro, *(f"{s.narration} {s.after}" for s in plan.steps)])
     n = len(spoken.split())
     lo, hi = words(mode, seconds)
@@ -654,7 +672,9 @@ def _sized(
     return spec
 
 
-SPOKEN_ISSUE = re.compile(r"^narration (is \d+ words|not backed by the source)")
+SPOKEN_ISSUE = re.compile(
+    rf"^(narration (is \d+ words|not backed by the source)|step \S+: {FIRST_PERSON_ISSUE})"
+)
 
 RETELL = """You rewrite only the spoken narration of a tutorial video plan; the steps, their
 order and what they do stay exactly as they are. Fix the problems listed, keep the same
@@ -839,6 +859,11 @@ async def repair(
             "From the Visible list, find what has to be clicked first to reach it (a start "
             "or continue button, a menu, a tab, a dialog) and put that in `before`."
         )
+    if said := [spec["lines"][k] for s in spec["steps"] for k in s["narration"][:1]
+                if k in spec["lines"] and s["id"] != step["id"]][:3]:  # fmt: skip
+        ask += ("\n\nWrite the narration in the same voice and length as the plan's other "
+                "lines, talking to the viewer (never 'I will' or 'let me'), e.g.:\n"
+                + "\n".join(f"- {x}" for x in said))  # fmt: skip
     visible = [v.strip().lower() for v in why.partition("Visible: ")[2].split(";") if v.strip()]
     for _ in range(3):
         fix, _ = await ctx.llm.parse(
@@ -856,6 +881,11 @@ async def repair(
                 "\n\nYour `before` repeats the previous step, which already ran and passed; "
                 "running it again would do it twice. Use a different step, or `drop`."
             )
+        elif any(FIRST_PERSON.search(b.narration) for b in (*fix.before, fix.step)):
+            ask += (
+                "\n\nYour narration speaks as the operator ('I will ...'). Rewrite it to "
+                "talk to the viewer about what the screen shows, like the plan's other lines."
+            )
         elif fix.before or fix.drop or not fix.fixable:
             break
         elif action(fix.step) == step["action"]:
@@ -870,6 +900,8 @@ async def repair(
             )
         else:
             break
+    for s in (*fix.before, fix.step):
+        s.narration = viewer_voice(s.narration)
     gui = step["action"]["kind"] in GUI and len(spec["steps"]) > 1
     if fix.drop and fix.fixable and gui and "No element matching" in why:
         del spec["steps"][i]  # only a target that isn't there at all marks a step unneeded
@@ -1106,4 +1138,7 @@ def _stub(steps: list[PlannedStep]) -> TutorialPlan:
 
 
 def problems_one(step: PlannedStep) -> list[str]:
-    return [p for p in problems(_stub([step, step])) if "unique" not in p and "words" not in p]
+    return [
+        p for p in problems(_stub([step, step]))
+        if "unique" not in p and "words" not in p and FIRST_PERSON_ISSUE not in p
+    ]  # fmt: skip

@@ -98,3 +98,37 @@ def test_storyboard_shows_in_chat_and_brings_caption_and_hashtags():
     assert "fact: 4,000 stars today" in formats.board_text(sb)
     social = formats.social({"caption": sb.caption, "hashtags": ["opensource", "github"]})
     assert "4,000 stars in a day." in social and "#opensource #github" in social
+
+
+def test_hashtags_are_spelled_from_known_words():
+    from app.tutorial.formats import hashtags
+
+    text = "Who won the world series 2026? Google Trends shows 1M+ searches"
+    tags = ["trendingnow", "googlettrends", "#ContentIdeas", "worldseries", "WorldSeries",
+            "creatortips", "zxqvbn", "series2026"]  # fmt: skip
+    assert hashtags(tags, text) == [
+        "trendingnow",
+        "googletrends",
+        "ContentIdeas",
+        "worldseries",
+        "creatortips",
+        "series2026",
+    ]
+
+
+def test_confirmation_names_the_chosen_format():
+    from app.tutorial.pipeline import kind
+
+    assert kind({"mode": "influencer"}) == "reel"
+    assert kind({"mode": "explainer"}) == "explainer"
+    assert kind({}) == "tutorial"
+
+
+def test_operator_voice_is_a_problem_and_has_a_last_resort():
+    from app.tutorial import planner
+
+    assert planner.FIRST_PERSON.search("I will open the export menu.")
+    assert planner.FIRST_PERSON.search("Let me scroll down")
+    assert not planner.FIRST_PERSON.search("You open the export menu.")
+    assert planner.viewer_voice("I will open the export menu.") == "Open the export menu."
+    assert planner.SPOKEN_ISSUE.match(f"step a: {planner.FIRST_PERSON_ISSUE} ('I will')")
