@@ -125,3 +125,35 @@ def test_edit_ops_become_state_edits():
     assert op.to_edit().narration == ["Line one.", "Line two."]
     assert pipeline.EditOp(state="verify", field="zoom", value="9").to_edit().zoom == 3.0
     assert pipeline.EditOp(state="write", field="label", value=" New ").to_edit().label == "New"
+
+
+def test_edit_ops_cut_and_pace_steps():
+    assert pipeline.EditOp(state="install", field="cut", value="yes").to_edit().cut is True
+    assert pipeline.EditOp(state="install", field="cut", value="no").to_edit().cut is False
+    assert pipeline.EditOp(state="write", field="pace", value="Fast").to_edit().pace == "fast"
+    assert pipeline.EditOp(state="write", field="pace", value="?").to_edit().pace == "fast"
+
+
+def test_editing_cuts_a_step_and_brings_it_back_without_a_sandbox(client, monkeypatch):
+    _, rendered = _fakes(monkeypatch)
+    _, job = _make(client, pipeline.SHOW)
+    assert job["status"] == "succeeded", job["error"]
+    tid = job["result"]["tutorial_id"]
+    boxes = len(client.get("/api/sandboxes", headers=_auth(client)).json())
+
+    def patch(state, body):
+        res = client.patch(f"/api/tutorials/{tid}/states/{state}", json=body,
+                           headers=_auth(client))  # fmt: skip
+        assert res.status_code == 202, res.text
+        done = _wait(client, res.json()["job"]["id"], {"succeeded", "failed"})
+        assert done["status"] == "succeeded", done["error"]
+        return client.get(f"/api/tutorials/{tid}", headers=_auth(client)).json()
+
+    tut = patch("install", {"cut": True})
+    assert "install" not in [s["id"] for s in tut["graph"]["states"]]
+    tut = patch("write", {"pace": "fast"})
+    assert next(s for s in tut["spec"]["steps"] if s["id"] == "write")["pace"] == "fast"
+    tut = patch("install", {"cut": False})
+    assert "install" in [s["id"] for s in tut["graph"]["states"]]
+    assert len(client.get("/api/sandboxes", headers=_auth(client)).json()) == boxes  # re-cut only
+    assert len(rendered) == 4

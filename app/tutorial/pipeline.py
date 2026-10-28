@@ -668,20 +668,29 @@ class StateEdit(BaseModel):
     label: str | None = Field(None, description="New step label (or video title for 'title')")
     zoom: float | None = Field(None, ge=1, le=3, description="Camera zoom on the key area")
     highlight: str | None = Field(None, description="New text for the highlight label")
+    cut: bool | None = Field(None, description="True: leave this step out of the video")
+    pace: Literal["real", "fast", "cut"] | None = Field(None, description="How the step plays")
 
 
 class EditOp(BaseModel):
     state: str = Field(description="State id: 'title', 'outro' or a step id")
-    field: Literal["narration", "label", "zoom", "highlight"]
+    field: Literal["narration", "label", "zoom", "highlight", "cut", "pace"]
     value: str = Field(
         description="The new value. narration: the full new spoken lines, one per line; "
-        "label: the new text; zoom: a number from 1 to 3; highlight: the new label text"
+        "label: the new text; zoom: a number from 1 to 3; highlight: the new label text; "
+        "cut: 'yes' to leave the step out of the video, 'no' to bring it back; pace: "
+        "'real' (real time), 'fast' (fast-forward) or 'cut' (jump to the result)"
     )
 
     def to_edit(self) -> StateEdit:
         if self.field == "narration":
             lines = [x.strip() for x in self.value.splitlines() if x.strip()]
             return StateEdit(state=self.state, narration=lines)
+        if self.field == "cut":
+            return StateEdit(state=self.state, cut=self.value.strip().lower() != "no")
+        if self.field == "pace":
+            pace = self.value.strip().lower()
+            return StateEdit(state=self.state, pace=pace if pace in PACES else "fast")
         if self.field == "zoom":
             return StateEdit(state=self.state, zoom=min(3.0, max(1.0, float(self.value))))
         return StateEdit(state=self.state, **{self.field: self.value.strip()})
@@ -694,12 +703,26 @@ class EditPlan(BaseModel):
                        "states: then explain why and leave edits empty")  # fmt: skip
 
 
-EDIT_RULES = """You edit a tutorial video that is stored as a graph of states. Turn the
-user's request into the smallest set of state edits. Only change what they asked for.
+PACES = ("real", "fast", "cut")
+
+EDIT_RULES = """You edit a finished video (a tutorial, reel or explainer) that is stored as
+a graph of states cut from one real screen recording. Turn the user's request into the
+smallest set of state edits. Only change what they asked for. What you can do:
+- the hook / opening line is the 'title' state's narration; the closing line is 'outro'.
+- tone ("more energetic", "calmer", "funnier"): rewrite the narration of every state in
+  that tone, same facts, same number of lines per state.
+- length ("make it 30 s"): each state's length is listed. Reach the target by, in order:
+  shorter narration lines, `pace` 'fast' or 'cut' for slow steps (installs, typing,
+  waits, page loads), then `cut` whole steps that aren't the main point. Never cut the
+  step that shows the main result, and never cut every step. Narration plays at about
+  2.5 words a second.
+- cut a part ("cut the install part"): `cut` 'yes' on those steps; 'no' brings one back.
+  Then fix narration of the next shown step if it refers to the cut one.
 Narration is read by a text-to-speech voice: write tool names the way they are said
 (e.g. 'engine-x' for nginx, 'package manager' for apt) and keep each line short and
 natural. Never claim anything the recorded run did not show. You cannot re-record
-actions or change what happened on screen; if asked to, set `reply` and explain.
+actions, add footage or change what happened on screen; if asked to, set `reply` and
+explain that it needs a new video.
 Every edit must carry the new value itself: the full rewritten narration lines, the new
 label, the new zoom number, or the new highlight text. Example for "shorten the intro":
 {"edits": [{"state": "title", "field": "narration", "value": "<the new, shorter intro>"}],
@@ -708,21 +731,35 @@ label, the new zoom number, or the new highlight text. Example for "shorten the 
 
 def describe(row: dict[str, Any]) -> str:
     spec, lines = row["spec"], row["spec"]["lines"]
-    out = [f"Title: {spec['title']}", "States:"]
-    for st in (row.get("graph") or {}).get("states", []):
+    states = (row.get("graph") or {}).get("states", [])
+    total = sum(st.get("duration") or 0 for st in states)
+    out = [f"Format: {kind(spec)}", f"Title: {spec['title']}", f"Length now: {total:.0f} s",
+           "States:"]  # fmt: skip
+    hidden, shown = set(spec.get("hidden") or []), {st["id"] for st in states}
+    for st in states:
         keys = _keys(spec, st["id"])
         step = next((s for s in spec["steps"] if s["id"] == st["id"]), {})
         out.append(
             f"- {st['id']} ({st['kind']}, {st.get('app') or '-'}): label={st['label']!r} "
+            f"{st.get('duration', 0):.1f} s, pace={step.get('pace', 'real')} "
             f"zoom={step.get('zoom', (step.get('focus') or {}).get('zoom', 1.8))} "
             f"narration={[lines[k] for k in keys]}"
         )
+    cut = [s for s in spec["steps"] if s["id"] in hidden and s["id"] not in shown]
+    for s in cut:
+        out.append(f"- {s['id']} (cut, not in the video): label={s['label']!r}")
     return "\n".join(out)
+
+
+def _recorded(row: dict[str, Any]) -> set[str]:
+    """Steps the recording really shows working, so they can be brought back."""
+    return {r["step"] for r in (row.get("capture") or {}).get("records", []) if r.get("ok")}
 
 
 def apply(row: dict[str, Any], edits: list[StateEdit]) -> list[str]:
     spec, changed = row["spec"], []
     states = {s["id"] for s in (row.get("graph") or {}).get("states", [])}
+    states |= {s["id"] for s in spec["steps"] if s["id"] in (spec.get("hidden") or [])}
     for e in edits:
         if e.state not in states:
             raise ValueError(f"Unknown state {e.state!r}; states are {sorted(states)}")
@@ -740,6 +777,16 @@ def apply(row: dict[str, Any], edits: list[StateEdit]) -> list[str]:
                 step["zoom"] = e.zoom
             elif step.get("focus"):
                 step["focus"]["zoom"] = e.zoom
+        if e.cut is not None and step:
+            hidden = spec.setdefault("hidden", [])
+            if e.cut and e.state not in hidden:
+                if len([s for s in spec["steps"] if s["id"] not in hidden]) <= 1:
+                    raise ValueError("Cutting that would leave no steps in the video")
+                hidden.append(e.state)
+            elif not e.cut and e.state in hidden and e.state in _recorded(row):
+                hidden.remove(e.state)
+        if e.pace and step:
+            step["pace"] = e.pace
         if e.highlight and step:
             hl = step.setdefault("highlight", {})
             if "box" in hl:

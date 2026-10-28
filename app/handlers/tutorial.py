@@ -69,7 +69,8 @@ from real runs in a Linux desktop sandbox. Pick:
   user wants a video about whatever is trending/latest/hot now (a repo, paper, model or
   news item) rather than naming the exact thing.
 - edit_tutorial: the user wants to change the tutorial already in this conversation
-  (narration, wording, zoom, highlights, title, re-render).
+  (narration, wording, tone, hook, length, cutting or fast-forwarding a part, zoom,
+  highlights, title, re-render).
 - chat: anything else (questions, docs lookups, small talk).
 
 Recipes:
