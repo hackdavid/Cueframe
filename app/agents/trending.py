@@ -86,7 +86,7 @@ class Tools:
                 "project_page": p.get("projectPage") or "", "published": d.get("publishedAt"),
             })  # fmt: skip
         papers.sort(key=lambda x: x["upvotes"], reverse=True)
-        return papers[: max(1, min(limit, 30))]
+        return [{"upvote_rank": i, **p} for i, p in enumerate(papers[: max(1, min(limit, 30))], 1)]
 
     async def hf_trending(self, kind: str = "models", limit: int = 10) -> Any:
         kind = kind if kind in ("models", "spaces") else "models"

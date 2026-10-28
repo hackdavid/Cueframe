@@ -145,7 +145,7 @@ POPUP_JS = r"""
   const KEY = /cookie|consent|gdpr|privacy|personal (data|info)|tracking|your choices/i;
   const MARK = /cookie|consent|cmp|gdpr|onetrust|didomi|usercentrics|cookiebot|truste|sp_message/i;
   const PICK = ["reject all", "reject", "decline all", "decline", "do not consent",
-    "don't consent", "refuse all", "refuse", "only necessary", "necessary only",
+    "don't consent", "refuse all", "refuse", "deny all", "deny", "only necessary", "necessary only",
     "use necessary cookies only", "only essential", "essential only",
     "continue without accepting", "dismiss", "close", "no thanks", "not now", "×", "✕", "x"];
   const cls = (e) => (e.id || "") + " " + (typeof e.className === "string" ? e.className : "");
