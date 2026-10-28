@@ -194,6 +194,7 @@ If the step is not needed at all because an earlier step already did what it is 
 set `drop` instead.
 {SANDBOX}"""
 
+CONFIRM = re.compile(r"\s*(ok|apply|done|confirm|create|close)\s*$", re.I)
 GUI = ("click", "type", "scroll", "key", "launch", "drag", "menu")
 MAX_STEPS = 16
 APP_CMD = re.compile(r"[a-z0-9][a-z0-9.+_-]*( [\w./=:-]+){0,3}")
@@ -503,7 +504,14 @@ async def repair(
     goal = spec.get("goal") or spec["title"]
     ask = (f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step {i + 1} "
            f"({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}")  # fmt: skip
-    if "No element matching" in why:
+    prev = spec["steps"][i - 1]["action"] if i else None
+    if "No element matching" in why and CONFIRM.match(step["action"].get("target") or ""):
+        ask += (
+            f"\n\nThe step before it ({prev}) ran and passed its check, and no "
+            f"{step['action']['target']!r} button appeared. Many apps apply a change at once "
+            "with no confirm button; if that is the case here, set `drop`."
+        )
+    elif "No element matching" in why:
         ask += (
             "\n\nThe element isn't on screen at all, so aiming at it differently won't help. "
             "From the Visible list, find what has to be clicked first to reach it (a start "
@@ -515,9 +523,14 @@ async def repair(
             StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
             instructions=FIX, input=ask, timeout=REPAIR_TIMEOUT,
         )  # fmt: skip
-        if fix.before or fix.drop or not fix.fixable:
+        if prev and any(action(b) == prev for b in fix.before):
+            ask += (
+                "\n\nYour `before` repeats the previous step, which already ran and passed; "
+                "running it again would do it twice. Use a different step, or `drop`."
+            )
+        elif fix.before or fix.drop or not fix.fixable:
             break
-        if action(fix.step) == step["action"]:
+        elif action(fix.step) == step["action"]:
             ask += (
                 "\n\nYour fix was the same step, which just failed exactly like that. "
                 "Change it, or add the missing steps that must come first in `before`."
