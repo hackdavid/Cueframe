@@ -185,7 +185,10 @@ visible action each, for a 2-4 minute video:
   and type the full /work path into the file dialog. Prove an exported or saved file
   with a final terminal step (e.g. `file /root/Downloads/*.png`, expect 'PNG image').
 - Give every click/type/launch/menu/drag step an `expect` text that is visible afterwards when
-  it worked (a page heading, the typed text, a dialog title).
+  it worked (a page heading, the typed text, a dialog title). Text and shapes drawn inside
+  a canvas (drawing apps, maps, image editors) are pixels, not page text: for those steps
+  expect a label the page itself shows afterwards, or leave expect empty and the finished
+  picture is checked by eye.
 - A dialog a step opens (e.g. 'Layer > Layer Style > Drop Shadow') stays open until its
   'OK' is clicked: plan that click before the next menu. A title must be readable at a
   glance: size and place it (e.g. 'W:' about half the image width) clear of the subject.
@@ -212,6 +215,9 @@ found, the failure lists the elements that ARE visible; pick the right one from 
 If the step can't work because something the plan never did has to happen first (a
 start screen to dismiss, a dialog or menu to open), keep the step as it is and put
 those missing steps in `before`; never replace a step with one that drops its purpose.
+If the action ran without an error and the visible output shows it worked, but the
+`expect` words never appear (a guessed heading, or text drawn inside a canvas), keep the
+action and only change `expect` to words from the visible output, or empty it for a canvas.
 If the step is not needed at all because an earlier step already did what it is for
 (e.g. it clicks a confirm button that doesn't exist since the change applied at once),
 set `drop` instead. When the failure says the element is covered by something (a dialog,
