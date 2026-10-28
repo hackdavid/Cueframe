@@ -7,7 +7,17 @@ from app.sandbox.base import MARK, _record, _script
 from app.sandbox.contracts import Action, ExecResult
 from app.sandbox.fake import FakeSandbox
 from app.tutorial import build, pipeline, planner
-from tests.test_planner import LONG, StubLLM, _answer, _plan, _sandboxes, _send, _setup, _step
+from tests.test_planner import (
+    LONG,
+    StubLLM,
+    _answer,
+    _plan,
+    _sandboxes,
+    _send,
+    _setup,
+    _step,
+    fixes,
+)
 from tests.test_tutorial import _auth, _wait
 
 GUI = [
@@ -111,7 +121,7 @@ def test_gui_tutorial_repairs_a_missing_element_from_what_is_visible(client, mon
     assert "mousepad" in job["pending_input"]["question"]
     job = _wait(client, jid, {"succeeded", "failed"})
     assert job["status"] == "succeeded", job["error"]
-    assert "Visible: download" in llm.inputs[-1][1]  # the fix sees the real candidates
+    assert "Visible: download" in fixes(llm)[-1]  # the fix sees the real candidates
     tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
     states = {s["id"]: s for s in tut["graph"]["states"]}
     assert states["launch"]["app"] == "mousepad" and states["download"]["app"] == "browser"

@@ -8,6 +8,7 @@ plan whose every step passed is recorded, so the video never shows guesswork.
 """
 
 import asyncio
+import base64
 import re
 import shlex
 from typing import Any, Literal
@@ -25,6 +26,8 @@ from app.tutorial.build import COLS, PROMPT
 
 MAX_REPAIRS = 3  # per step
 MAX_TOTAL_REPAIRS = 10  # per rehearsal
+MAX_REVIEWS = 2  # result reviews that may add steps, per rehearsal
+REVIEW_TIMEOUT = 150
 REPAIR_TIMEOUT = 90  # s per model call; a stalled call is retried sooner
 SANDBOX_TRIES = 2  # a sandbox that breaks mid-run is replaced this many times - 1
 MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
@@ -112,6 +115,20 @@ class StepFix(BaseModel):
     step: PlannedStep
 
 
+class Outcome(BaseModel):
+    """LLM contract: does the end of a passed rehearsal show what the user asked for?"""
+
+    done: bool = Field(description="True only if the images clearly show every result asked for")
+    missing: list[str] = Field(
+        description="Each asked-for result the images don't clearly show, e.g. 'the title "
+        "is too small to read', 'the Drop Shadow dialog is still open'; [] if done"
+    )
+    after: str = Field(description="id of the plan step the new steps go right after")
+    steps: list[PlannedStep] = Field(
+        description="Steps that make the missing results happen, at most 4; [] if done"
+    )
+
+
 SANDBOX = """The sandbox is a fresh Debian Linux desktop at 1920x1080 with
 internet access. Commands run as root in a bash terminal (no sudo needed, no password,
 no systemd: start daemons directly, e.g. `nginx`, not `systemctl`). GUI apps: this
@@ -169,6 +186,9 @@ visible action each, for a 2-4 minute video:
   with a final terminal step (e.g. `file /root/Downloads/*.png`, expect 'PNG image').
 - Give every click/type/launch/menu/drag step an `expect` text that is visible afterwards when
   it worked (a page heading, the typed text, a dialog title).
+- A dialog a step opens (e.g. 'Layer > Layer Style > Drop Shadow') stays open until its
+  'OK' is clicked: plan that click before the next menu. A title must be readable at a
+  glance: size and place it (e.g. 'W:' about half the image width) clear of the subject.
 - Mark every software install with installs=true; the user is asked about it first.
 - Give each terminal step a concrete `expect` text when the exit code alone doesn't
   prove it worked. End with a step that proves the result (e.g. curl, --version, ls).
@@ -192,6 +212,16 @@ those missing steps in `before`; never replace a step with one that drops its pu
 If the step is not needed at all because an earlier step already did what it is for
 (e.g. it clicks a confirm button that doesn't exist since the change applied at once),
 set `drop` instead.
+{SANDBOX}"""
+
+REVIEW = f"""A tutorial plan was just rehearsed for real and every step passed its own
+check. Look at the final screen and the exported file (if there is one) and judge whether
+they clearly show every result the task asks for, as a viewer of the video would see it:
+a title must be readable at a glance and placed where it doesn't hide the subject, an
+effect must be visible, and no dialog may still be open over the work. If something is
+missing, plan the steps that make it happen and say which step they go right after (before
+the export or save steps, so the exported file has the change). Use only elements that
+exist on that screen or that a menu opens, and never redo work that is already done.
 {SANDBOX}"""
 
 CONFIRM = re.compile(r"\s*(ok|apply|done|confirm|create|close)\s*$", re.I)
@@ -593,39 +623,123 @@ async def _rehearse(
         ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
         await put_files(box, spec)
         i = 0
-        while i < len(spec["steps"]):
-            step = spec["steps"][i]
-            ctx.phase("rehearse", f"Rehearsing step {i + 1}/{len(spec['steps'])}: {step['label']}")
-            mgr.touch(sid)
-            async with mgr.busy(sid):
-                rec = await check(
-                    box, step, await box.run(i, Action.model_validate(step["action"]))
-                )
-            mgr.touch(sid)
-            if rec.ok:
-                i += 1
-                continue
-            why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
-            ctx.thinking("Rehearsal", f"Step {step['id']} failed: {why}\n{out[-600:]}")
-            brief = why.split(" Visible:")[0]  # the chat gets the reason, the model all of it
-            tries = state.setdefault(step["id"], 0)
-            if tries >= MAX_REPAIRS or state["repairs"] >= MAX_TOTAL_REPAIRS:
-                await mgr.stop(sid, "rehearsal failed")
-                return f"step **{step['label']}** still fails after {tries} fixes ({brief})"
-            state["repairs"] += 1
-            state[step["id"]] = tries + 1
-            ctx.phase("plan", f"Fixing step {i + 1} from its real output")
-            n = len(spec["steps"])
-            async with mgr.busy(sid):  # the sandbox waits for the fix; no idle shutdown
-                err = await repair(ctx, spec, i, rec)
-            if err:
-                await mgr.stop(sid, "rehearsal failed")
+        while True:
+            if (err := await _run_from(ctx, spec, heal, state, sid, box, i)) is not None:
                 return err
-            heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
-                 f"real output as {fixed(spec, i, n)}")  # fmt: skip
+            async with mgr.busy(sid):
+                found = await review(ctx, box, spec)
+            if found is None:
+                break
+            i, missing, added = found
+            if not added or state.setdefault("reviews", 0) >= MAX_REVIEWS:
+                await mgr.stop(sid, "rehearsal failed")
+                return f"the finished result doesn't show: {'; '.join(missing)}"
+            state["reviews"] += 1
+            steps = " → ".join(f"`{what(s)}`" for s in spec["steps"][i : i + added])
+            heal(f"Rehearsal: every step passed, but the result didn't show "
+                 f"{'; '.join(missing)}; added {steps}")  # fmt: skip
         await mgr.stop(sid, "rehearsal passed")
-    spec["rehearsal"] = {"repairs": state["repairs"], "sandbox_id": sid}
+    spec["rehearsal"] = {"repairs": state["repairs"], "reviews": state.get("reviews", 0),
+                         "sandbox_id": sid}  # fmt: skip
     return None
+
+
+async def _run_from(
+    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, int],
+    sid: str, box: Sandbox, i: int,
+) -> str | None:  # fmt: skip
+    """Run steps `i`.. in order, repairing failures in place; None when all passed."""
+    mgr = ctx._manager.sandboxes
+    while i < len(spec["steps"]):
+        step = spec["steps"][i]
+        ctx.phase("rehearse", f"Rehearsing step {i + 1}/{len(spec['steps'])}: {step['label']}")
+        mgr.touch(sid)
+        async with mgr.busy(sid):
+            rec = await check(box, step, await box.run(i, Action.model_validate(step["action"])))
+        mgr.touch(sid)
+        if rec.ok:
+            i += 1
+            continue
+        why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
+        ctx.thinking("Rehearsal", f"Step {step['id']} failed: {why}\n{out[-600:]}")
+        brief = why.split(" Visible:")[0]  # the chat gets the reason, the model all of it
+        tries = state.setdefault(step["id"], 0)
+        if tries >= MAX_REPAIRS or state["repairs"] >= MAX_TOTAL_REPAIRS:
+            await mgr.stop(sid, "rehearsal failed")
+            return f"step **{step['label']}** still fails after {tries} fixes ({brief})"
+        state["repairs"] += 1
+        state[step["id"]] = tries + 1
+        ctx.phase("plan", f"Fixing step {i + 1} from its real output")
+        n = len(spec["steps"])
+        async with mgr.busy(sid):  # the sandbox waits for the fix; no idle shutdown
+            err = await repair(ctx, spec, i, rec)
+        if err:
+            await mgr.stop(sid, "rehearsal failed")
+            return err
+        heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
+             f"real output as {fixed(spec, i, n)}")  # fmt: skip
+    return None
+
+
+async def _image(box: Sandbox, path: str) -> dict[str, str] | None:
+    """`path` in the sandbox as a small JPEG for the model, or None if it can't be read."""
+    res = await box.exec(
+        f"ffmpeg -y -loglevel error -i {shlex.quote(path)} -vf "
+        "'scale=1280:1280:force_original_aspect_ratio=decrease' -q:v 4 /tmp/cf/look.jpg",
+        60,
+    )
+    if res.returncode != 0:
+        return None
+    data = base64.b64encode(await box.read_file("/tmp/cf/look.jpg")).decode()
+    return {"type": "input_image", "image_url": f"data:image/jpeg;base64,{data}"}
+
+
+async def review(
+    ctx: JobContext, box: Sandbox, spec: dict[str, Any]
+) -> tuple[int, list[str], int] | None:
+    """Look at the finished result as a viewer would. When something asked for doesn't
+    show, insert the steps that add it: (where to resume, what was missing, how many steps
+    were added; 0 when the model's steps were invalid and nothing was added)."""
+    if ctx.llm is None or not ctx.llm.configured:
+        return None
+    goal = spec.get("goal") or spec["title"]
+    await box.screenshot()
+    content: list[dict[str, str]] = [
+        {"type": "input_text", "text": f"Task: {goal}\nPlan:\n{describe_plan(spec)}"},
+        {"type": "input_text", "text": "Final screen:"},
+    ]
+    if shot := await _image(box, "/tmp/cf/shot.png"):
+        content.append(shot)
+    res = await box.exec("ls -t /root/Downloads/* 2>/dev/null | grep -iE '\\.(png|jpe?g|webp)$' "
+                         "| head -1", 20)  # fmt: skip
+    f = res.stdout.strip()
+    if f.startswith("/root/Downloads/") and (img := await _image(box, f)):
+        content += [{"type": "input_text", "text": f"Exported file {f}:"}, img]
+    out, _ = await ctx.llm.parse(
+        Outcome, purpose="tutorial.review", model=ctx.settings.research_model,
+        instructions=REVIEW, input=[{"role": "user", "content": content}],
+        timeout=REVIEW_TIMEOUT,
+    )  # fmt: skip
+    if out.done or not out.steps:
+        return None
+    ids = [s["id"] for s in spec["steps"]]
+    if out.after in ids:
+        at = ids.index(out.after) + 1
+    else:  # before the first export/save, else at the end
+        at = next((k for k, s in enumerate(spec["steps"])
+                   if re.search(r"export|save", what(s), re.I)), len(ids))  # fmt: skip
+    add = out.steps[:4] if len(ids) + len(out.steps[:4]) <= MAX_STEPS + 8 else []
+    for n, p in enumerate(add, 1):
+        p.id = next(f"look{n}_{k}" for k in range(1, 99) if f"look{n}_{k}" not in ids)
+        ids.append(p.id)
+    bad = [x for p in add for x in problems_one(p)]
+    missing = out.missing or ["what the task asks for"]
+    if not add or bad:
+        return 0, [*missing, *(f"(the steps to add it were invalid: {b})" for b in bad[:2])], 0
+    new = to_spec(_stub(add), goal)
+    spec["steps"][at:at] = new["steps"]
+    spec["lines"].update({k: v for k, v in new["lines"].items() if k not in ("intro", "outro")})
+    return at, missing, len(add)
 
 
 MAX_FILE_MB = 25
