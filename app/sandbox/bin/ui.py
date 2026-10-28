@@ -3,6 +3,10 @@
 
   ui.py find APP TARGET [click|type]  -> "__CFBOX x y w h" in screen pixels, exit 0
   ui.py text APP                      -> the visible text of APP (page text + URL)
+  ui.py settle browser                -> returns once the page has loaded and stopped changing
+  ui.py popup browser                 -> "__CFPOP x y w h label": the privacy-preserving
+                                         button (Reject all, Dismiss...) of a cookie or
+                                         consent banner on screen, exit 0; exit 1 if none
 
 APP "browser" asks Chromium over its DevTools protocol (port 9222); any other app is
 read through the Linux accessibility tree (AT-SPI). When nothing matches, exit 3 and
@@ -16,10 +20,43 @@ import re
 import socket
 import struct
 import sys
+import time
 import urllib.request
 
+# Shared page helpers: elements inside (open) shadow DOM too, and what is really on top.
+DEEP_JS = r"""
+  const kids = (root) => {
+    const out = [];
+    const walk = (r) => {
+      for (const e of r.querySelectorAll("*")) {
+        out.push(e);
+        if (e.shadowRoot) walk(e.shadowRoot);
+      }
+    };
+    walk(root);
+    return out;
+  };
+  const up = (e) => e.parentElement || (e.parentNode && e.parentNode.host) || null;
+  const within = (a, b) => {
+    for (let e = b; e; e = up(e)) if (e === a) return true;
+    return false;
+  };
+  const hitAt = (x, y) => {
+    let h = document.elementFromPoint(x, y);
+    while (h && h.shadowRoot) {
+      const d = h.shadowRoot.elementFromPoint(x, y);
+      if (!d || d === h) break;
+      h = d;
+    }
+    return h;
+  };
+  const textOf = (e) => (e.innerText || "") + kids(e).filter((k) => k.shadowRoot)
+    .map((k) => [...k.shadowRoot.children].filter((c) => !c.matches("style,script,link"))
+      .map((c) => c.innerText || "").join("\n")).join("\n");
+"""
 FIND_JS = r"""
 (([target, mode]) => {
+  /*DEEP*/
   const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
   const want = norm(target);
   const name = (el) => {
@@ -37,13 +74,18 @@ FIND_JS = r"""
     el.matches("input:not([type=hidden]),textarea,select,[contenteditable=true]");
   const active = (el) => field(el) || el.matches("a,button,summary,label,[onclick]," +
     "[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option]");
-  const els = [...document.querySelectorAll("body *")].filter(shown);
+  // Off the page entirely (e.g. "Skip to search" links parked at top: -300px) can't be used.
+  const onPage = (el) => {
+    const r = el.getBoundingClientRect();
+    return r.bottom + scrollY > 0 && r.right + scrollX > 0;
+  };
+  const els = kids(document.body).filter(shown).filter(onPage);
   let best = null, score = 0;
   if (want === "canvas") {  // the drawing area: largest canvas, preferring ones not covered
     const all = els.filter((e) => e.tagName === "CANVAS");
     const onTop = all.filter((e) => {  // e.g. a dialog's canvas over the editor's
       const r = e.getBoundingClientRect();
-      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === e;
+      return hitAt(r.left + r.width / 2, r.top + r.height / 2) === e;
     });
     for (const el of onTop.length ? onTop : all) {
       const r = el.getBoundingClientRect();
@@ -67,7 +109,8 @@ FIND_JS = r"""
     if (s > score) { best = el; score = s; }
   }
   if (best && mode === "type" && !field(best)) {
-    const inner = best.querySelector("input,textarea,[contenteditable=true]") ||
+    const q = "input,textarea,[contenteditable=true]";
+    const inner = best.querySelector(q) || (best.shadowRoot && best.shadowRoot.querySelector(q)) ||
       (best.htmlFor && document.getElementById(best.htmlFor));
     if (inner) best = inner;
   }
@@ -77,16 +120,80 @@ FIND_JS = r"""
   }
   best.scrollIntoView({block: "center", inline: "center"});
   const r = best.getBoundingClientRect();
+  // Something else on top (a dialog, a banner) would get the click: say what it is.
+  const hit = hitAt(r.left + r.width / 2, r.top + r.height / 2);
+  if (hit && !within(best, hit) && !within(hit, best)) {
+    let cover = hit;
+    while (up(cover) && !within(up(cover), best)) cover = up(cover);
+    const c = cover.getBoundingClientRect(), cs = getComputedStyle(cover);
+    const big = c.width * c.height >= Math.max(4 * r.width * r.height, 30000);
+    if (big || cs.position === "fixed" || cover.matches("[role=dialog],[aria-modal=true]")) {
+      const inside = kids(cover).filter(shown).filter(active);
+      return {found: false, covered: norm(textOf(cover)).slice(0, 160),
+              seen: [...new Set(inside.map(name).filter(Boolean))].slice(0, 30)};
+    }
+  }
   return {found: true, x: r.left, y: r.top, w: r.width, h: r.height, dpr: devicePixelRatio,
           ox: window.screenX, oy: window.screenY + window.outerHeight - window.innerHeight};
 })
 """
+# The banner's least-sharing choice, never "accept"; only a button that is really on top.
+POPUP_JS = r"""
+(() => {
+  /*DEEP*/
+  const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const KEY = /cookie|consent|gdpr|privacy|personal (data|info)|tracking|your choices/i;
+  const MARK = /cookie|consent|cmp|gdpr|onetrust|didomi|usercentrics|cookiebot|truste|sp_message/i;
+  const PICK = ["reject all", "reject", "decline all", "decline", "do not consent",
+    "don't consent", "refuse all", "refuse", "only necessary", "necessary only",
+    "use necessary cookies only", "only essential", "essential only",
+    "continue without accepting", "dismiss", "close", "no thanks", "not now", "×", "✕", "x"];
+  const cls = (e) => (e.id || "") + " " + (typeof e.className === "string" ? e.className : "");
+  const view = innerWidth * innerHeight;
+  const banner = (el) => {
+    for (let e = el; e && e !== document.body; e = up(e)) {
+      const cs = getComputedStyle(e), r = e.getBoundingClientRect();
+      const marked = MARK.test(cls(e)) || e.matches("[role=dialog],[aria-modal=true]");
+      if (marked || ((cs.position === "fixed" || cs.position === "sticky") &&
+                     r.width * r.height < 0.6 * view))
+        return KEY.test(norm(textOf(e)).slice(0, 3000) + " " + cls(e)) ? e : null;
+    }
+    return null;
+  };
+  let best = null, rank = PICK.length;
+  const sel = "button,a,[role=button],input[type=button],input[type=submit]";
+  for (const b of kids(document).filter((e) => e.matches(sel))) {
+    const r = b.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) continue;
+    const lab = norm(b.getAttribute("aria-label") || b.innerText || b.value || b.title);
+    const k = PICK.findIndex((p) => lab === p || (p.length > 3 && lab.startsWith(p + " ")));
+    if (k < 0 || k >= rank || !banner(b)) continue;
+    const hit = hitAt(r.left + r.width / 2, r.top + r.height / 2);
+    if (!hit || !(within(b, hit) || within(hit, b))) continue;
+    best = b; rank = k;
+  }
+  if (!best) return null;
+  const r = best.getBoundingClientRect();
+  return {label: PICK[rank], x: r.left, y: r.top, w: r.width, h: r.height, dpr: devicePixelRatio,
+          ox: window.screenX, oy: window.screenY + window.outerHeight - window.innerHeight};
+})()
+"""
+SETTLE_JS = (
+    "[document.readyState, document.body ? document.body.innerText.length : 0, "
+    "document.getElementsByTagName('*').length]"
+)
 # Typed text lives in field values, not innerText; passwords are never read back.
-TEXT_JS = (
-    "location.href + '\\n' + document.title + '\\n' + document.body.innerText + '\\n' + "
-    "[...document.querySelectorAll('input, textarea, select')]"
-    ".filter((e) => !['password', 'hidden'].includes(e.type) && e.value)"
-    ".map((e) => e.value).join('\\n')"
+TEXT_JS = r"""
+(() => {
+  /*DEEP*/
+  return location.href + "\n" + document.title + "\n" + textOf(document.body) + "\n" +
+    kids(document).filter((e) => e.matches("input,textarea,select"))
+      .filter((e) => !["password", "hidden"].includes(e.type) && e.value)
+      .map((e) => e.value).join("\n");
+})()
+"""
+FIND_JS, POPUP_JS, TEXT_JS = (
+    js.replace("/*DEEP*/", DEEP_JS) for js in (FIND_JS, POPUP_JS, TEXT_JS)
 )
 
 
@@ -148,7 +255,11 @@ def _recv(s: socket.socket) -> str:
 
 
 def cdp_eval(expr: str) -> object:
-    pages = json.load(urllib.request.urlopen("http://127.0.0.1:9222/json", timeout=5))
+    pages = json.load(
+        urllib.request.urlopen(
+            f"http://127.0.0.1:{os.environ.get('CF_CDP_PORT', '9222')}/json", timeout=5
+        )
+    )
     page = next(p for p in pages if p.get("type") == "page")
     s = _ws(page["webSocketDebuggerUrl"])
     _send(
@@ -171,10 +282,7 @@ def cdp_eval(expr: str) -> object:
             return res.get("result", {}).get("value")
 
 
-def browser_find(target: str, mode: str) -> tuple[int, int, int, int] | list[str]:
-    r = cdp_eval(f"{FIND_JS}({json.dumps([target, mode])})")
-    if not r or not r.get("found"):
-        return (r or {}).get("seen", [])
+def _screen(r: dict) -> tuple[int, int, int, int]:
     d = r["dpr"]
     return (
         round((r["ox"] + r["x"]) * d),
@@ -182,6 +290,37 @@ def browser_find(target: str, mode: str) -> tuple[int, int, int, int] | list[str
         round(r["w"] * d),
         round(r["h"] * d),
     )
+
+
+def browser_find(target: str, mode: str) -> tuple[int, int, int, int] | list[str] | str:
+    """The element's screen box, or what is visible (a list), or what covers it (a str)."""
+    r = cdp_eval(f"{FIND_JS}({json.dumps([target, mode])})")
+    if r and r.get("covered") is not None:
+        return f"{r['covered']!r}. Its buttons: " + "; ".join(r.get("seen", []))
+    if not r or not r.get("found"):
+        return (r or {}).get("seen", [])
+    return _screen(r)
+
+
+def browser_settle(limit: float = 15) -> bool:
+    """Wait until the page has loaded and its text and elements stop changing."""
+    end, prev, same = time.time() + limit, None, 0
+    while time.time() < end:
+        try:
+            cur = cdp_eval(SETTLE_JS)
+        except Exception:  # no page yet, or it is navigating
+            cur = None
+        same = same + 1 if cur and cur[0] == "complete" and cur == prev else 0
+        if same >= 2:
+            return True
+        prev = cur
+        time.sleep(0.4)
+    return False
+
+
+def browser_popup() -> tuple[str, tuple[int, int, int, int]] | None:
+    r = cdp_eval(POPUP_JS)
+    return (r["label"], _screen(r)) if r else None
 
 
 # ---------- desktop apps (AT-SPI accessibility tree) ----------
@@ -296,6 +435,14 @@ def desktop_find(app: str, target: str, mode: str) -> tuple[int, int, int, int] 
 def main() -> int:
     cmd, app = sys.argv[1], sys.argv[2]
     try:
+        if cmd == "settle":
+            return 0 if browser_settle() else print("still loading after 15 s") or 0
+        if cmd == "popup":
+            hit = browser_popup()
+            if not hit:
+                return 1
+            print("__CFPOP " + " ".join(str(v) for v in hit[1]) + f" {hit[0]}")
+            return 0
         if cmd == "text":
             if app == "browser":
                 print(cdp_eval(TEXT_JS))
@@ -303,10 +450,22 @@ def main() -> int:
                 print("\n".join(dict.fromkeys(filter(None, map(_label, desktop_nodes(app))))))
             return 0
         target, mode = sys.argv[3], (sys.argv[4] if len(sys.argv) > 4 else "click")
-        box = browser_find(target, mode) if app == "browser" else desktop_find(app, target, mode)
+        if app == "browser":
+            browser_settle()
+        end = time.time() + 5  # an element may show up a moment later (a menu, a result)
+        while True:
+            box = (
+                browser_find(target, mode) if app == "browser" else desktop_find(app, target, mode)
+            )
+            if isinstance(box, tuple) or time.time() > end:
+                break
+            time.sleep(0.5)
     except Exception as exc:
         print(f"{type(exc).__name__}: {exc}")
         return 4
+    if isinstance(box, str):
+        print(f"{target!r} is on screen but covered by {box}")
+        return 3
     if isinstance(box, list):
         print(f"No element matching {target!r} on screen. Visible: " + "; ".join(box))
         return 3

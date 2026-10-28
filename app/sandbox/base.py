@@ -144,6 +144,15 @@ class Sandbox(ABC):
         return res
 
 
+# Before a browser step: wait for the page to finish loading, then close a cookie or
+# consent banner with its least-sharing choice (Reject all, Dismiss...) by a real click.
+BROWSER_READY = (
+    "/opt/cf/ui.py settle browser; for _ in 1 2; do p=$(/opt/cf/ui.py popup browser) || break; "
+    'echo "$p"; set -- $p; /opt/cf/move.sh $(( $2 + $4 / 2 )) $(( $3 + $5 / 2 )); '
+    "sleep 0.15; xdotool click 1; sleep 0.8; /opt/cf/ui.py settle browser; done"
+)
+
+
 def _move(x: int, y: int) -> str:
     return f"/opt/cf/move.sh {int(x)} {int(y)}"
 
@@ -189,12 +198,18 @@ def _drag(a: Action) -> str:
 
 
 def _script(a: Action) -> str:
-    q = shlex.quote
     if a.kind == "open_url":
         return (
             "/opt/cf/focus.sh chromium; xdotool key ctrl+l; "
-            f"xdotool type --delay 35 -- {q(a.url or '')}; xdotool key Return"
+            f"xdotool type --delay 35 -- {shlex.quote(a.url or '')}; xdotool key Return; "
+            f"sleep 0.5; {BROWSER_READY}"
         )
+    body = _act(a)
+    return f"{BROWSER_READY}; {body}" if a.app == "browser" and a.kind != "wait" else body
+
+
+def _act(a: Action) -> str:
+    q = shlex.quote
     if a.kind == "launch":
         return f"/opt/cf/launch.sh {a.command or ''}"
     if a.kind in ("click", "double_click"):
@@ -241,11 +256,15 @@ def _record(index: int, action: Action, res: ExecResult) -> ActionRecord:
     # A menu prints one box per item: the last is the item finally chosen.
     found = next((ln.split()[1:5] for ln in reversed(body) if ln.startswith("__CFBOX ")), None)
     drag = next((ln.split()[1:5] for ln in body if ln.startswith("__CFDRAG ")), None)
-    tail = "\n".join(ln for ln in body if not ln.startswith(("__CFBOX ", "__CFDRAG ")))[-1500:]
+    pops = [
+        ln.split(maxsplit=5)[5] for ln in body if ln.startswith("__CFPOP ") and ln.count(" ") >= 5
+    ]
+    marks = ("__CFBOX ", "__CFDRAG ", "__CFPOP ")
+    tail = "\n".join(ln for ln in body if not ln.startswith(marks))[-1500:]
     return ActionRecord(
         index=index, action=action, ok=rc == "0", returncode=int(rc), started=float(s),
         ended=float(e), settled=max(float(st), float(e)), output_tail=tail,
         error=None if rc == "0" else f"exit code {rc}: {tail[-1200:]}",
         box=[int(v) for v in found] if found else None,
-        path=[int(v) for v in drag] if drag else None,
+        path=[int(v) for v in drag] if drag else None, popups=pops,
     )  # fmt: skip
