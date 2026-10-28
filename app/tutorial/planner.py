@@ -472,6 +472,14 @@ def failure(step: dict[str, Any], rec: ActionRecord | dict[str, Any]) -> tuple[s
     return get("error") or f"exit code {get('returncode')}", out
 
 
+def off_screen(s: PlannedStep, visible: list[str]) -> str | None:
+    """What a GUI step aims at first, when that isn't among the visible elements."""
+    if s.kind not in ("click", "double_click", "menu", "type") or not s.target.strip():
+        return None
+    aim = s.target.split(">")[0].strip().lower() if s.kind == "menu" else s.target.strip().lower()
+    return None if any(aim in v or v in aim for v in visible) else aim
+
+
 async def repair(
     ctx: JobContext, spec: dict[str, Any], i: int, rec: ActionRecord | dict[str, Any]
 ) -> str | None:
@@ -491,17 +499,26 @@ async def repair(
             "From the Visible list, find what has to be clicked first to reach it (a start "
             "or continue button, a menu, a tab, a dialog) and put that in `before`."
         )
-    for _ in range(2):
+    visible = [v.strip().lower() for v in why.partition("Visible: ")[2].split(";") if v.strip()]
+    for _ in range(3):
         fix, _ = await ctx.llm.parse(
             StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
             instructions=FIX, input=ask,
         )  # fmt: skip
-        if fix.before or not fix.fixable or action(fix.step) != step["action"]:
+        if fix.before or not fix.fixable:
             break
-        ask += (
-            "\n\nYour fix was the same step, which just failed exactly like that. "
-            "Change it, or add the missing steps that must come first in `before`."
-        )
+        if action(fix.step) == step["action"]:
+            ask += (
+                "\n\nYour fix was the same step, which just failed exactly like that. "
+                "Change it, or add the missing steps that must come first in `before`."
+            )
+        elif visible and (aim := off_screen(fix.step, visible)):
+            ask += (
+                f"\n\nYour fix aims at {aim!r}, which isn't on screen either. Aim at one of "
+                "the visible elements, or put the steps that bring it on screen in `before`."
+            )
+        else:
+            break
     fix.step.id = step["id"]
     ids = {s["id"] for s in spec["steps"]}
     pre = fix.before[:2] if len(spec["steps"]) + len(fix.before) <= MAX_STEPS + 4 else []

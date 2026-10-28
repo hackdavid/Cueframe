@@ -260,3 +260,34 @@ def test_a_repair_that_repeats_the_failed_step_is_asked_again(client, monkeypatc
     assert job["status"] == "succeeded", job["error"]
     asks = [x for name, x in llm.inputs if name == "StepFix"]
     assert len(asks) == 2 and "Your fix was the same step" in asks[1]
+
+
+def test_a_repair_aimed_at_something_not_on_screen_is_asked_again():
+    seen = ["learn photo editing", "start using photopea"]
+    menu = _step("m", "menu", app="browser", target="File > Open...")
+    assert planner.off_screen(menu, seen) == "file"
+    start = _step("s", "click", app="browser", target="Start using Photopea")
+    assert planner.off_screen(start, seen) is None
+    assert planner.off_screen(_step("t", "terminal", command="ls"), seen) is None
+
+
+def test_busy_sandbox_keeps_the_provider_idle_timer_alive():
+    import asyncio
+
+    from app.sandbox.manager import SandboxManager
+
+    calls = []
+
+    class Box:
+        async def exec(self, script, timeout=60):
+            calls.append(script)
+
+    async def run():
+        mgr = SandboxManager.__new__(SandboxManager)
+        mgr._live = {"sb": Box()}
+        task = asyncio.create_task(mgr._heartbeat("sb", every=0.01))
+        await asyncio.sleep(0.05)
+        task.cancel()
+
+    asyncio.run(run())
+    assert calls and set(calls) == {"true"}
