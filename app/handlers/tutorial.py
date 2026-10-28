@@ -88,6 +88,8 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
         )
         if r.recipe not in recipes.recipes():
             r.recipe = None
+        r.format = r.format or _format(text)
+        r.seconds = r.seconds or _seconds(text)
         return r
     rid = recipes.match(text)
     wants_new = re.search(r"\b(tutorial|video|walkthrough|show me how)\b", text, re.I)
@@ -98,6 +100,17 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
     if re.search(r"\btutorial\b", text, re.I):
         return Route(intent="make_tutorial", format="tutorial", seconds=_seconds(text))
     return Route(intent="chat")
+
+
+def _format(text: str) -> Literal["tutorial", "reel", "explainer"] | None:
+    for fmt, words in (
+        ("explainer", r"explainer|explain(s|ing)? video|overview video"),
+        ("reel", r"reels?|shorts?|tiktok|influencer"),
+        ("tutorial", r"tutorials?|step[- ]by[- ]step|how[- ]to guide"),
+    ):
+        if re.search(rf"\b({words})\b", text, re.I):
+            return fmt  # type: ignore[return-value]
+    return None
 
 
 def _seconds(text: str) -> int | None:

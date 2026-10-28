@@ -1,4 +1,4 @@
-from app.handlers.tutorial import Route, _seconds
+from app.handlers.tutorial import Route, _format, _seconds
 from app.tutorial import build, formats, pipeline, planner
 from app.tutorial.formats import Beat, Storyboard
 from tests.test_planner import GOOD, StubLLM, _answer, _plan, _send, _setup, _wait, plans
@@ -48,6 +48,13 @@ def test_chat_asks_format_and_length_then_storyboards_the_plan(client, monkeypat
 def test_format_named_in_the_message_is_not_asked_again():
     assert _seconds("make a 2 min reel") == 120 and _seconds("a 45s short") == 45
     assert _seconds("make a reel about it") is None
+
+
+def test_format_words_back_up_the_router():
+    assert _format("Make an explainer video about today's top AI paper") == "explainer"
+    assert _format("a 30s short about it") == "reel"
+    assert _format("step-by-step guide to nginx") == "tutorial"
+    assert _format("give me a trending topic to make content about") is None
 
 
 def test_word_budget_follows_the_chosen_length():

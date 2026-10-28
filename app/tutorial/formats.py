@@ -78,6 +78,7 @@ Rules:
 - 4-8 beats in viewing order; their `seconds` add up to about {seconds}.
 - Every beat shows something the sandbox can really show: a web page or a section of it,
   a command and its output, an app window. No stock footage, faces or anything off-screen.
+  There is no code editor or IDE: files are written and run from the terminal.
 - `fact`: the exact fact or number from SOURCE the beat uses, with its date or source
   when it has one; '' when the beat states no fact. Never use facts from memory.
 - `pace`: 'real' for the moments that matter, 'fast' for typing, scrolling, installs and
