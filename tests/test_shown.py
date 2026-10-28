@@ -43,7 +43,7 @@ def _spec():
     return {
         "steps": [
             {"id": "open", "label": "Open repo", "narration": ["open"]},
-            {"id": "roles", "label": "Read roles", "narration": ["roles"]},
+            {"id": "roles", "label": "Read roles", "narration": ["roles"], "badge": "Three roles"},
         ],
         "lines": {"open": "Here is the repo page.",
                   "roles": "It has three roles: Creator, Explorer and Evolver."},
@@ -58,7 +58,8 @@ RECS = [
 
 def test_rewrites_lines_the_frames_dont_show(tmp_path):
     fix = shown.LineFix(key="roles", problem="the three roles",
-                        narration="Scroll down and the README opens up.")  # fmt: skip
+                        narration="Scroll down and the README opens up.",
+                        badge="README opens")  # fmt: skip
     llm = _LLM([fix])
     ctx, spec = _Ctx(llm), _spec()
     heal = Healer(ctx)
@@ -66,6 +67,7 @@ def test_rewrites_lines_the_frames_dont_show(tmp_path):
     assert changed == ["roles"]
     assert spec["lines"]["roles"] == "Scroll down and the README opens up."
     assert spec["lines"]["open"] == "Here is the repo page."
+    assert spec["steps"][1]["badge"] == "README opens"
     images = [c for c in llm.calls[0]["input"][0]["content"] if c["type"] == "input_image"]
     assert len(images) == 4  # two frames per step, cut from the real recording
     assert "Narration check" in heal.log[0]
@@ -73,8 +75,8 @@ def test_rewrites_lines_the_frames_dont_show(tmp_path):
 
 def test_ignores_invalid_rewrites(tmp_path):
     long = " ".join(["word"] * 30)
-    fixes = [shown.LineFix(key="nope", problem="x", narration="Hi."),
-             shown.LineFix(key="open", problem="x", narration=long)]  # fmt: skip
+    fixes = [shown.LineFix(key="nope", problem="x", narration="Hi.", badge=""),
+             shown.LineFix(key="open", problem="x", narration=long, badge="")]  # fmt: skip
     ctx, spec = _Ctx(_LLM(fixes)), _spec()
     assert asyncio.run(shown.check(ctx, spec, RECS, _video(tmp_path), Healer(ctx))) == []
     assert spec["lines"] == _spec()["lines"]

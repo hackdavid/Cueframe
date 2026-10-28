@@ -25,13 +25,18 @@ line names or describes something that is not visible in its frames, rewrite it 
 describes what IS visible in them, in the same voice, tense and style, with at most as
 many words as the original. Use only facts visible in the frames or stated in the source
 brief; never add numbers or claims. Return only the lines that need rewriting (none when
-every line matches)."""
+every line matches). Each step's badge is shown on screen when it ends: when it claims
+the same unshown thing, give a new 2-4 word badge too."""
 
 
 class LineFix(BaseModel):
     key: str = Field(description="The narration line's key, e.g. 'open-repo'")
     problem: str = Field(description="What the line says that the frames don't show")
     narration: str = Field(description="The rewritten line, about what the frames show")
+    badge: str = Field(
+        description="If the step's badge claims the same unshown thing: a new 2-4 word badge "
+        "about what the frames show; else ''"
+    )
 
 
 class Shown(BaseModel):
@@ -69,6 +74,7 @@ async def check(
     if ctx.llm is None or not ctx.llm.configured or not video.exists():
         return []
     by_id = {s["id"]: s for s in spec["steps"]}
+    step_of = {k: s for s in spec["steps"] for k in s["narration"]}
     shown = [r for r in records if r.get("in_video") and r.get("ok") and r["step"] in by_id]
     if not shown:
         return []
@@ -81,7 +87,7 @@ async def check(
         step = by_id[r["step"]]
         said = [k for k in step["narration"] if k in lines]
         keys.update(said)
-        text = "\n".join(f"{k}: {lines[k]}" for k in said)
+        text = "\n".join([*(f"{k}: {lines[k]}" for k in said), f"badge: {step.get('badge') or ''}"])
         content.append({"type": "input_text", "text": f"Step {step['label']!r}\n{text}"})
         span = r["t_out"] - r["t_in"]
         for f in at:
@@ -100,8 +106,10 @@ async def check(
     for fix in out.fixes:
         if not valid(fix, lines, keys) or fix.key in changed:
             continue
-        heal(f"Narration check: **{fix.key}** said {fix.problem.rstrip('.')}, which isn't "
-             f"on screen; now says \"{fix.narration.strip()}\"")  # fmt: skip
+        heal(f"Narration check, **{fix.key}**: {fix.problem.rstrip('.')}. "
+             f"Now says \"{fix.narration.strip()}\"")  # fmt: skip
         lines[fix.key] = fix.narration.strip()
+        if 0 < len(fix.badge.split()) <= 5 and step_of[fix.key].get("badge"):
+            step_of[fix.key]["badge"] = fix.badge.strip()
         changed.append(fix.key)
     return changed
