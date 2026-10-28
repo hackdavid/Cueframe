@@ -547,7 +547,7 @@ def learned(spec: dict[str, Any], i: int, old: dict[str, Any], prev: dict[str, A
             n: int, why: str) -> tuple[str, str]:  # fmt: skip
     """After a fix of step `i` (was `old`, plan had `n` steps): (id of the step whose pass
     proves the fix, what to remember)."""
-    steps, k = spec["steps"], len(spec["steps"]) - n
+    steps, k, why = spec["steps"], len(spec["steps"]) - n, why.rstrip(". ")
     if k < 0:
         after = f" after {said(prev)}" if prev else ""
         nxt = steps[i]["id"] if i < len(steps) else ""
