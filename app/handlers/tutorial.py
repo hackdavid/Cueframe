@@ -9,16 +9,17 @@ from pydantic import BaseModel
 from app.handlers.demo import demo_reply
 from app.handlers.research import docs_research
 from app.jobs import JobContext, JobManager, job_handler
-from app.tutorial import pipeline, recipes
+from app.tutorial import formats, pipeline, recipes
 
 
 @job_handler("tutorial.make")
 async def tutorial_make(ctx: JobContext) -> dict[str, Any]:
     ji = ctx.input.get("job_input") or {}
     rid = ji.get("recipe") or recipes.match(ctx.input["text"])
-    mode = "influencer" if ji.get("mode") == "influencer" else "tutorial"
+    mode = ji.get("mode") if ji.get("mode") in ("influencer", "explainer") else "tutorial"
     return await pipeline.make(ctx, rid, goal=ctx.input["text"], mode=mode,
-                               trending=bool(ji.get("trending")))  # fmt: skip
+                               trending=bool(ji.get("trending")),
+                               seconds=ji.get("seconds"))  # fmt: skip
 
 
 @job_handler("tutorial.edit")
@@ -50,7 +51,8 @@ def resume_interrupted(jobs: JobManager, interrupted: list[dict[str, Any]]) -> l
 class Route(BaseModel):
     intent: Literal["make_tutorial", "edit_tutorial", "chat"]
     recipe: str | None = None
-    mode: Literal["tutorial", "influencer"] = "tutorial"
+    format: Literal["tutorial", "reel", "explainer"] | None = None
+    seconds: int | None = None
     trending: bool = False
 
 
@@ -58,9 +60,12 @@ ROUTER = """You route messages in Cueframe, an app that makes narrated video tut
 from real runs in a Linux desktop sandbox. Pick:
 - make_tutorial: the user wants a (new) tutorial/video/walkthrough of a task. Set
   `recipe` to the id of the matching recipe below, or null if none fits (a new
-  tutorial is then planned automatically). Set `mode`: "influencer" when the user wants
-  an engaging influencer/creator/social-style explainer (e.g. about a trending repo,
-  paper or launch), else "tutorial" (a how-to lesson). Set `trending` true only when the
+  tutorial is then planned automatically). Set `format` to what they asked for:
+  "tutorial" (a how-to, step-by-step guide), "reel" (a reel, short, TikTok, influencer,
+  creator or social content), "explainer" (an explainer or overview video); null when
+  the message doesn't say which (e.g. "give me a trending topic for content", "make a
+  video about X"): the user is then asked. Set `seconds` to the length they asked for
+  (e.g. "1 minute" = 60), else null. Set `trending` true only when the
   user wants a video about whatever is trending/latest/hot now (a repo, paper, model or
   news item) rather than naming the exact thing.
 - edit_tutorial: the user wants to change the tutorial already in this conversation
@@ -83,6 +88,8 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
         )
         if r.recipe not in recipes.recipes():
             r.recipe = None
+        r.format = r.format or _format(text)
+        r.seconds = r.seconds or _seconds(text)
         return r
     rid = recipes.match(text)
     wants_new = re.search(r"\b(tutorial|video|walkthrough|show me how)\b", text, re.I)
@@ -91,8 +98,26 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
     if has_tutorial:
         return Route(intent="edit_tutorial")
     if re.search(r"\btutorial\b", text, re.I):
-        return Route(intent="make_tutorial")
+        return Route(intent="make_tutorial", format="tutorial", seconds=_seconds(text))
     return Route(intent="chat")
+
+
+def _format(text: str) -> Literal["tutorial", "reel", "explainer"] | None:
+    for fmt, words in (
+        ("explainer", r"explainer|explain(s|ing)? video|overview video"),
+        ("reel", r"reels?|shorts?|tiktok|influencer"),
+        ("tutorial", r"tutorials?|step[- ]by[- ]step|how[- ]to guide"),
+    ):
+        if re.search(rf"\b({words})\b", text, re.I):
+            return fmt  # type: ignore[return-value]
+    return None
+
+
+def _seconds(text: str) -> int | None:
+    m = re.search(r"\b(\d+)\s*(s|secs?|seconds?|m|mins?|minutes?)\b", text, re.I)
+    if not m:
+        return None
+    return int(m[1]) * (60 if m[2].lower().startswith("m") else 1)
 
 
 @job_handler("assistant.reply")
@@ -106,9 +131,12 @@ async def assistant_reply(ctx: JobContext) -> dict[str, Any] | None:
     ctx.thinking("Router", "Reading your message")
     r = await route(ctx, bool(tuts))
     if r.intent == "make_tutorial":
-        return await pipeline.make(ctx, None if r.trending else r.recipe,
-                                   goal=ctx.input.get("text"), mode=r.mode,
-                                   trending=r.trending)  # fmt: skip
+        rid = None if r.trending else r.recipe
+        mode, seconds = "tutorial", None
+        if not rid and ctx.llm is not None and ctx.llm.configured:  # recipes are fixed scripts
+            mode, seconds = await formats.clarify(ctx, r.format, r.seconds)
+        return await pipeline.make(ctx, rid, goal=ctx.input.get("text"), mode=mode,
+                                   trending=r.trending, seconds=seconds)  # fmt: skip
     if r.intent == "edit_tutorial" and tuts:
         return await pipeline.edit(ctx, tuts[0]["id"], instruction=ctx.input.get("text"))
     if ctx.llm is not None and ctx.llm.configured:

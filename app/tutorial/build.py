@@ -67,12 +67,26 @@ def _cmd_box(cmd: str) -> tuple[int, int]:
     return int(width), int(lines * LINE_H + 10)
 
 
+FAST, CUT = (2.0, 8.0), (0.8, 16.0)  # (seconds left on screen, max speed-up)
+
+
+def pace_rate(pace: str, run: float) -> float:
+    """Playback speed for a step the storyboard fast-forwards or cuts: the real recording,
+    sped up so a wait of `run` seconds takes about FAST/CUT seconds on screen."""
+    if pace not in ("fast", "cut"):
+        return 1
+    show, top = FAST if pace == "fast" else CUT
+    r = min(top, run / show)
+    return round(r, 2) if r >= 1.5 else 1
+
+
 def plan_step(
     step: dict[str, Any], rec: dict[str, Any], narr: list[Narration], prev_app: str | None
 ) -> State:
     a = step["action"]
     app = a.get("app") or ("terminal" if a["kind"] == "terminal" else "browser")
-    run = rec["ended"] - rec["started"]
+    rate = pace_rate(step.get("pace", "real"), rec["ended"] - rec["started"]) if rec["ok"] else 1
+    run = (rec["ended"] - rec["started"]) / rate
     lead = 0.25
     switched = prev_app is not None and prev_app != app
     t = lead + (0.35 if switched else 0.1)
@@ -82,7 +96,7 @@ def plan_step(
     if len(narr) > 1:  # the follow-up line waits for the command to finish
         narr[1].at = max(narr[1].at, lead + run + 0.3)
     end = max(n.at + n.duration for n in narr) if narr else run
-    window = rec["t_out"] - (rec["t_in"] - lead)
+    window = (rec["t_out"] - (rec["t_in"] - lead)) / rate
     # Never cut narration short: past the captured window the renderer holds the last frame.
     dur = round(max(min(window, max(lead + run + 1.6, 3.4)), end + 1.0), 2)
     st = State(
@@ -91,7 +105,7 @@ def plan_step(
         label=step["label"],
         narration=narr,
         verified=rec["ok"],
-        source=Source(t_in=max(0, rec["t_in"] - lead), t_out=rec["t_out"]),
+        source=Source(t_in=max(0, rec["t_in"] - lead), t_out=rec["t_out"], rate=rate),
         badge=step.get("badge") if rec["ok"] else f"Failed (exit {rec['returncode']})",
         duration=dur,
     )
@@ -101,7 +115,7 @@ def plan_step(
         st.sfx.append(Sfx(t=0, kind="whoosh"))
     if a["kind"] == "terminal":
         cmd = a["command"]
-        typed = len(cmd) * TYPE_S + 0.15
+        typed = (len(cmd) * TYPE_S + 0.15) / rate
         st.sfx += [
             Sfx(t=lead, kind="keys", duration=typed),
             Sfx(t=lead + typed + 0.05, kind="click"),

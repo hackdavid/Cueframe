@@ -152,7 +152,7 @@ async def test_falls_back_to_model_knowledge(tmp_path):
     result, calls, _ = await run(tmp_path, replies)
     assert result.source == "model_knowledge" and result.confidence == 0.55
     assert result.steps[0].source_url is None
-    assert calls[-1]["reasoning"] == {"effort": "high"} and "tools" not in calls[-1]
+    assert calls[-1]["reasoning"] == {"effort": "medium"} and "tools" not in calls[-1]
     assert "model's own knowledge" in render_markdown(result)
 
 

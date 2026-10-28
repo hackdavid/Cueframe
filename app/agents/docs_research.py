@@ -157,7 +157,7 @@ class _Run:
         kn, res = await self.call(
             KnowledgeSteps,
             "fallback",
-            "high",
+            "medium",
             instructions=KNOWLEDGE,
             input=f"App: {app}\nQuestion: {q}\nWhat the docs were missing: {missing}",
         )

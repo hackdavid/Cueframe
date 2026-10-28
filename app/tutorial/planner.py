@@ -23,6 +23,7 @@ from app.jobs import JobContext, JobFailed
 from app.sandbox.base import ANSI, FOCUS, Sandbox, menu_path
 from app.sandbox.contracts import Action, ActionRecord, live_path
 from app.sandbox.manager import SandboxLimit
+from app.tutorial import formats
 from app.tutorial.build import COLS, PROMPT
 
 MAX_REPAIRS = 3  # per step
@@ -33,7 +34,8 @@ REPAIR_TIMEOUT = 90  # s per model call; a stalled call is retried sooner
 SANDBOX_TRIES = 2  # a sandbox that breaks mid-run is replaced this many times - 1
 MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
 REEL_WORDS = (80, 135)  # influencer mode: the whole video stays under a minute
-Mode = Literal["tutorial", "influencer"]
+Mode = Literal["tutorial", "influencer", "explainer"]
+CODE_COLS = 72  # longest written code line: 60 asked for, some slack
 
 
 class PlannedStep(BaseModel):
@@ -77,6 +79,12 @@ class PlannedStep(BaseModel):
     highlight: str = Field(description="1-4 word label on the typed command or URL")
     output_label: str = Field(description="terminal: 1-3 word label on the result; else ''")
     success: bool = Field(description="True for the payoff moments (plays a success chime)")
+    pace: Literal["real", "fast", "cut"] = Field(
+        "real",
+        description="How the edit shows this step: 'real' time for the moment that matters; "
+        "'fast' (sped up 2-8x) for typing, scrolling, installs and other waits; 'cut' to "
+        "jump straight past a page load or long wait to its result",
+    )
 
 
 class SayAs(BaseModel):
@@ -143,8 +151,11 @@ Every app fills the screen and only one is shown at a time. The working director
 with pip: install Python libraries with `python3 -m pip install --quiet <names>`
 (installs=true; not apt, whose Python packages belong to another interpreter). To show a
 short program, write it with ONE `printf '%s\n' 'line 1' 'line 2' > /work/name.py` command
-(each code line one quoted argument, no tabs), then `cat -n` it and run it with `python3`;
-keep it under 12 lines.
+(each code line one quoted argument, no tabs, at most 60 characters so it reads well
+zoomed in), then `cat -n` it and run it with `python3`; keep it under 12 lines. A program
+that trains or fits a model must report its score on examples held out from training (a
+few labelled test examples it never saw), never only on the training data, and the
+narration must say which data the score is on.
 Files the user attached to the request are already in /work under their own names.
 Browser downloads are saved to /root/Downloads without asking. A browser file-open dialog
 (GTK) accepts a typed full path: a type step with target '' and enter=true, e.g. text
@@ -237,6 +248,42 @@ made to be watched to the end on social media, and the WHOLE video stays under 6
   one'), price ('free'), comparison or superlative unless the brief states it.
 - software: the site shown, e.g. 'GitHub' or 'Hugging Face'."""
 
+EXPLAINER = """
+
+STYLE OVERRIDE: a general explainer, not a reel. Calm, clear and curious instead of hype:
+- intro: the question or problem the video answers, in one sentence.
+- steps follow problem, idea, how it works, why it matters: 1-2 sentences each
+  (10-28 words per step), each said while its proof is on screen.
+- outro: the one-line takeaway; a call to action is optional.
+- title: a clear question or statement, max 50 characters."""
+
+
+def words(mode: Mode, seconds: int | None = None) -> tuple[int, int]:
+    """Total spoken words (min, max; max 0 = none) for `mode` at `seconds` of video."""
+    if not seconds:
+        return REEL_WORDS if mode != "tutorial" else (MIN_WORDS, 0)
+    if mode == "tutorial":  # steps run on screen between lines: fewer words per second
+        return round(seconds * 1.0), round(seconds * 3.2)
+    return round(seconds * 1.35), round(seconds * 2.25)
+
+
+def instructions(mode: Mode, seconds: int | None = None, skill: str = "") -> str:
+    """The planner's system prompt for `mode`, sized to `seconds`, with the format skill."""
+    lo, hi = words(mode, seconds)
+    if mode == "tutorial":
+        text = RULES
+        if seconds:
+            text += f"\n\nLENGTH: about {seconds} seconds of video; total spoken words {lo}-{hi}."
+    else:
+        text = INFLUENCER.replace("under 60 seconds", f"about {seconds or 60} seconds")
+        text = text.replace(f"{REEL_WORDS[0]}-{REEL_WORDS[1]}", f"{lo}-{hi}")
+        if mode == "explainer":
+            text += EXPLAINER
+    if skill:
+        text += f"\n\nCONTENT SKILL (how this kind of video is delivered):\n{skill}"
+    return text
+
+
 GROUNDED = """You fact-check the narration of a short video against its source brief. List
 each spoken claim that the brief does not support: a number, rank, date, price, feature or
 comparison that isn't in the brief, or that the brief contradicts. Opinions, calls to
@@ -321,7 +368,7 @@ BLOCKED = re.compile(
 )
 
 
-def problems(plan: TutorialPlan, mode: Mode = "tutorial") -> list[str]:
+def problems(plan: TutorialPlan, mode: Mode = "tutorial", seconds: int | None = None) -> list[str]:
     out = []
     if not 2 <= len(plan.steps) <= MAX_STEPS:
         out.append(f"use 3-{MAX_STEPS} steps, not {len(plan.steps)}")
@@ -336,6 +383,11 @@ def problems(plan: TutorialPlan, mode: Mode = "tutorial") -> list[str]:
                 out.append(f"step {s.id}: terminal steps need one command line")
             elif BLOCKED.search(s.command):
                 out.append(f"step {s.id}: command is interactive or destructive")
+            elif s.command.lstrip().startswith("printf") and any(
+                len(x) > CODE_COLS for x in re.findall(r"'([^']*)'", s.command)[1:]
+            ):
+                out.append(f"step {s.id}: keep each code line at most {CODE_COLS} characters "
+                           "so it isn't cut off zoomed in")  # fmt: skip
         if s.kind == "open_url" and not s.url.strip():
             out.append(f"step {s.id}: open_url needs a url")
         if s.kind == "open_url" and BAD_URL.search(s.url):
@@ -368,15 +420,19 @@ def problems(plan: TutorialPlan, mode: Mode = "tutorial") -> list[str]:
             out.append(f"step {s.id}: narration is empty")
     spoken = " ".join([plan.intro, plan.outro, *(f"{s.narration} {s.after}" for s in plan.steps)])
     n = len(spoken.split())
-    if mode == "influencer":
-        if not REEL_WORDS[0] <= n <= REEL_WORDS[1]:
-            out.append(f"narration is {n} words; influencer videos need {REEL_WORDS[0]}-"
-                       f"{REEL_WORDS[1]} in total so the video stays under a minute")  # fmt: skip
-    elif len(plan.steps) >= 2 and n < MIN_WORDS:
+    lo, hi = words(mode, seconds)
+    if mode != "tutorial":
+        if not lo <= n <= hi:
+            out.append(f"narration is {n} words; {mode} videos need {lo}-{hi} in total so "
+                       f"the video runs about {seconds or 60} seconds")  # fmt: skip
+    elif len(plan.steps) >= 2 and n < lo:
         out.append(
-            f"narration is {len(spoken.split())} words; write at least {MIN_WORDS} in total "
-            "(intro, outro and 2 sentences per step) so the video runs about a minute"
+            f"narration is {n} words; write at least {lo} in total (intro, outro and "
+            f"2 sentences per step) so the video runs about {seconds or 60} seconds"
         )
+    elif hi and n > hi:
+        out.append(f"narration is {n} words; keep it under {hi} so the video runs about "
+                   f"{seconds} seconds")  # fmt: skip
     return out
 
 
@@ -416,6 +472,12 @@ def written(text: str, say: dict[str, str]) -> str:
     return text.strip()
 
 
+def zoom_fit(chars: int, best: float = 1.8) -> float:
+    """Largest zoom (<= best) at which a `chars`-wide output line stays in frame."""
+    need = chars + 2
+    return 1.0 if need > COLS else round(max(1.0, min(best, COLS / need)), 2)
+
+
 def zoom_for(command: str, best: float = 1.8) -> float:
     """Largest zoom (<= best) that keeps the whole typed command line in frame."""
     need = PROMPT + len(command) + 2
@@ -437,6 +499,8 @@ def to_spec(plan: TutorialPlan, goal: str, mode: Mode = "tutorial") -> dict[str,
                 "action": action(s), "badge": written(s.badge, say) or None,
                 "success": s.success, "highlight": hl, "expect": s.expect.strip(),
                 "output_label": written(s.output_label, say)}  # fmt: skip
+        if s.pace != "real":
+            step["pace"] = s.pace
         if s.kind == "terminal":
             step["zoom"] = zoom_for(step["action"]["command"])
             step["zoom_out_after"] = s.installs
@@ -517,11 +581,19 @@ async def scout(ctx: JobContext, goal: str) -> TrendBrief | str:
 
 
 async def plan(
-    ctx: JobContext, goal: str, avoid: str = "", mode: Mode = "tutorial", brief: str = ""
+    ctx: JobContext,
+    goal: str,
+    avoid: str = "",
+    mode: Mode = "tutorial",
+    brief: str = "",
+    seconds: int | None = None,
+    board: dict[str, Any] | None = None,
 ) -> dict[str, Any] | str:
     """A validated spec, or a str explaining why the task can't be shown. `avoid` is
     a failure from a previous plan's rehearsal; the new plan must work around it. A
-    trending `brief` replaces docs research; `mode` picks tutorial or influencer style."""
+    trending `brief` replaces docs research; `mode` picks the style. With a target length
+    in `seconds` the research is first storyboarded with the format's skill (`board`
+    reuses an earlier storyboard)."""
     if ctx.llm is None or not ctx.llm.configured:
         return "Planning a new tutorial needs MODEL_API_KEY on the server."
     if brief:
@@ -529,27 +601,131 @@ async def plan(
     else:
         ctx.phase("research", "Reading the official docs")
         ref = await research(ctx, goal)
-    ctx.phase("plan", "Planning the video" if mode == "influencer" else "Planning the steps")
+    sb = None
+    if seconds:
+        sb = formats.Storyboard.model_validate(board) if board else None
+        if sb is None and (sb := await formats.storyboard(ctx, goal, ref, mode, seconds)):
+            ctx.reply(formats.describe(sb, mode, seconds))
+    ctx.phase("plan", "Planning the video" if mode != "tutorial" else "Planning the steps")
     prompt = f"Task: {goal}\n\n{ref}".strip()
+    if sb:
+        prompt += f"\n\n{formats.board_text(sb)}"
+    system = instructions(mode, seconds, formats.skill(mode) if seconds else "")
     if avoid:
         prompt += (f"\n\nA previous plan for this task failed when run for real: {avoid}. "
                    "Use a different approach that avoids that failure.")  # fmt: skip
     for _ in range(3):
         p, _res = await ctx.llm.parse(
             TutorialPlan, purpose="tutorial.plan", model=ctx.settings.research_model,
-            instructions=INFLUENCER if mode == "influencer" else RULES, input=prompt,
+            instructions=system, input=prompt,
             reasoning_effort=ctx.settings.plan_reasoning or None,
         )  # fmt: skip
         if not p.feasible:
             return p.reason or "That task can't be shown in a Linux terminal and browser."
-        issues = problems(p, mode)
-        if brief and not issues:
-            issues = await ungrounded(ctx, p, brief)
+        issues = await _checked(ctx, p, mode, brief, seconds)
+        for _ in range(RETELLS):  # wording only: a quick narration rewrite, not a new plan
+            if not issues or not all(SPOKEN_ISSUE.search(x) for x in issues):
+                break
+            ctx.thinking("Plan", f"{'; '.join(issues)}; rewriting just the narration")
+            if not await retell(ctx, p, issues, mode, brief, seconds):
+                break
+            issues = await _checked(ctx, p, mode, brief, seconds)
         ctx.thinking("Plan", "; ".join(issues) or f"{len(p.steps)} steps: {p.title}")
         if not issues:
-            return to_spec(p, goal, mode)
+            return _sized(to_spec(p, goal, mode), seconds, sb)
         prompt += f"\n\nYour previous plan had problems, fix them: {'; '.join(issues)}"
     return f"I couldn't produce a safe, runnable plan ({'; '.join(issues)})."
+
+
+RETELLS = 2
+
+
+def _sized(
+    spec: dict[str, Any], seconds: int | None, sb: formats.Storyboard | None
+) -> dict[str, Any]:
+    if seconds:
+        spec["seconds"] = seconds
+        if spec["mode"] == "influencer":
+            spec["kicker"] = f"EXPLAINED IN {seconds} SECONDS"
+        elif spec["mode"] == "explainer":
+            spec["kicker"] = "EXPLAINED"
+    if sb:
+        spec["storyboard"] = sb.model_dump()
+    return spec
+
+
+SPOKEN_ISSUE = re.compile(r"^narration (is \d+ words|not backed by the source)")
+
+RETELL = """You rewrite only the spoken narration of a tutorial video plan; the steps, their
+order and what they do stay exactly as they are. Fix the problems listed, keep the same
+voice and style, and say only what the steps really show (and, given a source brief,
+only facts from it). Narration is read by a text-to-speech voice: short sentences, no
+markdown, names written the way they're said. Return every step's narration (and its
+`after` line, '' if none) by step id, plus the intro and outro."""
+
+
+class SpokenLine(BaseModel):
+    id: str
+    narration: str = Field(description="2 short spoken sentences while the step runs")
+    after: str = Field(description="1 sentence after a slow command ends; usually ''")
+
+
+class Retold(BaseModel):
+    """LLM contract: new narration for an otherwise unchanged plan."""
+
+    intro: str
+    outro: str
+    steps: list[SpokenLine]
+
+
+async def _checked(
+    ctx: JobContext, p: TutorialPlan, mode: Mode, brief: str, seconds: int | None = None
+) -> list[str]:
+    issues = problems(p, mode, seconds)
+    if brief and not issues:
+        issues = await ungrounded(ctx, p, brief)
+    return issues
+
+
+async def retell(
+    ctx: JobContext,
+    p: TutorialPlan,
+    issues: list[str],
+    mode: Mode,
+    brief: str,
+    seconds: int | None = None,
+) -> bool:
+    """Rewrite `p`'s narration in place to fix wording-only `issues` (length, unsupported
+    claims) with one quick call; False when the answer doesn't fit the plan."""
+    lo, hi = words(mode, seconds)
+    need = f"{lo}-{hi}" if hi else f"at least {lo}"
+    ask = (f"Problems: {'; '.join(issues)}\nTotal spoken words needed: {need}.\n\n"
+           f"{'BRIEF:' + chr(10) + brief + chr(10) * 2 if brief else ''}"
+           f"PLAN:\nintro: {p.intro}\n{describe_steps(p)}\noutro: {p.outro}")  # fmt: skip
+    try:
+        r, _ = await ctx.llm.parse(
+            Retold, purpose="tutorial.retell", model=ctx.settings.research_model,
+            instructions=RETELL, input=ask, timeout=REPAIR_TIMEOUT,
+            reasoning_effort=ctx.settings.fix_reasoning or None,
+        )  # fmt: skip
+    except Exception as exc:
+        ctx.thinking("Plan", f"narration rewrite failed ({short(str(exc))})")
+        return False
+    by_id = {s.id: s for s in r.steps}
+    if set(by_id) != {s.id for s in p.steps} or not r.intro.strip() or not r.outro.strip():
+        return False
+    p.intro, p.outro = r.intro, r.outro
+    for s in p.steps:
+        s.narration, s.after = by_id[s.id].narration, by_id[s.id].after
+    return True
+
+
+def describe_steps(p: TutorialPlan) -> str:
+    return "\n".join(
+        f"{s.id} ({s.kind}: {s.command or s.url or s.target or s.text or s.keys}): "
+        f"narration={s.narration!r} after={s.after!r}"
+        for s in p.steps
+    )
 
 
 def output_lines(rec: ActionRecord | dict[str, Any], command: str) -> list[str]:
@@ -668,7 +844,7 @@ async def repair(
         fix, _ = await ctx.llm.parse(
             StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
             instructions=FIX, input=ask, timeout=REPAIR_TIMEOUT,
-            reasoning_effort=ctx.settings.plan_reasoning or None,
+            reasoning_effort=ctx.settings.fix_reasoning or None,
         )  # fmt: skip
         if any(b.kind == "click" and CONSENT.search(b.target) for b in (*fix.before, fix.step)):
             ask += (
@@ -708,6 +884,8 @@ async def repair(
             f"{step['id']}_pre{n}" for n in range(1, 99) if f"{step['id']}_pre{n}" not in ids
         )
         ids.add(p.id)
+        if spec.get("storyboard") and p.pace == "real":
+            p.pace = "fast"  # steps a repair adds only get to the beat; don't dwell on them
     bad = [x for s in (*pre, fix.step) for x in problems_one(s)]
     if not fix.fixable or bad:
         return f"step **{step['label']}** can't work here: {fix.reason or '; '.join(bad)}"
@@ -762,7 +940,7 @@ async def settle(
     while True:
         if i is not None and (err := await _run_from(ctx, spec, heal, state, sid, box, i)):
             return err, changed
-        if spec.get("mode") == "influencer":  # a walkthrough: every step already checked
+        if spec.get("mode") != "tutorial":  # a walkthrough: every step already checked
             break  # what it shows; extra end steps would push it past a minute
         async with mgr.busy(sid):
             found = await review(ctx, box, spec)

@@ -107,7 +107,7 @@ def test_step_failing_while_recording_is_fixed_and_recorded_again(client, monkey
     assert tut["capture"]["take"] == 2
     assert all(r["ok"] for r in tut["capture"]["records"])
     assert any("failed while recording" in n for n in tut["output"]["healing"])
-    assert "E: mirror timeout" in llm.inputs[-1][1]
+    assert any("E: mirror timeout" in str(i[1]) for i in llm.inputs)
     boxes = client.get("/api/sandboxes", headers=_auth(client)).json()
     assert len(boxes) == 3 and all(b["status"] == "terminated" for b in boxes)
 
