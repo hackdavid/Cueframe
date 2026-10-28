@@ -26,6 +26,7 @@ class Settings:
     meta_base_url: str = "https://api.meta.ai/v1"
     research_model: str = "muse-spark-1.3-contributor"
     plan_reasoning: str = "medium"  # planning effort; "" leaves it to the model
+    fix_reasoning: str = "low"  # step repairs and narration rewrites: small, local edits
     research_confidence: float = 0.7
     research_max_pages: int = 4
     research_max_rounds: int = 2
@@ -80,6 +81,7 @@ def get_settings() -> Settings:
         meta_base_url=os.environ.get("META_BASE_URL", "https://api.meta.ai/v1"),
         research_model=os.environ.get("CUEFRAME_RESEARCH_MODEL", "muse-spark-1.3-contributor"),
         plan_reasoning=os.environ.get("CUEFRAME_PLAN_REASONING", "medium"),
+        fix_reasoning=os.environ.get("CUEFRAME_FIX_REASONING", "low"),
         research_confidence=_float("CUEFRAME_RESEARCH_CONFIDENCE", 0.7),
         research_max_pages=_int("CUEFRAME_RESEARCH_MAX_PAGES", 4),
         research_max_rounds=_int("CUEFRAME_RESEARCH_MAX_ROUNDS", 2),
