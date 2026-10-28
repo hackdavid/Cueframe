@@ -776,7 +776,11 @@ async def check(box: Sandbox, step: dict[str, Any], rec: ActionRecord) -> Action
             rec.ok, rec.error = False, f"Output did not contain {step['expect']!r}"
     if a["kind"] in GUI and expect:
         return await _visible(box, a.get("app") or "browser", step["expect"], rec)
-    if a["kind"] == "open_url":
+    if a["kind"] == "open_url" and a["url"].startswith("file://"):
+        path = a["url"].removeprefix("file://").partition("#")[0]
+        if (await box.exec(f"test -f {shlex.quote(path)}", 20)).returncode != 0:
+            rec.ok, rec.error = False, f"{path} is not in the sandbox"
+    elif a["kind"] == "open_url":
         url = a["url"] if "://" in a["url"] else f"http://{a['url']}"
         res = await box.exec(f"curl -s -o /dev/null -m 10 -w '%{{http_code}}' {url!r}", 20)
         code = res.stdout.strip()[-3:]

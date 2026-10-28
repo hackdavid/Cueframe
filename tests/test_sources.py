@@ -87,3 +87,20 @@ def test_plans_may_open_attached_files_only():
     assert not planner.BAD_URL.search("file:///work/paper.pdf#page=3")
     assert planner.BAD_URL.search("file:///etc/passwd")
     assert planner.BAD_URL.search("file:///work/../etc/passwd")
+
+
+def test_open_file_url_checks_the_file_not_http():
+    from app.sandbox.contracts import Action, ActionRecord, ExecResult
+
+    class Box:
+        async def exec(self, cmd, timeout=0):
+            return ExecResult(returncode=0 if "/work/paper-text.html" in cmd else 1)
+
+    def rec(url):
+        a = Action(kind="open_url", url=url)
+        r = ActionRecord(index=0, action=a, ok=True, returncode=0, started=0, ended=0, settled=0)
+        return asyncio.run(planner.check(Box(), {"action": a.model_dump()}, r))
+
+    assert rec("file:///work/paper-text.html#page=2").ok
+    missing = rec("file:///work/nope.pdf")
+    assert not missing.ok and "not in the sandbox" in missing.error
