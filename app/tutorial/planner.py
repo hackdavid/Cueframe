@@ -806,8 +806,9 @@ async def review(
                 a.get("app") or "browser")  # fmt: skip
             await box.exec(FOCUS.get(app) or f"/opt/cf/focus.sh {shlex.quote(app)}", 20)
     await box.screenshot()
+    seen = "".join(f"\nSeen for real in earlier rehearsals: {n}" for n in spec.get("notes") or [])
     content: list[dict[str, str]] = [
-        {"type": "input_text", "text": f"Task: {goal}\nPlan:\n{describe_plan(spec)}"},
+        {"type": "input_text", "text": f"Task: {goal}\nPlan:\n{describe_plan(spec)}" + seen},
         {"type": "input_text", "text": "Final screen:"},
     ]
     if shot := await _image(box, "/tmp/cf/shot.png"):
