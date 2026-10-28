@@ -14,5 +14,5 @@ websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 chromium --no-sandbox --test-type --disable-gpu --disable-dev-shm-usage --no-first-run \
   --no-default-browser-check --disable-infobars --window-size=${W},${H} --window-position=0,0 \
   --force-device-scale-factor=${CF_SCALE:-1} --hide-crash-restore-bubble --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 --remote-allow-origins=* --disable-features=Translate \
-  "${CF_START_URL:-about:blank}" >/dev/null 2>&1 &
+  "${CF_START_URL:-about:blank}" >/tmp/chromium.log 2>&1 &
 wait

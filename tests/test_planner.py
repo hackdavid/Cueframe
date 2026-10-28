@@ -2,7 +2,7 @@ from app.handlers.tutorial import Route
 from app.tutorial import build, pipeline, planner
 from app.tutorial.build import caption_words
 from app.tutorial.contracts import Word
-from app.tutorial.planner import PlannedStep, StepFix, TutorialPlan
+from app.tutorial.planner import Outcome, PlannedStep, StepFix, TutorialPlan
 from tests.test_tutorial import _auth, _fakes, _wait
 
 
@@ -10,7 +10,7 @@ def _step(id_, kind="terminal", **kw):
     base = dict(id=id_, label=id_.title(), kind=kind, command="", url="", keys="",
                 installs=False, expect="", narration=f"Now {id_}.", after="", badge="",
                 highlight="", output_label="", success=False, app="", target="",
-                text="", enter=False)  # fmt: skip
+                text="", enter=False, at=[], to=[])  # fmt: skip
     return PlannedStep(**{**base, **kw})
 
 
@@ -32,11 +32,20 @@ GOOD = [
 ]
 
 
+def fixes(llm):
+    return [i for n, i in llm.inputs if n == "StepFix"]
+
+
+def plans(llm):
+    return [i for n, i in llm.inputs if n == "TutorialPlan"]
+
+
 class StubLLM:
     configured = True
 
-    def __init__(self, plans, fixes=()):
+    def __init__(self, plans, fixes=(), outcomes=()):
         self.plans, self.fixes, self.inputs = list(plans), list(fixes), []
+        self.outcomes = list(outcomes)
 
     async def parse(self, schema, **kw):
         self.inputs.append((schema.__name__, kw.get("input", "")))
@@ -46,6 +55,9 @@ class StubLLM:
             return self.plans.pop(0), None
         if schema is StepFix:
             return self.fixes.pop(0), None
+        if schema is Outcome:
+            done = Outcome(done=True, missing=[], after="", steps=[])
+            return (self.outcomes.pop(0) if self.outcomes else done), None
         raise AssertionError(schema)
 
 
@@ -90,8 +102,9 @@ def _sandboxes(client):
 
 def test_planned_tutorial_rehearses_repairs_then_records(client, monkeypatch):
     bad = _plan([*GOOD[:1], _step("edit", command="vim index.html")])
-    fix = StepFix(fixable=True, reason="typo", step=_step("x", command="cowsay hi",
-                  expect="OK", output_label="Output"))  # fmt: skip
+    fix = StepFix(drop=False, before=[], fixable=True, reason="typo",
+                  step=_step("x", command="cowsay hi", expect="OK",
+                             output_label="Output"))  # fmt: skip
     llm = StubLLM([bad, _plan(GOOD)], [fix])
     _setup(client, monkeypatch, llm)
     cid, jid = _send(client)
@@ -99,8 +112,8 @@ def test_planned_tutorial_rehearses_repairs_then_records(client, monkeypatch):
     assert "apt-get install -y cowsay" in job["pending_input"]["question"]
     job = _wait(client, jid, {"succeeded", "failed"})
     assert job["status"] == "succeeded", job["error"]
-    assert "previous plan had problems" in llm.inputs[-2][1]
-    assert "command not found" in llm.inputs[-1][1]  # the fix sees the real output
+    assert "previous plan had problems" in plans(llm)[-1]
+    assert "command not found" in fixes(llm)[-1]  # the fix sees the real output
 
     tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
     spec = tut["spec"]
@@ -116,8 +129,22 @@ def test_planned_tutorial_rehearses_repairs_then_records(client, monkeypatch):
     assert any("here's the plan" in m["content"] for m in msgs)
 
 
+def test_clean_rehearsal_take_is_the_video(client, monkeypatch):
+    _setup(client, monkeypatch, StubLLM([_plan([GOOD[0], _step("run", command="ls"), *GOOD[2:]])]))
+    _, jid = _send(client)
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
+    assert tut["capture"]["take"] == 1 and tut["capture"]["rehearsal"]["clean"]
+    boxes = _sandboxes(client)
+    assert len(boxes) == 1 and boxes[0]["status"] == "terminated"  # one take, no re-record
+
+
 def test_unfixable_rehearsal_records_nothing(client, monkeypatch):
-    fix = StepFix(fixable=False, reason="needs a GPU", step=_step("run", command="x"))
+    fix = StepFix(
+        drop=False, before=[], fixable=False, reason="needs a GPU", step=_step("run", command="x")
+    )
     llm = StubLLM([_plan(GOOD), _plan(GOOD)], [fix, fix])
     _setup(client, monkeypatch, llm)
     _, jid = _send(client)
@@ -234,3 +261,32 @@ def test_title_and_outro_copy_come_from_the_plan():
     )
     assert build.teaser(spec["steps"]) == "$ apt-get install -y -q cowsay"
     assert spec["done"] == "Cowsay says hi"
+
+
+def test_rehearsal_adds_steps_when_the_result_doesnt_show_what_was_asked(client, monkeypatch):
+    big = _step("bigger", command="echo bigger")
+    out = Outcome(done=False, missing=["the title is too small to read"], after="run", steps=[big])
+    llm = StubLLM([_plan(GOOD)], outcomes=[out])
+    _setup(client, monkeypatch, llm, fail=())
+    cid, jid = _send(client)
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
+    ids = [s["id"] for s in tut["spec"]["steps"]]
+    assert ids.index("look1_1") == ids.index("run") + 1 and tut["spec"]["rehearsal"]["reviews"] == 1
+    looks = [i for n, i in llm.inputs if n == "Outcome"]
+    assert len(looks) == 2 and any(c["type"] == "input_image" for c in looks[0][0]["content"])
+    assert any("title is too small" in h for h in job["result"]["healing"])
+
+
+def test_rehearsal_fails_when_the_result_never_shows_what_was_asked(client, monkeypatch):
+    big = _step("bigger", command="echo bigger")
+    out = Outcome(done=False, missing=["no shadow"], after="run", steps=[big])
+    llm = StubLLM([_plan(GOOD), _plan(GOOD)], outcomes=[out] * 8)
+    _setup(client, monkeypatch, llm, fail=())
+    _, jid = _send(client)
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "failed" and "no shadow" in job["error"]
+    assert all(b["status"] == "terminated" for b in _sandboxes(client))

@@ -137,10 +137,18 @@ async def voice_lines(
 
 
 async def capture(
-    ctx: JobContext, tid: str, spec: dict[str, Any], voice: dict[str, Any], hidden: set[str]
+    ctx: JobContext,
+    tid: str,
+    spec: dict[str, Any],
+    voice: dict[str, Any],
+    hidden: set[str],
+    rehearsal: tuple[Healer, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run every step for real in one sandbox while recording continuously. Each step
-    holds the screen for as long as its narration needs, so clips are never frozen."""
+    holds the screen for as long as its narration needs, so clips are never frozen.
+    As a `rehearsal` (healer, repair state), recording stops at a failure and the take is
+    finished unrecorded, repairing in place; `rehearsal.clean` says whether the take
+    shows the final plan (every step passed first time and the result needed nothing)."""
     mgr, storage = ctx._manager.sandboxes, ctx._manager.storage
     desk = dataclasses.replace(ctx.settings, **DESKTOP)  # type: ignore[arg-type]
     records: list[dict[str, Any]] = []
@@ -148,6 +156,7 @@ async def capture(
     ctx.phase("sandbox", "Starting a 1080p Linux desktop")
     async with mgr.session(ctx.id, ctx.conversation_id, "about:blank", settings=desk) as (sid, box):
         ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
+        await planner.put_files(box, spec)
         await box.run(-1, Action(kind="terminal", command="clear", ask=False))
         t0 = await box.start_recording()
         await asyncio.sleep(LEAD * PACE)
@@ -187,11 +196,22 @@ async def capture(
         ctx.phase("upload", "Saving the recording")
         video = await box.stop_recording()
         failed = not records or not records[-1]["ok"]
+        verdict = None
+        if rehearsal:
+            heal, state = rehearsal
+            err, changed = await planner.settle(
+                ctx, spec, heal, state, sid, box, len(records) - 1 if failed else None
+            )
+            verdict = {"error": err, "clean": not (failed or changed or err)}
+            failed = bool(err)
         await mgr.stop(sid, "job failed" if failed else "job finished")
+    if verdict and not verdict["clean"]:
+        return {"rehearsal": verdict, "sandbox_id": sid}
     (work_dir(ctx, tid) / "public" / tid / "recording.mp4").write_bytes(video)
     stored = await storage.put(f"tutorials/{tid}/recording.mp4", video, "video/mp4")
     sb = ctx.store.get_sandbox(sid) or {}
     return {"t0": t0, "records": records, "recording": stored, "sandbox_id": sid,
+            **({"rehearsal": verdict} if verdict else {}),
             "sandbox_seconds": sb.get("seconds"), "sandbox_cost_usd": sb.get("est_cost_usd")}  # fmt: skip  # noqa: E501
 
 
@@ -234,11 +254,12 @@ async def record(
         if last:
             return cap
         ctx.phase("plan", f"Fixing step {bad + 1} from its real output")
+        n = len(spec["steps"])
         if err := await planner.repair(ctx, spec, bad, recs[bad]):
             heal(f"Step **{step['label']}** failed while recording ({why}) and {err}")
             return cap
         heal(f"Step **{step['label']}** failed while recording ({why}); rewrote it as "
-             f"`{planner.what(spec['steps'][bad])}` and recorded again")  # fmt: skip
+             f"{planner.fixed(spec, bad, n)} and recorded again")  # fmt: skip
         await voice_lines(ctx, tid, spec["lines"], voice, heal)
         ctx.store.update_tutorial(tid, spec=spec, voice=voice)
     raise AssertionError("unreachable")
@@ -372,14 +393,18 @@ async def make(
     if recipe_id:
         spec = recipes.get(recipe_id)
     else:
-        planned = await planner.plan(ctx, goal or ctx.input.get("text", ""))
+        files = planner.attached(ctx)
+        goal = planner.with_files(goal or ctx.input.get("text", ""), files)
+        planned = await planner.plan(ctx, goal)
         if isinstance(planned, str):
             ctx.reply(f"I can't make that tutorial: {planned}")
             return {"routed": "make_tutorial", "planned": False, "reason": planned}
         spec, recipe_id = planned, "planned"
+        spec["files"] = files
         ctx.reply(
-            f"**{spec['title']}**: here's the plan. I'll rehearse it in a private sandbox, "
-            f"then record it for real.\n\n{planner.describe_plan(spec)}"
+            f"**{spec['title']}**: here's the plan. I'll record a rehearsal of it; if every "
+            "step works first time that's the video, otherwise I fix the steps and record "
+            f"again.\n\n{planner.describe_plan(spec)}"
         )
     heal = Healer(ctx)
     answers: dict[str, bool] = {}  # install command -> already installed (left out)
@@ -394,17 +419,61 @@ async def make(
         if ans == CANCEL:
             ctx.reply("Okay, I won't run it. Nothing was started.")
             return {"routed": "make_tutorial", "planned": True, "cancelled": True}
-    if recipe_id == "planned":
-        spec = await rehearsed(ctx, spec, answers, heal)
-    hidden = {s["id"] for s in spec["steps"] if answers.get(s["action"].get("command", ""))}
-    spec["hidden"] = sorted(hidden)
+    spec["hidden"] = _hidden(spec, answers)
     spec["healing"] = heal.log
     row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, recipe_id,
                                     spec["title"], spec)  # fmt: skip
     tid = row["id"]
-    ctx.store.update_tutorial(tid, active_job=ctx.id)
+    row = ctx.store.update_tutorial(tid, active_job=ctx.id)
     ctx.emit("tutorial.created", {"tutorial_id": tid})
+    if recipe_id == "planned":
+        row = await first_take(ctx, row, answers, heal)
     return await produce(ctx, row, heal)
+
+
+def _hidden(spec: dict[str, Any], answers: dict[str, bool]) -> list[str]:
+    return sorted(s["id"] for s in spec["steps"] if answers.get(s["action"].get("command", "")))
+
+
+async def first_take(
+    ctx: JobContext, row: dict[str, Any], answers: dict[str, bool], heal: Healer
+) -> dict[str, Any]:
+    """Rehearse a planned tutorial while recording it. A take where every step passed
+    first time and the result showed what was asked for is the video; any fix means
+    the fixed plan is recorded again in a fresh sandbox, so the video only shows what
+    really worked. A plan that can't be fixed is planned again once around the failure."""
+    tid, spec = row["id"], row["spec"]
+    heal.save = lambda: ctx.store.update_tutorial(tid, spec=spec)
+    voice: dict[str, Any] = {}
+    ctx.phase("voice", "Recording the narration")
+    await voice_lines(ctx, tid, spec["lines"], voice, heal)
+    ctx.store.update_tutorial(tid, status="capturing", voice=voice)
+    ctx.phase("rehearse", "Rehearsing every step, recorded; the take is kept if all pass")
+    try:
+        cap = await capture(ctx, tid, spec, voice, set(spec["hidden"]),
+                            rehearsal=(heal, {"repairs": 0}))  # fmt: skip
+    except SandboxLimit:
+        raise
+    except Exception as exc:
+        heal(f"The rehearsal sandbox broke ({short(exc)}); rehearsing again in a fresh one")
+        cap = None
+    try:
+        if cap is None:
+            spec = await rehearsed(ctx, spec, answers, heal)
+        elif why := cap["rehearsal"]["error"]:
+            spec = await replanned(ctx, spec, why, answers, heal)
+    except JobFailed:
+        ctx.store.delete_tutorial(tid)  # nothing worked, so there's no tutorial to keep
+        raise
+    if cap and cap["rehearsal"]["clean"]:
+        path = work_dir(ctx, tid) / "public" / tid / "recording.mp4"
+        if not (issues := await qa.recording(path, cap["records"])):
+            cap["take"] = 1
+            return ctx.store.update_tutorial(tid, spec=spec, voice=voice, capture=cap,
+                                             assets={"recording": cap["recording"]})  # fmt: skip
+        heal(f"Quality check of the rehearsal take: {'; '.join(issues)}. Recording again")
+    spec["hidden"] = _hidden(spec, answers)
+    return ctx.store.update_tutorial(tid, title=spec["title"], spec=spec, voice=voice)
 
 
 async def intake(ctx: JobContext, spec: dict[str, Any], answers: dict[str, bool]) -> bool:
@@ -430,13 +499,20 @@ async def rehearsed(
     """Rehearse the plan; if a step can't be repaired, plan again once around that
     failure (asking about any new install) and rehearse the new plan."""
     why = await planner.rehearse(ctx, spec, heal)
-    if not why:
-        return spec
+    return await replanned(ctx, spec, why, answers, heal) if why else spec
+
+
+async def replanned(
+    ctx: JobContext, spec: dict[str, Any], why: str, answers: dict[str, bool], heal: Healer
+) -> dict[str, Any]:
+    """Plan again once around a rehearsal failure (asking about any new install) and
+    rehearse the new plan."""
     heal(f"The first plan couldn't work here ({why}); planned the tutorial again around it")
     again = await planner.plan(ctx, spec["goal"], avoid=why)
     if isinstance(again, str):
         raise JobFailed(f"The rehearsal failed, so nothing was recorded: {why}. {again}",
                         {"rehearsal": why})  # fmt: skip
+    again["files"] = spec.get("files") or []
     ctx.reply(
         f"The first plan didn't work in the sandbox ({why}), so I planned it again. "
         f"**{again['title']}**:\n\n{planner.describe_plan(again)}"

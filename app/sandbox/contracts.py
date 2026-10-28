@@ -5,7 +5,17 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 ActionKind = Literal[
-    "open_url", "click", "double_click", "type", "key", "scroll", "wait", "terminal", "launch"
+    "open_url",
+    "click",
+    "double_click",
+    "type",
+    "key",
+    "scroll",
+    "wait",
+    "terminal",
+    "launch",
+    "drag",
+    "menu",
 ]
 
 
@@ -35,8 +45,13 @@ class Action(BaseModel):
     # click/type/scroll: the element's visible words (button text, label, placeholder),
     # found in the sandbox (DevTools for the browser, AT-SPI for desktop apps).
     target: str | None = None
+    # click/drag: where inside the target, as (x, y) fractions of its box (default centre);
+    # "canvas" names the app's drawing area. drag: from `at` to `to`. menu: target is a
+    # path such as "Layer > Layer Style > Drop Shadow", clicked item by item.
+    at: list[float] | None = None
+    to: list[float] | None = None
     enter: bool = False  # type: press Return after typing
-    clear: bool = False  # terminal: clear the screen (Ctrl+L) before typing
+    clear: bool = False  # terminal: clear the screen first; type: replace the field's text
 
 
 class ExecResult(BaseModel):
@@ -64,6 +79,7 @@ class ActionRecord(BaseModel):
     error: str | None = None
     screenshot_url: str | None = None
     box: list[int] | None = None  # screen pixels (x, y, w, h) of the element acted on
+    path: list[int] | None = None  # drag: screen pixels (x1, y1, x2, y2) pressed and released
 
 
 class Answer(BaseModel):

@@ -7,7 +7,17 @@ from app.sandbox.base import MARK, _record, _script
 from app.sandbox.contracts import Action, ExecResult
 from app.sandbox.fake import FakeSandbox
 from app.tutorial import build, pipeline, planner
-from tests.test_planner import LONG, StubLLM, _answer, _plan, _sandboxes, _send, _setup, _step
+from tests.test_planner import (
+    LONG,
+    StubLLM,
+    _answer,
+    _plan,
+    _sandboxes,
+    _send,
+    _setup,
+    _step,
+    fixes,
+)
 from tests.test_tutorial import _auth, _wait
 
 GUI = [
@@ -24,8 +34,12 @@ def test_scripts_find_elements_by_their_words():
     assert "/opt/cf/ui.py find browser 'Sign up now'\"'\"'s' click" in click
     assert "xdotool click --repeat 1 1" in click and "exit 3" in click
     typed = _script(Action(kind="type", target="Search", text="jq", enter=True, app="browser"))
-    assert "find browser Search type" in typed and typed.endswith("xdotool key Return")
+    assert "find browser Search type" in typed and "alt+o" in typed
+    assert "xdotool key Return;; esac" in typed
     assert _script(Action(kind="type", text="hi")) == "xdotool type --delay 45 -- hi"
+    field = _script(Action(kind="type", target="W:", text="900", clear=True, app="browser"))
+    assert "xdotool click 1; sleep 0.2; xdotool key End shift+Home" in field
+    assert "End shift+Home" not in typed
     assert _script(Action(kind="launch", command="mousepad")) == "/opt/cf/launch.sh mousepad"
     assert "find mousepad File click" in _script(
         Action(kind="scroll", target="File", app="mousepad")
@@ -98,7 +112,7 @@ def test_gui_tutorial_repairs_a_missing_element_from_what_is_visible(client, mon
     monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
                                                 "browser": "Download Python"})  # fmt: skip
     monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
-    fix = planner.StepFix(fixable=True, reason="label", step=_step(
+    fix = planner.StepFix(drop=False, before=[], fixable=True, reason="label", step=_step(
         "x", "click", app="browser", target="Download", expect="Download"))  # fmt: skip
     llm = StubLLM([_plan(GUI, intro=LONG)], [fix])
     _setup(client, monkeypatch, llm, fail=())
@@ -107,7 +121,7 @@ def test_gui_tutorial_repairs_a_missing_element_from_what_is_visible(client, mon
     assert "mousepad" in job["pending_input"]["question"]
     job = _wait(client, jid, {"succeeded", "failed"})
     assert job["status"] == "succeeded", job["error"]
-    assert "Visible: download" in llm.inputs[-1][1]  # the fix sees the real candidates
+    assert "Visible: download" in fixes(llm)[-1]  # the fix sees the real candidates
     tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
     states = {s["id"]: s for s in tut["graph"]["states"]}
     assert states["launch"]["app"] == "mousepad" and states["download"]["app"] == "browser"
@@ -146,3 +160,164 @@ def test_live_view_is_behind_login_and_owner_only(client, anon):
     assert r.status_code == 409  # owner, but no sandbox running
     assert pipeline.live_path(jid).startswith(f"/api/jobs/{jid}/live/vnc.html?")
     assert f"path=api/jobs/{jid}/live/websockify" in pipeline.live_path(jid)
+
+
+def test_drag_menu_and_canvas_points():
+    drag = _script(Action(kind="drag", target="canvas", at=[0.1, 0.5], to=[0.9, 0.5]))
+    assert "find browser canvas click" in drag and "xdotool mousedown 1" in drag
+    assert "$4 * 100 / 1000" in drag and "$4 * 900 / 1000" in drag and "mouseup 1" in drag
+    menu = _script(Action(kind="menu", target="Layer > Layer Style>Drop Shadow", app="browser"))
+    assert [
+        p in menu
+        for p in (
+            "find browser Layer click",
+            "find browser 'Layer Style' click",
+            "find browser 'Drop Shadow' click",
+        )
+    ] == [True] * 3
+    click = _script(Action(kind="click", target="canvas", at=[0.25, 1.4]))
+    assert "$4 * 250 / 1000" in click and "$5 * 1000 / 1000" in click
+    res = ExecResult(returncode=0, stdout=f"{MARK} 1 2 3 0\n__CFBOX 1 1 9 9\n__CFBOX 5 6 7 8"
+                     "\n__CFDRAG 10 20 300 20\nok")  # fmt: skip
+    rec = _record(0, Action(kind="drag", target="canvas"), res)
+    assert rec.box == [5, 6, 7, 8] and rec.path == [10, 20, 300, 20] and rec.output_tail == "ok"
+
+
+def test_problems_check_menu_and_drag_steps():
+    bad = [
+        _step("a", "menu", app="browser", target="Filter"),
+        _step("b", "drag", app="browser", target="canvas", at=[0.1, 0.1]),
+        _step("c", "click", app="browser", target="canvas", at=[2, 0.5]),
+        _step("d", "menu", app="browser", target="File > Sign in"),
+    ]
+    out = " ".join(planner.problems(_plan(bad)))
+    for sid in "abcd":
+        assert f"step {sid}:" in out, sid
+    ok = [
+        _step("m", "menu", app="browser", target="Select → Remove BG", expect="Remove BG"),
+        _step("g", "drag", app="browser", target="canvas", at=[0.1, 0.5], to=[0.9, 0.5]),
+        *GUI,
+    ]
+    assert planner.problems(_plan(ok)) == []
+    spec = planner.to_spec(_plan(ok), "goal")
+    assert spec["steps"][0]["action"]["target"] == "Select > Remove BG"
+    assert spec["steps"][1]["action"]["to"] == [0.9, 0.5]
+
+
+def test_write_file_and_attached_files_reach_the_sandbox(tmp_path):
+    box = FakeSandbox()
+    data = bytes(range(256)) * 400
+    asyncio.run(box.write_file("/work/p.jpg", data))
+    chunks = [s for s in box.scripts if s.startswith("printf %s ")]
+    assert len(chunks) == 3 and box.scripts[-1].startswith("base64 -d /work/p.jpg.b64")
+    f = tmp_path / "me.png"
+    f.write_bytes(b"png")
+    box = FakeSandbox()
+    asyncio.run(planner.put_files(box, {"files": [{"name": "me.png", "path": str(f)}]}))
+    assert any("/work/me.png" in s for s in box.scripts)
+    assert "use them: /work/me.png (image/png)" in planner.with_files(
+        "edit it", [{"name": "me.png", "content_type": "image/png"}]
+    )
+
+
+def test_typing_into_a_named_field_replaces_its_value():
+    from app.tutorial.planner import action
+
+    named = action(_step("w", "type", app="browser", target="W:", text="900"))
+    assert named["clear"] is True and named["target"] == "W:"
+    assert action(_step("t", "type", app="browser", text="Studio Portrait"))["clear"] is False
+
+
+def test_plan_summary_names_menu_and_drag_steps():
+    menu = {"kind": "menu", "target": "Select > Magic Cut...", "app": "browser"}
+    drag = {"kind": "drag", "target": "canvas", "app": "browser"}
+    spec = {"steps": [{"label": "Cut out", "action": menu}, {"label": "Paint", "action": drag}]}
+    text = planner.describe_plan(spec)
+    assert "**Select > Magic Cut...**" in text and "drag across “canvas”" in text
+
+
+def test_repair_can_add_the_missing_step_before_the_failed_one(client, monkeypatch):
+    monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
+                                                "browser": "Download Python"})  # fmt: skip
+    monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
+    start = _step("p", "click", app="browser", target="Start using it")
+    fix = planner.StepFix(drop=False, fixable=True, reason="start screen", before=[start],
+                          step=_step("x", "click", app="browser", target="Download",
+                                     expect="Download"))  # fmt: skip
+    llm = StubLLM([_plan(GUI, intro=LONG)], [fix])
+    _setup(client, monkeypatch, llm, fail=())
+    _, jid = _send(client, "Make a tutorial: write a note in mousepad")
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
+    ids = [s["id"] for s in tut["graph"]["states"]]
+    assert ids.index("download_pre1") + 1 == ids.index("download")
+    assert "`Start using it` → `Download`" in str(client.app.state.store.get_job(jid))
+
+
+def test_a_repair_that_repeats_the_failed_step_is_asked_again(client, monkeypatch):
+    monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
+                                                "browser": "Download Python"})  # fmt: skip
+    monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
+    same = planner.StepFix(
+        drop=False, before=[], fixable=True, reason="retry", step=GUI[-1].model_copy()
+    )
+    fix = planner.StepFix(drop=False, before=[], fixable=True, reason="label", step=_step(
+        "x", "click", app="browser", target="Download", expect="Download"))  # fmt: skip
+    llm = StubLLM([_plan(GUI, intro=LONG)], [same, fix])
+    _setup(client, monkeypatch, llm, fail=())
+    _, jid = _send(client, "Make a tutorial: write a note in mousepad")
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    asks = [x for name, x in llm.inputs if name == "StepFix"]
+    assert len(asks) == 2 and "Your fix was the same step" in asks[1]
+
+
+def test_a_repair_aimed_at_something_not_on_screen_is_asked_again():
+    seen = ["learn photo editing", "start using photopea"]
+    menu = _step("m", "menu", app="browser", target="File > Open...")
+    assert planner.off_screen(menu, seen) == "file"
+    start = _step("s", "click", app="browser", target="Start using Photopea")
+    assert planner.off_screen(start, seen) is None
+    assert planner.off_screen(_step("t", "terminal", command="ls"), seen) is None
+
+
+def test_busy_sandbox_keeps_the_provider_idle_timer_alive():
+    import asyncio
+
+    from app.sandbox.manager import SandboxManager
+
+    calls = []
+
+    class Box:
+        async def exec(self, script, timeout=60):
+            calls.append(script)
+
+    async def run():
+        mgr = SandboxManager.__new__(SandboxManager)
+        mgr._live = {"sb": Box()}
+        task = asyncio.create_task(mgr._heartbeat("sb", every=0.01))
+        await asyncio.sleep(0.05)
+        task.cancel()
+
+    asyncio.run(run())
+    assert calls and set(calls) == {"true"}
+
+
+def test_a_repair_can_drop_a_step_that_isnt_needed(client, monkeypatch):
+    monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
+                                                "browser": "Download Python"})  # fmt: skip
+    monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
+    fix = planner.StepFix(drop=True, before=[], fixable=True, reason="applied already",
+                          step=GUI[-1].model_copy())  # fmt: skip
+    llm = StubLLM([_plan(GUI, intro=LONG)], [fix])
+    _setup(client, monkeypatch, llm, fail=())
+    _, jid = _send(client, "Make a tutorial: write a note in mousepad")
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
+    assert "download" not in [s["id"] for s in tut["graph"]["states"]]
+    assert "step was dropped" in str(client.app.state.store.get_job(jid))

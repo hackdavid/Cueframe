@@ -59,13 +59,23 @@ class SandboxManager:
     def touch(self, sid: str) -> None:
         self._touched[sid] = time.monotonic()
 
+    async def _heartbeat(self, sid: str, every: float = 45) -> None:
+        """Keep the provider's own idle timer (Modal's backstop) from firing while we wait."""
+        while True:
+            await asyncio.sleep(every)
+            if box := self._live.get(sid):
+                with contextlib.suppress(Exception):
+                    await box.exec("true", 15)
+
     @contextlib.asynccontextmanager
     async def busy(self, sid: str) -> AsyncIterator[None]:
         """Mark an action in flight: idle shutdown is suspended (max lifetime still applies)."""
         self._busy[sid] = self._busy.get(sid, 0) + 1
+        beat = asyncio.create_task(self._heartbeat(sid))
         try:
             yield
         finally:
+            beat.cancel()
             if sid in self._busy:
                 self._busy[sid] -= 1
             if sid in self._live:

@@ -8,6 +8,7 @@ plan whose every step passed is recorded, so the video never shows guesswork.
 """
 
 import asyncio
+import base64
 import re
 import shlex
 from typing import Any, Literal
@@ -17,13 +18,17 @@ from pydantic import BaseModel, Field
 from app.agents.contracts import ResearchRequest
 from app.agents.docs_research import DocsResearchAgent
 from app.heal import Healer, short
-from app.jobs import JobContext
-from app.sandbox.base import ANSI, Sandbox
+from app.jobs import JobContext, JobFailed
+from app.sandbox.base import ANSI, FOCUS, Sandbox, menu_path
 from app.sandbox.contracts import Action, ActionRecord, live_path
 from app.sandbox.manager import SandboxLimit
 from app.tutorial.build import COLS, PROMPT
 
-MAX_REPAIRS = 3
+MAX_REPAIRS = 3  # per step
+MAX_TOTAL_REPAIRS = 10  # per rehearsal
+MAX_REVIEWS = 2  # result reviews that may add steps, per rehearsal
+REVIEW_TIMEOUT = 150
+REPAIR_TIMEOUT = 90  # s per model call; a stalled call is retried sooner
 SANDBOX_TRIES = 2  # a sandbox that breaks mid-run is replaced this many times - 1
 MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
 
@@ -31,7 +36,9 @@ MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
 class PlannedStep(BaseModel):
     id: str = Field(description="Short lowercase slug, unique, e.g. 'install'")
     label: str = Field(description="2-4 word step title shown on screen")
-    kind: Literal["terminal", "open_url", "key", "click", "type", "scroll", "launch"]
+    kind: Literal[
+        "terminal", "open_url", "key", "click", "type", "scroll", "launch", "drag", "menu"
+    ]
     command: str = Field(
         description="terminal: ONE non-interactive bash line; launch: the desktop app's "
         "command, e.g. 'mousepad'; else ''"
@@ -43,8 +50,14 @@ class PlannedStep(BaseModel):
     target: str = Field(
         description="click/scroll/type: the element's visible words exactly as on screen "
         "(button or link text, a field's label or placeholder, a menu name); type may use "
-        "'' to type where the cursor already is; else ''"
+        "'' to type where the cursor already is; menu: the item path, e.g. 'Layer > Layer "
+        "Style > Drop Shadow'; click/drag on the image or drawing area: 'canvas'; else ''"
     )
+    at: list[float] = Field(
+        description="click/drag on 'canvas' (or inside a big element): [x, y] fractions 0-1 "
+        "of its box where the mouse presses, e.g. [0.5, 0.2]; else []"
+    )
+    to: list[float] = Field(description="drag: [x, y] fractions 0-1 where it releases; else []")
     text: str = Field(description="type: the text to type; else ''")
     enter: bool = Field(description="type: press Enter after typing")
     url: str = Field(description="open_url: the address to type in the browser; else ''")
@@ -90,7 +103,30 @@ class StepFix(BaseModel):
 
     fixable: bool = Field(description="False if the task can't work in this sandbox")
     reason: str = Field(description="What went wrong, one sentence")
+    drop: bool = Field(
+        description="True only if the step isn't needed at all: what it waits for never "
+        "comes because an earlier step already did it (e.g. a confirm button that doesn't "
+        "exist because the change applied at once)"
+    )
+    before: list[PlannedStep] = Field(
+        description="Steps the plan is missing that must run first, at most 2 (e.g. click a "
+        "start screen's button, open the menu or dialog the step uses); [] if none"
+    )
     step: PlannedStep
+
+
+class Outcome(BaseModel):
+    """LLM contract: does the end of a passed rehearsal show what the user asked for?"""
+
+    done: bool = Field(description="True only if the images clearly show every result asked for")
+    missing: list[str] = Field(
+        description="Each asked-for result the images don't clearly show, e.g. 'the title "
+        "is too small to read', 'the Drop Shadow dialog is still open'; [] if done"
+    )
+    after: str = Field(description="id of the plan step the new steps go right after")
+    steps: list[PlannedStep] = Field(
+        description="Steps that make the missing results happen, at most 4; [] if done"
+    )
 
 
 SANDBOX = """The sandbox is a fresh Debian Linux desktop at 1920x1080 with
@@ -100,15 +136,37 @@ terminal, a Chromium browser, and Debian desktop apps you install with apt-get a
 with a launch step (GTK3 apps work best, e.g. mousepad, galculator, thunar,
 gnumeric, because their buttons and fields are found through the accessibility tree).
 Every app fills the screen and only one is shown at a time. The working directory is
-/work. Package manager: apt-get (index is already updated). Python 3 is installed."""
+/work. Package manager: apt-get (index is already updated). Python 3 is installed.
+Files the user attached to the request are already in /work under their own names.
+Browser downloads are saved to /root/Downloads without asking. A browser file-open dialog
+(GTK) accepts a typed full path: a type step with target '' and enter=true, e.g. text
+'/work/photo.jpg'. Web editors such as Photopea (https://www.photopea.com, free, no
+account) are driven through their menus (kind=menu, e.g. 'File > Open...', 'Select > Magic
+Cut...', 'Layer > New Fill Layer > Gradient Fill', 'Layer > Arrange > Send Backward',
+'Layer > Layer Style > Drop Shadow', 'File > Export as > PNG'), their tool buttons by full
+name (e.g. 'Type Tool (T)'), dialog buttons ('OK', 'Save'), fields by label (type into
+'Angle:', 'W:', 'X:', 'Y:'; typing replaces the value) and the drawing area as target
+'canvas' with `at`/`to` points. Photopea without an account: 'Select > Remove BG' and
+'Select > Subject' are Premium (an ad prompt blocks the page), never plan them. Cut a
+person out with 'Select > Magic Cut...': drag green strokes on 'canvas' down the body and
+across the shoulders (the image edges count as background), then 'OK' puts the cut-out on
+a new layer. A new fill or text layer goes above the selected layer: use 'Layer > Arrange'
+to order layers. The 'Properties' button opens/closes a panel over the image: close it
+after changing values there. Size and place a text layer with the Move Tool then 'W:',
+'X:', 'Y:' in Properties (image pixels). History lists each edit ('Refine Edge', 'New
+Fill Layer', 'Type Tool', 'Layer Order', 'Layer Style'); Layers lists layer names, so use
+those as `expect` (e.g. 'Gradient Fill 1', the typed title)."""
 
 RULES = f"""You plan short, real, narrated video tutorials (about 60-90 seconds).
 {SANDBOX}
 
-Write 3-7 steps that a beginner can follow and that really work in that sandbox:
+Write 3-7 steps that a beginner can follow and that really work in that sandbox; a
+multi-stage edit in a full app (photo editing, documents) may use up to 16 steps, one
+visible action each, for a 2-4 minute video:
 - terminal steps: ONE line each, fully non-interactive (`apt-get install -y ...`,
   `--yes`, no editors, no prompts, no `less`/pagers, nothing that runs forever in the
-  foreground; start servers in the background or as daemons). Keep each step's output
+  foreground; start servers in the background or as daemons; never drive the GUI from
+  the terminal with xdotool/wmctrl, use click/type/key steps for that). Keep each step's output
   to at most 12 lines (`| head -n 12`, `-q`) so the result fits on screen, and keep
   commands short (under 70 characters when possible) so they read well zoomed in.
 - browser steps: kind=open_url with a URL (localhost services or public sites);
@@ -119,8 +177,18 @@ Write 3-7 steps that a beginner can follow and that really work in that sandbox:
   with command and app set to its command name (e.g. 'mousepad'), then click / type /
   key steps with that app. Name targets by the words visible on screen (menu names,
   button labels); a click or type step that names nothing visible fails.
-- Give every click/type/launch step an `expect` text that is visible afterwards when
+- menus: one kind=menu step per command, the full path from the menu bar to the item
+  as shown on screen. Dragging (a gradient, a selection, moving a layer): kind=drag on
+  'canvas' from `at` to `to`. Clicking a spot on the image: kind=click, target 'canvas',
+  with `at`.
+- To open a file in a web app, use its own open command (e.g. menu 'File > Open...')
+  and type the full /work path into the file dialog. Prove an exported or saved file
+  with a final terminal step (e.g. `file /root/Downloads/*.png`, expect 'PNG image').
+- Give every click/type/launch/menu/drag step an `expect` text that is visible afterwards when
   it worked (a page heading, the typed text, a dialog title).
+- A dialog a step opens (e.g. 'Layer > Layer Style > Drop Shadow') stays open until its
+  'OK' is clicked: plan that click before the next menu. A title must be readable at a
+  glance: size and place it (e.g. 'W:' about half the image width) clear of the subject.
 - Mark every software install with installs=true; the user is asked about it first.
 - Give each terminal step a concrete `expect` text when the exit code alone doesn't
   prove it worked. End with a step that proves the result (e.g. curl, --version, ls).
@@ -138,9 +206,27 @@ FIX = f"""A step of a tutorial plan failed when rehearsed for real. Rewrite just
 step so it works, keeping its id and purpose (you may change the command, url, expect
 text, target and narration). Base the fix on the real output: when an element wasn't
 found, the failure lists the elements that ARE visible; pick the right one from it.
+If the step can't work because something the plan never did has to happen first (a
+start screen to dismiss, a dialog or menu to open), keep the step as it is and put
+those missing steps in `before`; never replace a step with one that drops its purpose.
+If the step is not needed at all because an earlier step already did what it is for
+(e.g. it clicks a confirm button that doesn't exist since the change applied at once),
+set `drop` instead.
 {SANDBOX}"""
 
-GUI = ("click", "type", "scroll", "key", "launch")
+REVIEW = f"""A tutorial plan was just rehearsed for real and every step passed its own
+check. Look at the final screen and the exported file (if there is one) and judge whether
+they clearly show every result the task asks for, as a viewer of the video would see it:
+a title must be readable at a glance and placed where it doesn't hide the subject, an
+effect must be visible, and no dialog may still be open over the work. If something is
+missing, plan the steps that make it happen and say which step they go right after (before
+the export or save steps, so the exported file has the change). Use only elements that
+exist on that screen or that a menu opens, and never redo work that is already done.
+{SANDBOX}"""
+
+CONFIRM = re.compile(r"\s*(ok|apply|done|confirm|create|close)\s*$", re.I)
+GUI = ("click", "type", "scroll", "key", "launch", "drag", "menu")
+MAX_STEPS = 16
 APP_CMD = re.compile(r"[a-z0-9][a-z0-9.+_-]*( [\w./=:-]+){0,3}")
 BAD_URL = re.compile(
     r"^\s*(file|javascript|data|chrome|about|view-source):|169\.254\.|metadata\.google|"
@@ -157,13 +243,14 @@ SECRETISH = re.compile(r"(sk|pk|ghp|xox[bp]|AKIA)[-_A-Za-z0-9]{12,}|[A-Za-z0-9+/
 BLOCKED = re.compile(
     r"\b(shutdown|reboot|poweroff|halt|mkfs\S*|dd\s+if=|init\s+0)\b|rm\s+-\S*r\S*\s+/(\s|$)"
     r"|:\(\)\s*\{|\b(vim?|nano|emacs|less|more|top|htop|watch)\b(?!-)"
+    r"|\b(xdotool|wmctrl|xte)\b"  # the GUI is driven by click/type/key steps, on screen
 )
 
 
 def problems(plan: TutorialPlan) -> list[str]:
     out = []
-    if not 2 <= len(plan.steps) <= 8:
-        out.append(f"use 3-7 steps, not {len(plan.steps)}")
+    if not 2 <= len(plan.steps) <= MAX_STEPS:
+        out.append(f"use 3-{MAX_STEPS} steps, not {len(plan.steps)}")
     ids = [s.id for s in plan.steps]
     if len(set(ids)) != len(ids) or {"title", "outro", "intro"} & set(ids):
         out.append("step ids must be unique and not 'title', 'intro' or 'outro'")
@@ -181,11 +268,18 @@ def problems(plan: TutorialPlan) -> list[str]:
             out.append(f"step {s.id}: only http(s) addresses without credentials are allowed")
         if s.kind == "key" and not s.keys.strip():
             out.append(f"step {s.id}: key needs keys")
+        if s.kind == "menu" and len(menu_path(s.target)) < 2:
+            out.append(f"step {s.id}: menu needs a path like 'File > Open...'")
+        if s.kind == "drag" and (not s.target.strip() or len(s.at) != 2 or len(s.to) != 2):
+            out.append(f"step {s.id}: drag needs a target ('canvas') and [x, y] at and to")
+        for name, pt in (("at", s.at), ("to", s.to)):
+            if pt and (len(pt) != 2 or not all(0 <= v <= 1 for v in pt)):
+                out.append(f"step {s.id}: {name} must be [x, y] fractions between 0 and 1")
         if s.kind in ("click", "scroll") and not s.target.strip():
             out.append(f"step {s.id}: {s.kind} needs the target's visible words")
         if s.kind == "type" and not s.text:
             out.append(f"step {s.id}: type needs text")
-        if s.kind in ("click", "type") and UNSAFE_TARGET.search(s.target):
+        if s.kind in ("click", "type", "menu", "drag") and UNSAFE_TARGET.search(s.target):
             out.append(f"step {s.id}: no logins, sign-ups, passwords or purchases")
         if s.kind == "type" and (SECRETISH.search(s.text) or "\n" in s.text):
             out.append(f"step {s.id}: type one line of plain text, never a secret")
@@ -218,10 +312,16 @@ def action(s: PlannedStep) -> dict[str, Any]:
         cmd = s.command.strip()
         return {"kind": "launch", "command": cmd, "app": s.app.strip() or cmd.split()[0]}
     if s.kind == "click":
-        return {"kind": "click", "target": s.target.strip(), "app": app}
+        out = {"kind": "click", "target": s.target.strip(), "app": app}
+        return {**out, "at": s.at} if len(s.at) == 2 else out
+    if s.kind == "menu":
+        return {"kind": "menu", "target": " > ".join(menu_path(s.target)), "app": app}
+    if s.kind == "drag":
+        return {"kind": "drag", "target": s.target.strip(), "at": s.at, "to": s.to, "app": app}
     if s.kind == "type":
-        return {"kind": "type", "target": s.target.strip() or None, "text": s.text,
-                "enter": s.enter, "app": app}  # fmt: skip
+        target = s.target.strip() or None  # typing into a named field replaces its text
+        return {"kind": "type", "target": target, "text": s.text, "enter": s.enter,
+                "clear": bool(target), "app": app}  # fmt: skip
     if s.kind == "scroll":
         return {"kind": "scroll", "target": s.target.strip(), "app": app}
     return {"kind": "key", "keys": s.keys.strip(), "app": app}
@@ -282,10 +382,14 @@ def describe_plan(spec: dict[str, Any]) -> str:
         what = {"terminal": f"`{a.get('command')}`", "open_url": f"open `{a.get('url')}`",
                 "key": f"press `{a.get('keys')}`{on}", "launch": f"open `{a.get('command')}`",
                 "click": f"click “{a.get('target')}”{on}",
+                "double_click": f"double-click “{a.get('target')}”{on}",
+                "menu": f"choose **{a.get('target')}**{on}",
+                "drag": f"drag across “{a.get('target')}”{on}",
+                "wait": f"wait {a.get('seconds')} s",
                 "scroll": f"scroll to “{a.get('target')}”{on}",
                 "type": f"type `{a.get('text')}`"
                 + (f" into “{a['target']}”" if a.get("target") else "") + on,
-                }[a["kind"]]  # fmt: skip
+                }.get(a["kind"], a["kind"])  # fmt: skip
         out.append(f"{i}. **{s['label']}**: {what}")
     return "\n".join(out)
 
@@ -327,6 +431,7 @@ async def plan(ctx: JobContext, goal: str, avoid: str = "") -> dict[str, Any] | 
         p, _res = await ctx.llm.parse(
             TutorialPlan, purpose="tutorial.plan", model=ctx.settings.research_model,
             instructions=RULES, input=prompt,
+            reasoning_effort=ctx.settings.plan_reasoning or None,
         )  # fmt: skip
         if not p.feasible:
             return p.reason or "That task can't be shown in a Linux terminal and browser."
@@ -382,9 +487,18 @@ async def _visible(box: Sandbox, app: str, expect: str, rec: ActionRecord) -> Ac
         if res.returncode == 0 and expect.lower() in text.lower():
             return rec
         await asyncio.sleep(1)
-    seen = " | ".join(x.strip() for x in text.splitlines() if x.strip())[:600]
+    seen = " | ".join(x.strip() for x in text.splitlines() if x.strip())[:1500]
     rec.ok, rec.error = False, f"{expect!r} is not visible in {app} afterwards. Visible: {seen}"
     return rec
+
+
+def fixed(spec: dict[str, Any], i: int, n_before: int) -> str:
+    """The step(s) a repair of step `i` left in its place, for the healing note."""
+    if len(spec["steps"]) < n_before:
+        return "nothing: an earlier step already did it, so the step was dropped"
+    return " → ".join(
+        f"`{what(s)}`" for s in spec["steps"][i : i + 1 + len(spec["steps"]) - n_before]
+    )
 
 
 def what(step: dict[str, Any]) -> str:
@@ -400,27 +514,85 @@ def failure(step: dict[str, Any], rec: ActionRecord | dict[str, Any]) -> tuple[s
     return get("error") or f"exit code {get('returncode')}", out
 
 
+def off_screen(s: PlannedStep, visible: list[str]) -> str | None:
+    """What a GUI step aims at first, when that isn't among the visible elements."""
+    if s.kind not in ("click", "double_click", "menu", "type") or not s.target.strip():
+        return None
+    aim = s.target.split(">")[0].strip().lower() if s.kind == "menu" else s.target.strip().lower()
+    return None if any(aim in v or v in aim for v in visible) else aim
+
+
 async def repair(
     ctx: JobContext, spec: dict[str, Any], i: int, rec: ActionRecord | dict[str, Any]
 ) -> str | None:
     """Rewrite failing step `i` in place from its real output. None when a fix was made,
-    else why the step can't work here. Narration lines of the step are regenerated."""
+    else why the step can't work here. Narration lines of the step are regenerated; steps
+    the plan was missing before it are inserted (the caller re-runs from step `i`)."""
     step = spec["steps"][i]
     why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
     if ctx.llm is None or not ctx.llm.configured:
         return f"step **{step['label']}** failed ({why}) and no model is configured to fix it"
     goal = spec.get("goal") or spec["title"]
-    fix, _ = await ctx.llm.parse(
-        StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
-        instructions=FIX,
-        input=f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step "
-        f"{i + 1} ({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}",
-    )  # fmt: skip
+    ask = (f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step {i + 1} "
+           f"({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}")  # fmt: skip
+    prev = spec["steps"][i - 1]["action"] if i else None
+    if "No element matching" in why and CONFIRM.match(step["action"].get("target") or ""):
+        ask += (
+            f"\n\nThe step before it ({prev}) ran and passed its check, and no "
+            f"{step['action']['target']!r} button appeared. Many apps apply a change at once "
+            "with no confirm button; if that is the case here, set `drop`."
+        )
+    elif "No element matching" in why:
+        ask += (
+            "\n\nThe element isn't on screen at all, so aiming at it differently won't help. "
+            "From the Visible list, find what has to be clicked first to reach it (a start "
+            "or continue button, a menu, a tab, a dialog) and put that in `before`."
+        )
+    visible = [v.strip().lower() for v in why.partition("Visible: ")[2].split(";") if v.strip()]
+    for _ in range(3):
+        fix, _ = await ctx.llm.parse(
+            StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
+            instructions=FIX, input=ask, timeout=REPAIR_TIMEOUT,
+            reasoning_effort=ctx.settings.plan_reasoning or None,
+        )  # fmt: skip
+        if prev and any(action(b) == prev for b in fix.before):
+            ask += (
+                "\n\nYour `before` repeats the previous step, which already ran and passed; "
+                "running it again would do it twice. Use a different step, or `drop`."
+            )
+        elif fix.before or fix.drop or not fix.fixable:
+            break
+        elif action(fix.step) == step["action"]:
+            ask += (
+                "\n\nYour fix was the same step, which just failed exactly like that. "
+                "Change it, or add the missing steps that must come first in `before`."
+            )
+        elif visible and (aim := off_screen(fix.step, visible)):
+            ask += (
+                f"\n\nYour fix aims at {aim!r}, which isn't on screen either. Aim at one of "
+                "the visible elements, or put the steps that bring it on screen in `before`."
+            )
+        else:
+            break
+    gui = step["action"]["kind"] in GUI and len(spec["steps"]) > 1
+    if fix.drop and fix.fixable and gui and "No element matching" in why:
+        del spec["steps"][i]  # only a target that isn't there at all marks a step unneeded
+        for k in (step["id"], f"{step['id']}_done"):
+            spec["lines"].pop(k, None)
+        return None
     fix.step.id = step["id"]
-    if not fix.fixable or (bad := problems_one(fix.step)):
+    ids = {s["id"] for s in spec["steps"]}
+    pre = fix.before[:2] if len(spec["steps"]) + len(fix.before) <= MAX_STEPS + 4 else []
+    for p in pre:
+        p.id = next(
+            f"{step['id']}_pre{n}" for n in range(1, 99) if f"{step['id']}_pre{n}" not in ids
+        )
+        ids.add(p.id)
+    bad = [x for s in (*pre, fix.step) for x in problems_one(s)]
+    if not fix.fixable or bad:
         return f"step **{step['label']}** can't work here: {fix.reason or '; '.join(bad)}"
-    new = to_spec(_stub([fix.step]), goal)
-    spec["steps"][i] = new["steps"][0]
+    new = to_spec(_stub([*pre, fix.step]), goal)
+    spec["steps"][i : i + 1] = new["steps"]
     for k in [k for k in spec["lines"] if k in (step["id"], f"{step['id']}_done")]:
         del spec["lines"][k]
     spec["lines"].update({k: v for k, v in new["lines"].items()
@@ -433,7 +605,7 @@ async def rehearse(ctx: JobContext, spec: dict[str, Any], heal: Healer | None = 
     every step passed, else why it can't be done. Updates `spec` with the fixes. A
     sandbox that breaks (not a step that fails) is replaced and the rehearsal restarts."""
     heal = heal or Healer(ctx)
-    state = {"repairs": 0}
+    state: dict[str, Any] = {"repairs": 0}
     for attempt in range(1, SANDBOX_TRIES + 1):
         try:
             return await _rehearse(ctx, spec, heal, state)
@@ -445,43 +617,185 @@ async def rehearse(ctx: JobContext, spec: dict[str, Any], heal: Healer | None = 
 
 
 async def _rehearse(
-    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, int]
+    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, Any]
 ) -> str | None:
     mgr = ctx._manager.sandboxes
     ctx.phase("rehearse", "Rehearsing every step in a private sandbox (not recorded)")
     async with mgr.session(ctx.id, ctx.conversation_id) as (sid, box):
         ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
-        i = 0
-        while i < len(spec["steps"]):
-            step = spec["steps"][i]
-            ctx.phase("rehearse", f"Rehearsing step {i + 1}/{len(spec['steps'])}: {step['label']}")
-            mgr.touch(sid)
-            async with mgr.busy(sid):
-                rec = await check(
-                    box, step, await box.run(i, Action.model_validate(step["action"]))
-                )
-            mgr.touch(sid)
-            if rec.ok:
-                i += 1
-                continue
-            why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
-            ctx.thinking("Rehearsal", f"Step {step['id']} failed: {why}\n{out[-600:]}")
-            brief = why.split(" Visible:")[0]  # the chat gets the reason, the model all of it
-            if state["repairs"] >= MAX_REPAIRS:
-                await mgr.stop(sid, "rehearsal failed")
-                return (
-                    f"step **{step['label']}** still fails after {state['repairs']} fixes ({brief})"
-                )
-            state["repairs"] += 1
-            ctx.phase("plan", f"Fixing step {i + 1} from its real output")
-            if err := await repair(ctx, spec, i, rec):
-                await mgr.stop(sid, "rehearsal failed")
-                return err
-            heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
-                 f"real output as `{what(spec['steps'][i])}`")  # fmt: skip
+        await put_files(box, spec)
+        err, _ = await settle(ctx, spec, heal, state, sid, box, 0)
+        if err:
+            return err
         await mgr.stop(sid, "rehearsal passed")
-    spec["rehearsal"] = {"repairs": state["repairs"], "sandbox_id": sid}
     return None
+
+
+async def settle(
+    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, Any],
+    sid: str, box: Sandbox, i: int | None,
+) -> tuple[str | None, bool]:  # fmt: skip
+    """Finish a rehearsal in `box`: run steps `i`.. repairing failures (None: every step
+    already ran), then look at the result and add what's missing. (why it can't be done
+    or None, whether the review changed the plan). The sandbox is stopped on failure."""
+    mgr, changed = ctx._manager.sandboxes, False
+    while True:
+        if i is not None and (err := await _run_from(ctx, spec, heal, state, sid, box, i)):
+            return err, changed
+        async with mgr.busy(sid):
+            found = await review(ctx, box, spec)
+        if found is None:
+            break
+        i, missing, added = found
+        if not added or state.setdefault("reviews", 0) >= MAX_REVIEWS:
+            await mgr.stop(sid, "rehearsal failed")
+            return f"the finished result doesn't show: {'; '.join(missing)}", changed
+        state["reviews"] += 1
+        changed = True
+        steps = " → ".join(f"`{what(s)}`" for s in spec["steps"][i : i + added])
+        heal(f"Rehearsal: every step passed, but the result didn't show "
+             f"{'; '.join(missing)}; added {steps}")  # fmt: skip
+    spec["rehearsal"] = {"repairs": state["repairs"], "reviews": state.get("reviews", 0),
+                         "sandbox_id": sid}  # fmt: skip
+    return None, changed
+
+
+async def _run_from(
+    ctx: JobContext, spec: dict[str, Any], heal: Healer, state: dict[str, Any],
+    sid: str, box: Sandbox, i: int,
+) -> str | None:  # fmt: skip
+    """Run steps `i`.. in order, repairing failures in place; None when all passed."""
+    mgr = ctx._manager.sandboxes
+    while i < len(spec["steps"]):
+        step = spec["steps"][i]
+        ctx.phase("rehearse", f"Rehearsing step {i + 1}/{len(spec['steps'])}: {step['label']}")
+        mgr.touch(sid)
+        async with mgr.busy(sid):
+            rec = await check(box, step, await box.run(i, Action.model_validate(step["action"])))
+        mgr.touch(sid)
+        if rec.ok:
+            i += 1
+            continue
+        why, out = failure(step, rec)  # GUI failures carry the visible elements in `why`
+        ctx.thinking("Rehearsal", f"Step {step['id']} failed: {why}\n{out[-600:]}")
+        brief = why.split(" Visible:")[0]  # the chat gets the reason, the model all of it
+        tries = state.setdefault(step["id"], 0)
+        if tries >= MAX_REPAIRS or state["repairs"] >= MAX_TOTAL_REPAIRS:
+            await mgr.stop(sid, "rehearsal failed")
+            return f"step **{step['label']}** still fails after {tries} fixes ({brief})"
+        state["repairs"] += 1
+        state[step["id"]] = tries + 1
+        ctx.phase("plan", f"Fixing step {i + 1} from its real output")
+        n = len(spec["steps"])
+        async with mgr.busy(sid):  # the sandbox waits for the fix; no idle shutdown
+            err = await repair(ctx, spec, i, rec)
+        if err:
+            await mgr.stop(sid, "rehearsal failed")
+            return err
+        heal(f"Rehearsal: step **{step['label']}** failed ({brief}); rewrote it from the "
+             f"real output as {fixed(spec, i, n)}")  # fmt: skip
+    return None
+
+
+async def _image(box: Sandbox, path: str) -> dict[str, str] | None:
+    """`path` in the sandbox as a small JPEG for the model, or None if it can't be read."""
+    res = await box.exec(
+        f"ffmpeg -y -loglevel error -i {shlex.quote(path)} -vf "
+        "'scale=1280:1280:force_original_aspect_ratio=decrease' -q:v 4 /tmp/cf/look.jpg",
+        60,
+    )
+    if res.returncode != 0:
+        return None
+    data = base64.b64encode(await box.read_file("/tmp/cf/look.jpg")).decode()
+    return {"type": "input_image", "image_url": f"data:image/jpeg;base64,{data}"}
+
+
+async def review(
+    ctx: JobContext, box: Sandbox, spec: dict[str, Any]
+) -> tuple[int, list[str], int] | None:
+    """Look at the finished result as a viewer would. When something asked for doesn't
+    show, insert the steps that add it: (where to resume, what was missing, how many steps
+    were added; 0 when the model's steps were invalid and nothing was added)."""
+    if ctx.llm is None or not ctx.llm.configured:
+        return None
+    goal = spec.get("goal") or spec["title"]
+    if spec["steps"] and spec["steps"][-1]["action"]["kind"] == "terminal":
+        gui = [s["action"] for s in spec["steps"] if s["action"]["kind"] != "terminal"]
+        if gui:  # a closing terminal check covers the result; look at the app instead
+            a = gui[-1]
+            app = (a.get("command") or "").split(" ")[0] if a["kind"] == "launch" else (
+                a.get("app") or "browser")  # fmt: skip
+            await box.exec(FOCUS.get(app) or f"/opt/cf/focus.sh {shlex.quote(app)}", 20)
+    await box.screenshot()
+    content: list[dict[str, str]] = [
+        {"type": "input_text", "text": f"Task: {goal}\nPlan:\n{describe_plan(spec)}"},
+        {"type": "input_text", "text": "Final screen:"},
+    ]
+    if shot := await _image(box, "/tmp/cf/shot.png"):
+        content.append(shot)
+    res = await box.exec("ls -t /root/Downloads/* 2>/dev/null | grep -iE '\\.(png|jpe?g|webp)$' "
+                         "| head -1", 20)  # fmt: skip
+    f = res.stdout.strip()
+    if f.startswith("/root/Downloads/") and (img := await _image(box, f)):
+        content += [{"type": "input_text", "text": f"Exported file {f}:"}, img]
+    out, _ = await ctx.llm.parse(
+        Outcome, purpose="tutorial.review", model=ctx.settings.research_model,
+        instructions=REVIEW, input=[{"role": "user", "content": content}],
+        timeout=REVIEW_TIMEOUT, reasoning_effort=ctx.settings.plan_reasoning or None,
+    )  # fmt: skip
+    if out.done:
+        return None
+    ids = [s["id"] for s in spec["steps"]]
+    if out.after in ids:
+        at = ids.index(out.after) + 1
+    else:  # before the first export/save, else at the end
+        at = next((k for k, s in enumerate(spec["steps"])
+                   if re.search(r"export|save", what(s), re.I)), len(ids))  # fmt: skip
+    add = out.steps[:4] if len(ids) + len(out.steps[:4]) <= MAX_STEPS + 8 else []
+    for n, p in enumerate(add, 1):
+        p.id = next(f"look{n}_{k}" for k in range(1, 99) if f"look{n}_{k}" not in ids)
+        ids.append(p.id)
+    bad = [x for p in add for x in problems_one(p)]
+    missing = out.missing or ["what the task asks for"]
+    if not add or bad:
+        return 0, [*missing, *(f"(the steps to add it were invalid: {b})" for b in bad[:2])], 0
+    new = to_spec(_stub(add), goal)
+    spec["steps"][at:at] = new["steps"]
+    spec["lines"].update({k: v for k, v in new["lines"].items() if k not in ("intro", "outro")})
+    return at, missing, len(add)
+
+
+MAX_FILE_MB = 25
+
+
+def attached(ctx: JobContext) -> list[dict[str, Any]]:
+    """The user's uploads on the request message that can go into the sandbox."""
+    root = ctx.settings.uploads_dir
+    out = []
+    for u in ctx.input.get("attachments") or []:
+        path = root / u["id"] / u["filename"]
+        if path.is_file() and u.get("size", 0) <= MAX_FILE_MB * 1024 * 1024:
+            out.append({"name": u["filename"], "upload_id": u["id"], "kind": u.get("kind"),
+                        "content_type": u.get("content_type"), "path": str(path)})  # fmt: skip
+    return out
+
+
+def with_files(goal: str, files: list[dict[str, Any]]) -> str:
+    if not files:
+        return goal
+    names = ", ".join(f"/work/{f['name']} ({f['content_type']})" for f in files)
+    return f"{goal}\n\nThe user attached these files; use them: {names}"
+
+
+async def put_files(box: Sandbox, spec: dict[str, Any]) -> None:
+    """Copy the user's attached files into /work, exactly as uploaded."""
+    from pathlib import Path
+
+    for f in spec.get("files") or []:
+        path = Path(f["path"])
+        if not path.is_file():
+            raise JobFailed(f"The attached file {f['name']} is no longer on the server")
+        await box.write_file(f"/work/{f['name']}", path.read_bytes())
 
 
 def _stub(steps: list[PlannedStep]) -> TutorialPlan:

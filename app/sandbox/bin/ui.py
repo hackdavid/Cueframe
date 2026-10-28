@@ -39,6 +39,22 @@ FIND_JS = r"""
     "[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=option]");
   const els = [...document.querySelectorAll("body *")].filter(shown);
   let best = null, score = 0;
+  if (want === "canvas") {  // the drawing area: largest canvas, preferring ones not covered
+    const all = els.filter((e) => e.tagName === "CANVAS");
+    const onTop = all.filter((e) => {  // e.g. a dialog's canvas over the editor's
+      const r = e.getBoundingClientRect();
+      return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === e;
+    });
+    for (const el of onTop.length ? onTop : all) {
+      const r = el.getBoundingClientRect();
+      if (r.width * r.height > score) { best = el; score = r.width * r.height; }
+    }
+    if (best) {
+      const r = best.getBoundingClientRect();
+      return {found: true, x: r.left, y: r.top, w: r.width, h: r.height, dpr: devicePixelRatio,
+              ox: window.screenX, oy: window.screenY + window.outerHeight - window.innerHeight};
+    }
+  }
   for (const el of els) {
     const n = name(el);
     if (!n) continue;

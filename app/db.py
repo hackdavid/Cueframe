@@ -395,6 +395,9 @@ class Store:
         self._exec(f"UPDATE tutorials SET {cols} WHERE id = ?", (*fields.values(), tid))
         return self.get_tutorial(tid)  # type: ignore[return-value]
 
+    def delete_tutorial(self, tid: str) -> None:
+        self._exec("DELETE FROM tutorials WHERE id = ?", (tid,))
+
     # jobs
     def create_job(
         self,

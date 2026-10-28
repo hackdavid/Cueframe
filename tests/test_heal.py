@@ -58,7 +58,13 @@ def test_retry_only_retries_transient_errors():
 
 
 def test_unfixable_step_is_replanned_and_recorded(client, monkeypatch):
-    fix = StepFix(fixable=False, reason="no such package", step=_step("run", command="x"))
+    fix = StepFix(
+        drop=False,
+        before=[],
+        fixable=False,
+        reason="no such package",
+        step=_step("run", command="x"),
+    )
     good = _plan([*GOOD[:1], _step("run", command="cowsay hi"), *GOOD[2:]])
     _setup(client, monkeypatch, StubLLM([_plan(GOOD), good], [fix]))
     cid, jid = _send(client)
@@ -75,7 +81,9 @@ def test_unfixable_step_is_replanned_and_recorded(client, monkeypatch):
 
 def test_step_failing_while_recording_is_fixed_and_recorded_again(client, monkeypatch):
     flaky = _step("run", command="flaky", output_label="Output")
-    fix = StepFix(fixable=True, reason="mirror", step=_step("x", command="cowsay hi"))
+    fix = StepFix(
+        drop=False, before=[], fixable=True, reason="mirror", step=_step("x", command="cowsay hi")
+    )
     llm = StubLLM([_plan([GOOD[0], flaky, *GOOD[2:]])], [fix])
     _setup(client, monkeypatch, llm, fail=())
     seen = []
@@ -84,7 +92,7 @@ def test_step_failing_while_recording_is_fixed_and_recorded_again(client, monkey
     async def check(box, step, rec):
         if step["action"].get("command") == "flaky":
             seen.append(1)
-            if len(seen) == 2:  # passes in rehearsal, fails in the first recording take
+            if len(seen) in (1, 3):  # fails in the recorded rehearsal and the next take
                 rec.ok, rec.returncode, rec.output_tail = False, 100, "E: mirror timeout\n"
         return await inner(box, step, rec)
 
@@ -180,5 +188,5 @@ def test_interrupted_tutorial_resumes_after_restart(client, monkeypatch):
     notes = tut["output"]["healing"]
     assert notes[0] == "Upload of x failed; retrying" and "server restarted" in notes[1]
     assert tut["spec"]["healing"] == notes
-    assert len(client.get("/api/sandboxes", headers=_auth(client)).json()) == 2  # no re-record
+    assert len(client.get("/api/sandboxes", headers=_auth(client)).json()) == 1  # no re-record
     assert store.get_tutorial(other["id"])["status"] == "capturing"

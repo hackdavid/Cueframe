@@ -12,6 +12,7 @@ serves), `segments/<hash>.mp4` (cache), `out/` (final files).
 import asyncio
 import hashlib
 import json
+import os
 import shutil
 import time
 from collections.abc import Awaitable, Callable, Collection
@@ -26,7 +27,8 @@ from app.tutorial.contracts import Tutorial
 
 log = get_logger("render")
 RENDERER = Path(__file__).resolve().parents[2] / "renderer"
-PARALLEL = 4
+PARALLEL = 4  # segments at once; together they use every core (measured: CPU-bound)
+THREADS = max(2, (os.cpu_count() or 8) // PARALLEL)
 AF = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
 SFX_VOL = {"click": 0.45, "keys": 0.22, "whoosh": 0.35, "success": 0.4, "pop": 0.35}
 
@@ -62,7 +64,7 @@ async def _segment(bundle: Path, props: Path, a: int, b: int, out: Path, fps: in
     tmp = out.with_suffix(".part.mp4")
     await _run(
         "npx", "remotion", "render", str(bundle), "Tutorial", str(tmp), f"--props={props}",
-        f"--frames={a}-{b}", "--muted", "--concurrency=2", "--codec=h264", "--crf=16",
+        f"--frames={a}-{b}", "--muted", f"--concurrency={THREADS}", "--codec=h264", "--crf=16",
         "--pixel-format=yuv420p", "--log=error",
         cwd=RENDERER,
     )  # fmt: skip

@@ -58,6 +58,9 @@ def narration(
     )
 
 
+BOXED = ("click", "type", "double_click", "scroll", "menu", "drag")
+
+
 def _cmd_box(cmd: str) -> tuple[int, int]:
     lines = -(-(PROMPT + len(cmd)) // COLS)
     width = min(W - 8, (PROMPT + len(cmd)) * CHAR_W + 16) if lines == 1 else W - 8
@@ -140,8 +143,12 @@ def plan_step(
             ]
         else:
             st.camera.append(Camera(t=dur, zoom=z * 1.05, cx=0, cy=0))
-    elif rec.get("box") and a["kind"] in ("click", "type", "double_click", "scroll"):
+    elif rec.get("box") and a["kind"] in BOXED:
         x, y, w, h = rec["box"]
+        if a["kind"] == "drag" and rec.get("path"):  # frame the stroke, not the whole canvas
+            x1, y1, x2, y2 = rec["path"]
+            x, y = min(x1, x2) - 40, min(y1, y2) - 40
+            w, h = abs(x2 - x1) + 80, abs(y2 - y1) + 80
         cx, cy = x + w / 2, y + h / 2
         # Big targets (calculator keys) get a gentle zoom so the rest of the app stays in view.
         z = round(max(1.2, min(1.9, W / (4 * max(w, 1)), H / (4 * max(h, 1)))), 2)
