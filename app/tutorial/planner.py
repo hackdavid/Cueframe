@@ -34,6 +34,7 @@ SANDBOX_TRIES = 2  # a sandbox that breaks mid-run is replaced this many times -
 MIN_WORDS = 120  # ~2.5 words/s plus on-screen time: about a minute of video
 REEL_WORDS = (80, 135)  # influencer mode: the whole video stays under a minute
 Mode = Literal["tutorial", "influencer"]
+CODE_COLS = 72  # longest written code line: 60 asked for, some slack
 
 
 class PlannedStep(BaseModel):
@@ -143,8 +144,11 @@ Every app fills the screen and only one is shown at a time. The working director
 with pip: install Python libraries with `python3 -m pip install --quiet <names>`
 (installs=true; not apt, whose Python packages belong to another interpreter). To show a
 short program, write it with ONE `printf '%s\n' 'line 1' 'line 2' > /work/name.py` command
-(each code line one quoted argument, no tabs), then `cat -n` it and run it with `python3`;
-keep it under 12 lines.
+(each code line one quoted argument, no tabs, at most 60 characters so it reads well
+zoomed in), then `cat -n` it and run it with `python3`; keep it under 12 lines. A program
+that trains or fits a model must report its score on examples held out from training (a
+few labelled test examples it never saw), never only on the training data, and the
+narration must say which data the score is on.
 Files the user attached to the request are already in /work under their own names.
 Browser downloads are saved to /root/Downloads without asking. A browser file-open dialog
 (GTK) accepts a typed full path: a type step with target '' and enter=true, e.g. text
@@ -336,6 +340,11 @@ def problems(plan: TutorialPlan, mode: Mode = "tutorial") -> list[str]:
                 out.append(f"step {s.id}: terminal steps need one command line")
             elif BLOCKED.search(s.command):
                 out.append(f"step {s.id}: command is interactive or destructive")
+            elif s.command.lstrip().startswith("printf") and any(
+                len(x) > CODE_COLS for x in re.findall(r"'([^']*)'", s.command)[1:]
+            ):
+                out.append(f"step {s.id}: keep each code line at most {CODE_COLS} characters "
+                           "so it isn't cut off zoomed in")  # fmt: skip
         if s.kind == "open_url" and not s.url.strip():
             out.append(f"step {s.id}: open_url needs a url")
         if s.kind == "open_url" and BAD_URL.search(s.url):
@@ -414,6 +423,12 @@ def written(text: str, say: dict[str, str]) -> str:
     for spoken, name in sorted(say.items(), key=lambda x: -len(x[0])):
         text = re.sub(rf"(?<![\w-]){re.escape(spoken)}(?![\w-])", name, text, flags=re.I)
     return text.strip()
+
+
+def zoom_fit(chars: int, best: float = 1.8) -> float:
+    """Largest zoom (<= best) at which a `chars`-wide output line stays in frame."""
+    need = chars + 2
+    return 1.0 if need > COLS else round(max(1.0, min(best, COLS / need)), 2)
 
 
 def zoom_for(command: str, best: float = 1.8) -> float:

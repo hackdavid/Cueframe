@@ -25,7 +25,7 @@ from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
 from app.sandbox.contracts import Action, live_path
 from app.sandbox.manager import SandboxLimit
-from app.tutorial import planner, qa, recipes
+from app.tutorial import planner, qa, recipes, shown
 from app.tutorial.build import build
 from app.tutorial.contracts import Tutorial
 from app.tutorial.render import render
@@ -184,6 +184,12 @@ async def capture(
             mgr.touch(sid)
             async with mgr.busy(sid):
                 rec = await planner.check(box, step, await box.run(i, action, out))
+            if action.kind == "terminal" and rec.ok and step.get("zoom"):
+                wide = max(
+                    (len(x.expandtabs()) for x in planner.output_lines(rec, action.command or "")),
+                    default=0,
+                )
+                step["zoom"] = min(step["zoom"], planner.zoom_fit(wide))  # no clipped lines
             if step.get("output_label") and rec.ok:
                 body = planner.output_lines(rec, action.command or "")
                 if 0 < len(body) <= 6:
@@ -572,6 +578,15 @@ async def produce(ctx: JobContext, row: dict[str, Any], heal: Healer) -> dict[st
         row = ctx.store.update_tutorial(
             tid, spec=spec, voice=voice, capture=cap, assets={"recording": cap["recording"]}
         )
+    cap = row["capture"]
+    if not cap.get("narration_checked"):
+        ctx.phase("qa", "Checking each narration line against the recording")
+        path = work_dir(ctx, tid) / "public" / tid / "recording.mp4"
+        await _ensure(ctx, path, cap["recording"])
+        if await shown.check(ctx, spec, cap["records"], path, heal):
+            await voice_lines(ctx, tid, spec["lines"], voice, heal, lively=_lively(spec))
+        cap["narration_checked"] = True
+        row = ctx.store.update_tutorial(tid, spec=spec, voice=voice, capture=cap)
     return await publish(ctx, row, heal=heal)
 
 
