@@ -70,7 +70,7 @@ class Tools:
     async def github_trending(self, since: str = "daily", language: str = "") -> Any:
         path = f"https://github.com/trending/{language}".rstrip("/")
         repos = parse_github_trending((await self._get(path, since=since)).text)
-        return repos[:15]
+        return [{"rank": i, **r} for i, r in enumerate(repos[:15], 1)]
 
     async def hf_daily_papers(self, limit: int = 15) -> Any:
         data = (await self._get("https://huggingface.co/api/daily_papers", limit=50)).json()

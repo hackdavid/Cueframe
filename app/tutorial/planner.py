@@ -232,7 +232,38 @@ made to be watched to the end on social media, and the WHOLE video stays under 6
 - title: a hook of max 50 characters; subtitle: where and when it is trending, e.g.
   'Trending on GitHub today'; badges are short reactions ('Wow, 98% accuracy').
 - Use ONLY facts and numbers from the brief or the page itself, never from memory, and
-  say numbers the way the brief gives them with their date or source."""
+  say numbers the way the brief gives them with their date or source. No rank ('number
+  one'), price ('free'), comparison or superlative unless the brief states it.
+- software: the site shown, e.g. 'GitHub' or 'Hugging Face'."""
+
+GROUNDED = """You fact-check the narration of a short video against its source brief. List
+each spoken claim that the brief does not support: a number, rank, date, price, feature or
+comparison that isn't in the brief, or that the brief contradicts. Opinions, calls to
+action and plain descriptions of what is on screen ('here is the README') are fine. Quote
+each unsupported claim briefly with why. Return an empty list when everything is supported."""
+
+
+class Claims(BaseModel):
+    """LLM contract: narration claims the source doesn't back up."""
+
+    unsupported: list[str] = Field(description="Each unsupported claim and why; [] if none")
+
+
+async def ungrounded(ctx: JobContext, plan: TutorialPlan, brief: str) -> list[str]:
+    """Narration claims in `plan` that the trending `brief` doesn't support."""
+    said = "\n".join([f"intro: {plan.intro}", *(f"{s.id}: {s.narration}" for s in plan.steps),
+                      f"outro: {plan.outro}", f"title: {plan.title}"])  # fmt: skip
+    try:
+        c, _res = await ctx.llm.parse(
+            Claims, purpose="tutorial.grounded", model=ctx.settings.research_model,
+            instructions=GROUNDED, input=f"BRIEF:\n{brief}\n\nNARRATION:\n{said}",
+            reasoning_effort="low", timeout=REPAIR_TIMEOUT,
+        )  # fmt: skip
+    except Exception as exc:  # the check is a safeguard; a failed call doesn't block the plan
+        ctx.thinking("Fact check", f"skipped ({short(str(exc))})")
+        return []
+    return [f"narration not backed by the source: {x}" for x in c.unsupported]
+
 
 FIX = f"""A step of a tutorial plan failed when rehearsed for real. Rewrite just that
 step so it works, keeping its id and purpose (you may change the command, url, expect
@@ -511,6 +542,8 @@ async def plan(
         if not p.feasible:
             return p.reason or "That task can't be shown in a Linux terminal and browser."
         issues = problems(p, mode)
+        if brief and not issues:
+            issues = await ungrounded(ctx, p, brief)
         ctx.thinking("Plan", "; ".join(issues) or f"{len(p.steps)} steps: {p.title}")
         if not issues:
             return to_spec(p, goal, mode)

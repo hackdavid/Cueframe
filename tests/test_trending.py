@@ -109,3 +109,46 @@ def test_influencer_plans_must_stay_under_a_minute():
     assert planner.problems(_plan(steps, intro=LONG)) == []
     spec = planner.to_spec(short, "goal", "influencer")
     assert spec["mode"] == "influencer" and spec["kicker"].startswith("TRENDING")
+
+
+class Ctx:
+    class settings:  # noqa: N801
+        research_model, plan_reasoning = "m", ""
+
+    def __init__(self, llm):
+        self.llm, self.notes = llm, []
+
+    def phase(self, *_a):
+        pass
+
+    def thinking(self, title, text):
+        self.notes.append(text)
+
+
+class GroundLLM:
+    configured = True
+
+    def __init__(self, plans, claims):
+        self.plans, self.claims, self.inputs = list(plans), list(claims), []
+
+    async def parse(self, schema, **kw):
+        self.inputs.append((schema.__name__, kw["input"]))
+        if schema is planner.Claims:
+            return planner.Claims(unsupported=self.claims.pop(0)), None
+        return self.plans.pop(0), None
+
+
+def test_trend_narration_is_fact_checked_against_the_brief():
+    steps = [
+        _step("open", "open_url", url="https://github.com/acme/rocket"),
+        _step("start", "scroll", app="browser", target="Quick start"),
+        _step("top", "scroll", app="browser", target="Rocket"),
+    ]
+    words = " ".join(["word"] * 90)
+    llm = GroundLLM([_plan(steps, intro=words + " number one"), _plan(steps, intro=words)],
+                    [["'number one': the brief gives no rank"], []])  # fmt: skip
+    spec = asyncio.run(planner.plan(Ctx(llm), "g", mode="influencer", brief=brief_text(BRIEF)))
+    assert isinstance(spec, dict) and spec["mode"] == "influencer"
+    asked = [i for n, i in llm.inputs if n == "TutorialPlan"]
+    assert "not backed by the source: 'number one'" in asked[1]
+    assert "1,075 stars today" in asked[0]  # the brief replaces docs research
