@@ -100,6 +100,11 @@ class StepFix(BaseModel):
 
     fixable: bool = Field(description="False if the task can't work in this sandbox")
     reason: str = Field(description="What went wrong, one sentence")
+    drop: bool = Field(
+        description="True only if the step isn't needed at all: what it waits for never "
+        "comes because an earlier step already did it (e.g. a confirm button that doesn't "
+        "exist because the change applied at once)"
+    )
     before: list[PlannedStep] = Field(
         description="Steps the plan is missing that must run first, at most 2 (e.g. click a "
         "start screen's button, open the menu or dialog the step uses); [] if none"
@@ -184,6 +189,9 @@ found, the failure lists the elements that ARE visible; pick the right one from 
 If the step can't work because something the plan never did has to happen first (a
 start screen to dismiss, a dialog or menu to open), keep the step as it is and put
 those missing steps in `before`; never replace a step with one that drops its purpose.
+If the step is not needed at all because an earlier step already did what it is for
+(e.g. it clicks a confirm button that doesn't exist since the change applied at once),
+set `drop` instead.
 {SANDBOX}"""
 
 GUI = ("click", "type", "scroll", "key", "launch", "drag", "menu")
@@ -454,6 +462,8 @@ async def _visible(box: Sandbox, app: str, expect: str, rec: ActionRecord) -> Ac
 
 def fixed(spec: dict[str, Any], i: int, n_before: int) -> str:
     """The step(s) a repair of step `i` left in its place, for the healing note."""
+    if len(spec["steps"]) < n_before:
+        return "nothing: an earlier step already did it, so the step was dropped"
     return " → ".join(
         f"`{what(s)}`" for s in spec["steps"][i : i + 1 + len(spec["steps"]) - n_before]
     )
@@ -505,7 +515,7 @@ async def repair(
             StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
             instructions=FIX, input=ask, timeout=REPAIR_TIMEOUT,
         )  # fmt: skip
-        if fix.before or not fix.fixable:
+        if fix.before or fix.drop or not fix.fixable:
             break
         if action(fix.step) == step["action"]:
             ask += (
@@ -519,6 +529,12 @@ async def repair(
             )
         else:
             break
+    gui = step["action"]["kind"] in GUI and len(spec["steps"]) > 1
+    if fix.drop and fix.fixable and gui and "No element matching" in why:
+        del spec["steps"][i]  # only a target that isn't there at all marks a step unneeded
+        for k in (step["id"], f"{step['id']}_done"):
+            spec["lines"].pop(k, None)
+        return None
     fix.step.id = step["id"]
     ids = {s["id"] for s in spec["steps"]}
     pre = fix.before[:2] if len(spec["steps"]) + len(fix.before) <= MAX_STEPS + 4 else []

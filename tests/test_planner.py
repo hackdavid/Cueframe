@@ -90,8 +90,9 @@ def _sandboxes(client):
 
 def test_planned_tutorial_rehearses_repairs_then_records(client, monkeypatch):
     bad = _plan([*GOOD[:1], _step("edit", command="vim index.html")])
-    fix = StepFix(before=[], fixable=True, reason="typo", step=_step("x", command="cowsay hi",
-                  expect="OK", output_label="Output"))  # fmt: skip
+    fix = StepFix(drop=False, before=[], fixable=True, reason="typo",
+                  step=_step("x", command="cowsay hi", expect="OK",
+                             output_label="Output"))  # fmt: skip
     llm = StubLLM([bad, _plan(GOOD)], [fix])
     _setup(client, monkeypatch, llm)
     cid, jid = _send(client)
@@ -117,7 +118,9 @@ def test_planned_tutorial_rehearses_repairs_then_records(client, monkeypatch):
 
 
 def test_unfixable_rehearsal_records_nothing(client, monkeypatch):
-    fix = StepFix(before=[], fixable=False, reason="needs a GPU", step=_step("run", command="x"))
+    fix = StepFix(
+        drop=False, before=[], fixable=False, reason="needs a GPU", step=_step("run", command="x")
+    )
     llm = StubLLM([_plan(GOOD), _plan(GOOD)], [fix, fix])
     _setup(client, monkeypatch, llm)
     _, jid = _send(client)

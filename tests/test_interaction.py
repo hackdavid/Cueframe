@@ -102,7 +102,7 @@ def test_gui_tutorial_repairs_a_missing_element_from_what_is_visible(client, mon
     monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
                                                 "browser": "Download Python"})  # fmt: skip
     monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
-    fix = planner.StepFix(before=[], fixable=True, reason="label", step=_step(
+    fix = planner.StepFix(drop=False, before=[], fixable=True, reason="label", step=_step(
         "x", "click", app="browser", target="Download", expect="Download"))  # fmt: skip
     llm = StubLLM([_plan(GUI, intro=LONG)], [fix])
     _setup(client, monkeypatch, llm, fail=())
@@ -231,8 +231,9 @@ def test_repair_can_add_the_missing_step_before_the_failed_one(client, monkeypat
                                                 "browser": "Download Python"})  # fmt: skip
     monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
     start = _step("p", "click", app="browser", target="Start using it")
-    fix = planner.StepFix(fixable=True, reason="start screen", before=[start], step=_step(
-        "x", "click", app="browser", target="Download", expect="Download"))  # fmt: skip
+    fix = planner.StepFix(drop=False, fixable=True, reason="start screen", before=[start],
+                          step=_step("x", "click", app="browser", target="Download",
+                                     expect="Download"))  # fmt: skip
     llm = StubLLM([_plan(GUI, intro=LONG)], [fix])
     _setup(client, monkeypatch, llm, fail=())
     _, jid = _send(client, "Make a tutorial: write a note in mousepad")
@@ -249,8 +250,10 @@ def test_a_repair_that_repeats_the_failed_step_is_asked_again(client, monkeypatc
     monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
                                                 "browser": "Download Python"})  # fmt: skip
     monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
-    same = planner.StepFix(before=[], fixable=True, reason="retry", step=GUI[-1].model_copy())
-    fix = planner.StepFix(before=[], fixable=True, reason="label", step=_step(
+    same = planner.StepFix(
+        drop=False, before=[], fixable=True, reason="retry", step=GUI[-1].model_copy()
+    )
+    fix = planner.StepFix(drop=False, before=[], fixable=True, reason="label", step=_step(
         "x", "click", app="browser", target="Download", expect="Download"))  # fmt: skip
     llm = StubLLM([_plan(GUI, intro=LONG)], [same, fix])
     _setup(client, monkeypatch, llm, fail=())
@@ -291,3 +294,20 @@ def test_busy_sandbox_keeps_the_provider_idle_timer_alive():
 
     asyncio.run(run())
     assert calls and set(calls) == {"true"}
+
+
+def test_a_repair_can_drop_a_step_that_isnt_needed(client, monkeypatch):
+    monkeypatch.setattr(FakeSandbox, "screen", {"mousepad": "untitled\nhello world",
+                                                "browser": "Download Python"})  # fmt: skip
+    monkeypatch.setattr(FakeSandbox, "missing", {"Downloads"})
+    fix = planner.StepFix(drop=True, before=[], fixable=True, reason="applied already",
+                          step=GUI[-1].model_copy())  # fmt: skip
+    llm = StubLLM([_plan(GUI, intro=LONG)], [fix])
+    _setup(client, monkeypatch, llm, fail=())
+    _, jid = _send(client, "Make a tutorial: write a note in mousepad")
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}", headers=_auth(client)).json()
+    assert "download" not in [s["id"] for s in tut["graph"]["states"]]
+    assert "step was dropped" in str(client.app.state.store.get_job(jid))

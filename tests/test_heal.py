@@ -59,7 +59,11 @@ def test_retry_only_retries_transient_errors():
 
 def test_unfixable_step_is_replanned_and_recorded(client, monkeypatch):
     fix = StepFix(
-        before=[], fixable=False, reason="no such package", step=_step("run", command="x")
+        drop=False,
+        before=[],
+        fixable=False,
+        reason="no such package",
+        step=_step("run", command="x"),
     )
     good = _plan([*GOOD[:1], _step("run", command="cowsay hi"), *GOOD[2:]])
     _setup(client, monkeypatch, StubLLM([_plan(GOOD), good], [fix]))
@@ -77,7 +81,9 @@ def test_unfixable_step_is_replanned_and_recorded(client, monkeypatch):
 
 def test_step_failing_while_recording_is_fixed_and_recorded_again(client, monkeypatch):
     flaky = _step("run", command="flaky", output_label="Output")
-    fix = StepFix(before=[], fixable=True, reason="mirror", step=_step("x", command="cowsay hi"))
+    fix = StepFix(
+        drop=False, before=[], fixable=True, reason="mirror", step=_step("x", command="cowsay hi")
+    )
     llm = StubLLM([_plan([GOOD[0], flaky, *GOOD[2:]])], [fix])
     _setup(client, monkeypatch, llm, fail=())
     seen = []
