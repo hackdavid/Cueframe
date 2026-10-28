@@ -72,6 +72,22 @@ def read_file(path: Path, name: str) -> tuple[str, str] | None:
     return None
 
 
+def readable(name: str, kind: str, text: str) -> str:
+    """The document's own text as a plain page the browser can scroll and point at: a PDF
+    viewer's words can't be found or clicked, a page's can. One heading per page/slide."""
+    parts = re.split(r"\[(page|slide) (\d+)\] ?", text)
+    body = [f"<p>{html.escape(parts[0])}</p>"] if parts[0].strip() else []
+    for i in range(1, len(parts) - 2, 3):
+        paras = "".join(f"<p>{html.escape(p)}</p>" for p in parts[i + 2].split("\n\n") if p.strip())
+        body.append(f"<h2>{parts[i].title()} {parts[i + 1]}</h2>{paras}")
+    return ("<!doctype html><meta charset=utf-8>"
+            f"<title>{html.escape(name)}</title><style>body{{font:26px/1.5 sans-serif;"
+            "max-width:1500px;margin:40px auto;padding:0 40px;color:#111}h1{font-size:40px}"
+            "h2{margin-top:48px;border-top:2px solid #ccc;padding-top:16px}p{white-space:pre-wrap}"
+            f"</style><h1>{html.escape(name)}</h1><p><i>Text of the {html.escape(kind)}, "
+            "as uploaded</i></p>" + "".join(body))  # fmt: skip
+
+
 def _public(url: str) -> bool:
     """Only public https hosts: never the server's own network."""
     host = urlparse(url).hostname or ""
@@ -114,13 +130,23 @@ async def read_link(http: httpx.AsyncClient, url: str) -> tuple[str, str] | None
 async def brief(ctx: JobContext, goal: str, files: list[dict[str, Any]]) -> str:
     """Grounding from the user's own files and links, '' when there are none to read."""
     parts, names = [], []
-    for f in files:
+    for f in list(files):
         got = read_file(Path(f["path"]), f["name"])
-        if got:
-            parts.append(f"Your file /work/{f['name']} ({got[0]}; open it in the sandbox with "
-                         f"Chromium at file:///work/{f['name']} or show it in the terminal):\n"
-                         f"{_clip(got[1])}")  # fmt: skip
-            names.append(f["name"])
+        if not got:
+            continue
+        names.append(f["name"])
+        show = f"open it in Chromium at file:///work/{f['name']} or show it in the terminal"
+        if not got[0].startswith("text"):
+            copy = re.sub(r"[^\w.-]", "_", Path(f["name"]).stem) + "-text.html"
+            path = Path(f["path"]).with_name(copy)
+            path.write_text(readable(f["name"], got[0].split(",")[0], got[1]))
+            files.append({"name": copy, "kind": "file", "content_type": "text/html",
+                          "path": str(path)})  # fmt: skip
+            show = (f"to show it, open its text page file:///work/{copy} (one 'Page N' or "
+                    "'Slide N' heading each, scroll to those headings or to words on the "
+                    f"page). The original can be opened at file:///work/{f['name']}#page=N, but "
+                    "words in Chromium's PDF viewer can't be scrolled to or clicked")  # fmt: skip
+        parts.append(f"Your file /work/{f['name']} ({got[0]}; {show}):\n{_clip(got[1])}")
     links = list(dict.fromkeys(u.rstrip(".,;:!?") for u in URL.findall(goal)))[:3]
     if links:
         ctx.phase("research", "Reading your links")

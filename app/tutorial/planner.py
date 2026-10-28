@@ -347,7 +347,7 @@ GUI = ("click", "type", "scroll", "key", "launch", "drag", "menu")
 MAX_STEPS = 16
 APP_CMD = re.compile(r"[a-z0-9][a-z0-9.+_-]*( [\w./=:-]+){0,3}")
 BAD_URL = re.compile(
-    r"^\s*(file:(?!///work/[\w.-]+$)|javascript:|data:|chrome:|about:|view-source:)|"
+    r"^\s*(file:(?!///work/[\w.-]+(#[\w=&.-]*)?$)|javascript:|data:|chrome:|about:|view-source:)|"
     r"169\.254\.|metadata\.google|"
     r"//[^/]*@",
     re.I,

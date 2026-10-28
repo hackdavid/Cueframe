@@ -58,7 +58,10 @@ def test_files_are_read_as_the_source(tmp_path):
     files = [{"name": n, "path": str(tmp_path / n)} for n in ("paper.pdf", "notes.md", "photo.jpg")]
     ctx = Ctx()
     out = asyncio.run(sources.brief(ctx, "Make a reel about this paper", files))
-    assert "file:///work/paper.pdf" in out and "Ship on Friday" in out and "photo.jpg" not in out
+    assert "file:///work/paper-text.html" in out and "Ship on Friday" in out
+    assert "photo.jpg" not in out and files[-1]["name"] == "paper-text.html"
+    page = (tmp_path / "paper-text.html").read_text()
+    assert "<h2>Page 1</h2>" in page and "40 percent" in page
     assert asyncio.run(sources.brief(Ctx(), "Make a reel about caching", [])) == ""
 
 
@@ -81,5 +84,6 @@ def test_links_are_read_and_private_hosts_refused(monkeypatch):
 
 def test_plans_may_open_attached_files_only():
     assert not planner.BAD_URL.search("file:///work/paper.pdf")
+    assert not planner.BAD_URL.search("file:///work/paper.pdf#page=3")
     assert planner.BAD_URL.search("file:///etc/passwd")
     assert planner.BAD_URL.search("file:///work/../etc/passwd")
