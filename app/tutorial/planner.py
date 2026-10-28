@@ -884,6 +884,8 @@ async def repair(
             f"{step['id']}_pre{n}" for n in range(1, 99) if f"{step['id']}_pre{n}" not in ids
         )
         ids.add(p.id)
+        if spec.get("storyboard") and p.pace == "real":
+            p.pace = "fast"  # steps a repair adds only get to the beat; don't dwell on them
     bad = [x for s in (*pre, fix.step) for x in problems_one(s)]
     if not fix.fixable or bad:
         return f"step **{step['label']}** can't work here: {fix.reason or '; '.join(bad)}"

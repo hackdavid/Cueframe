@@ -79,12 +79,16 @@ Rules:
 - Every beat shows something the sandbox can really show: a web page or a section of it,
   a command and its output, an app window. No stock footage, faces or anything off-screen.
   There is no code editor or IDE: files are written and run from the terminal.
+- `on_screen` names only headings, sections, links and labels that appear in SOURCE
+  (pages often lack an "Overview" or "Method" section); otherwise describe the area,
+  e.g. "the abstract below the title".
 - `fact`: the exact fact or number from SOURCE the beat uses, with its date or source
   when it has one; '' when the beat states no fact. Never use facts from memory.
 - `pace`: 'real' for the moments that matter, 'fast' for typing, scrolling, installs and
   waits (shown sped up with a fast-forward badge), 'cut' for page loads and long waits.
   Everything still runs for real; pace only changes the edit.
 - caption: a post caption for the video (1-3 short lines) built on the angle and facts;
+  no scores, outputs or results of the run itself (it hasn't run yet);
   hashtags: 3-8 relevant tags without '#'."""
 
 
