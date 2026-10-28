@@ -80,3 +80,11 @@ def dashboard(request: Request) -> Response:
 @router.get("/dashboard/c/{cid}", response_class=HTMLResponse)
 def dashboard_conversation(request: Request, cid: str) -> Response:
     return _dashboard(request, cid)
+
+
+@router.get("/autopilot", response_class=HTMLResponse)
+def autopilot_page(request: Request) -> Response:
+    user = optional_user(request)
+    if user is None:
+        return RedirectResponse("/login?next=/autopilot", 303)
+    return templates.TemplateResponse(request, "autopilot.html", {"user": user})

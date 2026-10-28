@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -11,7 +12,7 @@ import app.handlers.demo  # noqa: F401  (registers job handlers)
 import app.handlers.research  # noqa: F401
 import app.handlers.sandbox_run  # noqa: F401
 import app.handlers.tutorial  # noqa: F401
-from app import api, pages, ws
+from app import api, autopilot, pages, ws
 from app.auth import hash_password, user_for_token
 from app.config import Settings, get_settings
 from app.db import Store
@@ -61,7 +62,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bus,
             jobs,
         )
+        pilot = asyncio.create_task(autopilot.loop(app.state), name="autopilot")
         yield
+        pilot.cancel()
         await jobs.shutdown()
         await jobs.sandboxes.shutdown()
         await llm.aclose()

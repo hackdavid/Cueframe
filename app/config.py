@@ -46,6 +46,7 @@ class Settings:
     user_max_sandboxes: int = 2  # running at once per user
     user_daily_sandbox_minutes: float = 60  # sandbox time per user per rolling 24 h
     ask_timeout_seconds: float = 900
+    autopilot_at: str = ""  # "HH:MM" UTC: make the daily trending videos then; "" is off
     r2_endpoint: str | None = None
     r2_key_id: str | None = None
     r2_secret: str | None = None
@@ -100,6 +101,7 @@ def get_settings() -> Settings:
         user_max_sandboxes=_int("CUEFRAME_USER_MAX_SANDBOXES", 2),
         user_daily_sandbox_minutes=_float("CUEFRAME_USER_DAILY_SANDBOX_MINUTES", 60),
         ask_timeout_seconds=_float("CUEFRAME_ASK_TIMEOUT_SECONDS", 900),
+        autopilot_at=os.environ.get("CUEFRAME_AUTOPILOT_AT", ""),
         r2_endpoint=os.environ.get("R2_ENDPOINT_URL") or None,
         r2_key_id=os.environ.get("R2_ACCESS_KEY_ID") or None,
         r2_secret=os.environ.get("R2_SECRET_ACCESS_KEY") or None,

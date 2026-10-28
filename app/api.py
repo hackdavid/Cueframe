@@ -15,7 +15,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from app import auth, services
+from app import auth, autopilot, services
 from app.agents.contracts import ResearchRequest, ResearchResult
 from app.agents.docs_research import DocsResearchAgent
 from app.auth import User, websocket_user
@@ -402,3 +402,47 @@ async def edit_state(
 async def rerender(request: Request, tid: str, user: User) -> dict[str, Any]:
     """Render the current graph again (unchanged segments come from the cache)."""
     return {"job": _edit_job(request, _tutorial_or_404(request, tid, user), "Re-render", [])}
+
+
+class AutopilotRun(BaseModel):
+    topics: list[str] = Field(default_factory=lambda: list(autopilot.TOPICS))
+
+
+class AutopilotReview(BaseModel):
+    review: str | None = Field(None, pattern="^(pending|approved|rejected)$")
+    caption: str | None = Field(None, max_length=2200)
+    hashtags: list[str] | None = None
+
+
+@router.get("/autopilot", tags=["autopilot"])
+def list_autopilot(request: Request, user: User) -> dict[str, Any]:
+    """Daily trending videos, newest first, with caption, hashtags and review state."""
+    s = _s(request)
+    rows = [autopilot.sync(s.store, r) for r in s.store.list_autopilot(user["id"])]
+    return {"at": s.settings.autopilot_at, "topics": list(autopilot.TOPICS), "runs": rows}
+
+
+@router.post("/autopilot/run", status_code=202, tags=["autopilot"])
+async def run_autopilot(request: Request, body: AutopilotRun, user: User) -> dict[str, Any]:
+    """Start today's trending videos now instead of waiting for the daily time."""
+    bad = [t for t in body.topics if t not in autopilot.TOPICS]
+    if bad or not body.topics:
+        raise HTTPException(422, f"Topics are {sorted(autopilot.TOPICS)}")
+    s, day = _s(request), autopilot.datetime.now(autopilot.UTC).date().isoformat()
+    busy = {
+        r["topic"] for r in s.store.list_autopilot(user["id"]) if r["status"] in autopilot.ACTIVE
+    }
+    runs = [autopilot.start(s, user, t, day) for t in dict.fromkeys(body.topics) if t not in busy]
+    return {"runs": runs, "skipped": sorted(busy & set(body.topics))}
+
+
+@router.patch("/autopilot/{aid}", tags=["autopilot"])
+def review_autopilot(
+    request: Request, aid: str, body: AutopilotReview, user: User
+) -> dict[str, Any]:
+    """Approve or reject a video, or edit its caption and hashtags before posting."""
+    store = _s(request).store
+    if store.get_autopilot(aid, user["id"]) is None:
+        raise HTTPException(404, "Autopilot video not found")
+    fields = body.model_dump(exclude_none=True)
+    return store.update_autopilot(aid, **fields) if fields else store.get_autopilot(aid)

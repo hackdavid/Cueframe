@@ -114,6 +114,27 @@ CREATE TABLE IF NOT EXISTS tutorials (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_tutorials_conv ON tutorials(conversation_id, created_at);
+CREATE TABLE IF NOT EXISTS autopilot (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    request TEXT NOT NULL,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+    job_id TEXT,
+    status TEXT NOT NULL,
+    review TEXT NOT NULL DEFAULT 'pending',
+    title TEXT NOT NULL DEFAULT '',
+    item TEXT NOT NULL DEFAULT '',
+    caption TEXT NOT NULL DEFAULT '',
+    hashtags TEXT NOT NULL DEFAULT '[]',
+    video_url TEXT NOT NULL DEFAULT '',
+    thumbnail_url TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_autopilot_day ON autopilot(user_id, day);
 CREATE TABLE IF NOT EXISTS events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id TEXT,
@@ -345,6 +366,40 @@ class Store:
         return [found[i] for i in dict.fromkeys(ids) if i in found]
 
     # tutorials: the editable state graph and asset URLs; media bytes live in storage
+    # -- daily autopilot ------------------------------------------------------------
+    def add_autopilot(self, user_id: str, day: str, topic: str, request: str) -> dict[str, Any]:
+        aid, ts = new_id("ap"), now()
+        self._insert("autopilot", {"id": aid, "user_id": user_id, "day": day, "topic": topic,
+                                   "request": request, "status": "queued",
+                                   "created_at": ts, "updated_at": ts})  # fmt: skip
+        return self.get_autopilot(aid)  # type: ignore[return-value]
+
+    def get_autopilot(self, aid: str, user_id: str | None = None) -> dict[str, Any] | None:
+        sql, args = "SELECT * FROM autopilot WHERE id = ?", [aid]
+        if user_id:
+            sql += " AND user_id = ?"
+            args.append(user_id)
+        return _decode(self._one(sql, tuple(args)), "hashtags")
+
+    def list_autopilot(
+        self, user_id: str, day: str | None = None, status: str | None = None, limit: int = 60
+    ) -> list[dict[str, Any]]:
+        sql, args = "SELECT * FROM autopilot WHERE user_id = ?", [user_id]
+        for col, val in (("day", day), ("status", status)):
+            if val:
+                sql += f" AND {col} = ?"
+                args.append(val)
+        rows = self._all(sql + " ORDER BY created_at DESC LIMIT ?", (*args, limit))
+        return [_decode(r, "hashtags") for r in rows]  # type: ignore[misc]
+
+    def update_autopilot(self, aid: str, **fields: Any) -> dict[str, Any]:
+        if "hashtags" in fields:
+            fields["hashtags"] = json.dumps(fields["hashtags"])
+        fields["updated_at"] = now()
+        cols = ", ".join(f"{k} = ?" for k in fields)
+        self._exec(f"UPDATE autopilot SET {cols} WHERE id = ?", (*fields.values(), aid))
+        return self.get_autopilot(aid)  # type: ignore[return-value]
+
     _TUT_JSON = ("spec", "voice", "capture", "assets", "graph", "output")
 
     def create_tutorial(

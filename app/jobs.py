@@ -79,6 +79,12 @@ class JobContext:
         """Pause the job until the user answers (UI, REST `POST /api/jobs/{id}/answer`
         or WS `job.answer`). The question is also posted in the chat."""
         input_id = key or f"in_{uuid.uuid4().hex[:8]}"
+        if (self.input.get("job_input") or {}).get("auto"):  # unattended: take the first option
+            if self.conversation_id:
+                self.reply(f"**Question:** {question}\n\nAnswered automatically: {options[0]}")
+            self.emit("job.input_received", {"job": self.job, "input_id": input_id,
+                                             "value": options[0], "auto": True})  # fmt: skip
+            return options[0]
         pending = {"input_id": input_id, "question": question, "options": options}
         fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self._manager._waiters[self.id] = (input_id, fut)
