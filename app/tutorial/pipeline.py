@@ -150,6 +150,39 @@ async def voice_lines(
     return todo
 
 
+def untouched(rec: Any) -> bool:
+    """A GUI step that failed without acting: its target wasn't on screen, so nothing
+    was clicked or typed and the screen is as the previous step left it."""
+    return not rec.ok and rec.returncode == 3 and "No element matching" in (rec.error or "")
+
+
+async def mend(
+    ctx: JobContext, tid: str, spec: dict[str, Any], voice: dict[str, Any],
+    rehearsal: tuple[Healer, dict[str, Any]], i: int, rec: Any,
+) -> bool:  # fmt: skip
+    """Fix step `i` in the middle of a recorded rehearsal: it failed without touching the
+    screen, so the take can go on with the fixed step instead of a second take. The
+    failed attempt stays out of the video. False when it can't be fixed here."""
+    heal, state = rehearsal
+    step = spec["steps"][i]
+    tries = state.get(step["id"], 0)
+    if tries >= planner.MAX_REPAIRS or state["repairs"] >= planner.MAX_TOTAL_REPAIRS:
+        return False
+    state["repairs"] += 1
+    state[step["id"]] = tries + 1
+    ctx.phase("plan", f"Fixing step {i + 1} from its real output, still recording")
+    n = len(spec["steps"])
+    if await planner.repair(ctx, spec, i, rec):
+        return False
+    brief = planner.failure(step, rec)[0].split(" Visible:")[0]
+    how = planner.fixed(spec, i, n)
+    heal(f"Rehearsal: step **{step['label']}** failed before acting ({brief}); rewrote it "
+         f"from the real output as {how} and kept recording the take")  # fmt: skip
+    await voice_lines(ctx, tid, spec["lines"], voice, heal, lively=_lively(spec))
+    state["kept"] = state.get("kept", 0) + 1
+    return True
+
+
 async def capture(
     ctx: JobContext,
     tid: str,
@@ -174,7 +207,9 @@ async def capture(
         await box.run(-1, Action(kind="terminal", command="clear", ask=False))
         t0 = await box.start_recording()
         await asyncio.sleep(LEAD * PACE)
-        for i, step in enumerate(steps):
+        i = 0
+        while i < len(steps):
+            step = steps[i]
             ctx.phase("act", f"Step {i + 1}/{len(steps)}: {step['label']}")
             action = Action.model_validate(step["action"])
             need = 0.0
@@ -212,7 +247,14 @@ async def capture(
             ctx.emit("sandbox.action", {"sandbox_id": sid, "record": records[-1]})
             ctx.progress(0.15 + 0.45 * (i + 1) / len(steps))
             if not rec.ok:
+                if rehearsal and untouched(rec):
+                    async with mgr.busy(sid):  # the take keeps recording while it's fixed
+                        mended = await mend(ctx, tid, spec, voice, rehearsal, i, rec)
+                    if mended:
+                        records[-1]["in_video"] = False
+                        continue  # step i is now the fixed step (or the next one)
                 break
+            i += 1
         ctx.phase("upload", "Saving the recording")
         video = await box.stop_recording()
         failed = not records or not records[-1]["ok"]
@@ -222,7 +264,8 @@ async def capture(
             err, changed = await planner.settle(
                 ctx, spec, heal, state, sid, box, len(records) - 1 if failed else None
             )
-            verdict = {"error": err, "clean": not (failed or changed or err)}
+            verdict = {"error": err, "clean": not (failed or changed or err),
+                       "kept_repairs": state.get("kept", 0)}  # fmt: skip
             failed = bool(err)
         await mgr.stop(sid, "job failed" if failed else "job finished")
     if verdict and not verdict["clean"]:
