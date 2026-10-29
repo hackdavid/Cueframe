@@ -18,6 +18,7 @@ from app.auth import hash_password, user_for_token
 from app.config import Settings, get_settings
 from app.db import Store
 from app.events import EventBus
+from app.guard import RateLimiter
 from app.handlers.tutorial import resume_interrupted
 from app.jobs import JobManager
 from app.llm import MetaClient
@@ -40,6 +41,10 @@ def _media_user(request: Request) -> dict | None:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
+    if settings.sentry_dsn:
+        import sentry_sdk
+
+        sentry_sdk.init(dsn=settings.sentry_dsn, traces_sample_rate=0.0, send_default_pii=False)
     for path in (settings.uploads_dir, settings.artifacts_dir):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -58,6 +63,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         llm = MetaClient.from_settings(settings)
         jobs.llm = llm
         app.state.llm = llm
+        app.state.limiter = RateLimiter()
         interrupted = jobs.recover()
         jobs.storage = Storage(settings)
         jobs.sandboxes = SandboxManager.from_settings(store, settings)

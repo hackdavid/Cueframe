@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app import languages
 from app.agents.contracts import ResearchRequest
 from app.agents.docs_research import DocsResearchAgent
 from app.agents.trending import TrendBrief, TrendingAgent
@@ -608,6 +609,7 @@ async def plan(
     brief: str = "",
     seconds: int | None = None,
     board: dict[str, Any] | None = None,
+    language: str | None = None,
 ) -> dict[str, Any] | str:
     """A validated spec, or a str explaining why the task can't be shown. `avoid` is
     a failure from a previous plan's rehearsal; the new plan must work around it. A
@@ -631,6 +633,7 @@ async def plan(
     if sb:
         prompt += f"\n\n{formats.board_text(sb)}"
     system = instructions(mode, seconds, formats.skill(mode) if seconds else "")
+    system += languages.instruction(language)
     if avoid:
         prompt += (f"\n\nA previous plan for this task failed when run for real: {avoid}. "
                    "Use a different approach that avoids that failure.")  # fmt: skip

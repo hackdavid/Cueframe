@@ -1,6 +1,7 @@
 """SQLite persistence for conversations, messages, uploads, jobs and events."""
 
 import json
+import secrets
 import sqlite3
 import threading
 import uuid
@@ -161,7 +162,10 @@ CREATE INDEX IF NOT EXISTS ix_logs_ts ON logs(ts);
 
 ACTIVE_JOB_STATUSES = ("queued", "running", "waiting_input")
 COUNTED_USAGE = ("reserved", "succeeded", "interrupted")  # failed/cancelled are refunded
-USER_COLS = "id, username, email, display_name, plan, role, auth_provider, created_at"
+USER_COLS = (
+    "id, username, email, display_name, plan, role, auth_provider, created_at, ref_code, "
+    "referred_by, bonus_videos, referral_credited"
+)
 
 
 def _where(filters: dict[str, Any], cols: Collection[str], ts: str, alias: str = "") -> tuple:
@@ -209,6 +213,20 @@ class Store:
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_identity ON users(auth_provider, "
             "provider_uid) WHERE provider_uid IS NOT NULL"
+        )
+        self._add_columns("users", {
+            "ref_code": "TEXT", "referred_by": "TEXT",
+            "bonus_videos": "INTEGER NOT NULL DEFAULT 0",
+            "referral_credited": "INTEGER NOT NULL DEFAULT 0",
+        })  # fmt: skip
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_ref ON users(ref_code) "
+            "WHERE ref_code IS NOT NULL"
+        )
+        self._add_columns("tutorials", {"share_slug": "TEXT", "shared_at": "TEXT"})
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_tutorials_share ON tutorials(share_slug) "
+            "WHERE share_slug IS NOT NULL"
         )
         self._add_columns("sessions", {"id": "TEXT"})
         self._conn.execute(
@@ -315,8 +333,64 @@ class Store:
             )  # fmt: skip
         return self.get_user_by_name(username)  # type: ignore[return-value]
 
+    def create_account(
+        self, username: str, password_hash: str, *, plan: str, referred_by: str | None = None
+    ) -> dict[str, Any]:
+        """A new self-service password account (raises ValueError if the name is taken)."""
+        with self._lock:
+            if self.get_user_by_name(username):
+                raise ValueError("That username is taken")
+            uid = new_id("usr")
+            self._insert(
+                "users",
+                {"id": uid, "username": username, "password_hash": password_hash,
+                 "plan": plan, "role": "user", "referred_by": referred_by,
+                 "created_at": now()},
+            )  # fmt: skip
+        return self.get_user_by_name(username)  # type: ignore[return-value]
+
+    def ensure_ref_code(self, uid: str) -> str:
+        with self._lock:
+            row = self._one("SELECT ref_code FROM users WHERE id = ?", (uid,))
+            if row and row["ref_code"]:
+                return row["ref_code"]
+            code = secrets.token_hex(4)
+            self._exec("UPDATE users SET ref_code = ? WHERE id = ?", (code, uid))
+            return code
+
+    def user_by_ref(self, code: str) -> dict[str, Any] | None:
+        return self._one(f"SELECT {USER_COLS} FROM users WHERE ref_code = ?", (code,))
+
+    def credit_referral(self, uid: str, bonus: int) -> str | None:
+        """Give `uid`'s referrer `bonus` videos, once; returns the referrer's id."""
+        with self._lock:
+            row = self._one("SELECT referred_by, referral_credited FROM users WHERE id = ?", (uid,))
+            if not row or not row["referred_by"] or row["referral_credited"]:
+                return None
+            self._exec("UPDATE users SET referral_credited = 1 WHERE id = ?", (uid,))
+            self._exec(
+                "UPDATE users SET bonus_videos = bonus_videos + ? WHERE id = ?",
+                (bonus, row["referred_by"]),
+            )
+            return row["referred_by"]
+
+    def referral_counts(self, uid: str) -> dict[str, int]:
+        row = self._one(
+            "SELECT COUNT(*) AS invited, COALESCE(SUM(referral_credited), 0) AS credited "
+            "FROM users WHERE referred_by = ?",
+            (uid,),
+        )
+        return {"invited": row["invited"], "credited": row["credited"]} if row else {}
+
     def upsert_identity(
-        self, provider: str, uid: str, *, email: str | None, name: str | None, plan: str
+        self,
+        provider: str,
+        uid: str,
+        *,
+        email: str | None,
+        name: str | None,
+        plan: str,
+        referred_by: str | None = None,
     ) -> dict[str, Any]:
         """The account for an external sign-in (e.g. Firebase Google); created on first use."""
         sql = "SELECT * FROM users WHERE auth_provider = ? AND provider_uid = ?"
@@ -336,6 +410,7 @@ class Store:
                 "users",
                 {"id": new_id("usr"), "username": username, "password_hash": "",
                  "email": email, "display_name": name, "plan": plan, "role": "user",
+                 "referred_by": referred_by,
                  "auth_provider": provider, "provider_uid": uid, "created_at": now()},
             )  # fmt: skip
         return self._one(sql, (provider, uid))  # type: ignore[return-value]
@@ -347,7 +422,8 @@ class Store:
         return self._all(f"SELECT {USER_COLS} FROM users ORDER BY created_at")
 
     def update_user(self, uid: str, **fields: Any) -> dict[str, Any] | None:
-        fields = {k: v for k, v in fields.items() if k in ("plan", "role", "email", "display_name")}
+        allowed = ("plan", "role", "email", "display_name", "bonus_videos")
+        fields = {k: v for k, v in fields.items() if k in allowed}
         if fields:
             cols = ", ".join(f"{k} = ?" for k in fields)
             self._exec(f"UPDATE users SET {cols} WHERE id = ?", (*fields.values(), uid))
@@ -369,7 +445,7 @@ class Store:
     def user_for_session(self, token_hash: str) -> dict[str, Any] | None:
         user = self._one(
             """SELECT u.id, u.username, u.email, u.display_name, u.plan, u.role,
-                      s.id AS session_id
+                      u.bonus_videos, u.ref_code, s.id AS session_id
                FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?""",
             (token_hash,),
         )
@@ -512,6 +588,50 @@ class Store:
         cols = ", ".join(f"{k} = ?" for k in fields)
         self._exec(f"UPDATE tutorials SET {cols} WHERE id = ?", (*fields.values(), tid))
         return self.get_tutorial(tid)  # type: ignore[return-value]
+
+    def share_tutorial(self, tid: str, public: bool = True) -> str | None:
+        """Turn the public share page on (returns its slug) or off."""
+        with self._lock:
+            row = self._one("SELECT share_slug FROM tutorials WHERE id = ?", (tid,))
+            if row is None:
+                return None
+            slug = row["share_slug"] or secrets.token_urlsafe(6).replace("_", "x").replace("-", "z")
+            self._exec(
+                "UPDATE tutorials SET share_slug = ?, shared_at = ? WHERE id = ?",
+                (slug, now() if public else None, tid),
+            )
+            return slug
+
+    def tutorial_by_slug(self, slug: str) -> dict[str, Any] | None:
+        sql = "SELECT * FROM tutorials WHERE share_slug = ? AND shared_at IS NOT NULL"
+        return _decode(self._one(sql, (slug,)), *self._TUT_JSON)
+
+    def job_stats(self, since: str) -> dict[str, Any]:
+        """Per job kind: counts by status and end-to-end seconds (avg, p95) of finished jobs."""
+        rows = self._all(
+            "SELECT kind, status, created_at, finished_at, error FROM jobs WHERE created_at >= ?",
+            (since,),
+        )
+        out: dict[str, Any] = {}
+        for r in rows:
+            k = out.setdefault(r["kind"], {"statuses": {}, "_secs": [], "errors": {}})
+            k["statuses"][r["status"]] = k["statuses"].get(r["status"], 0) + 1
+            if r["finished_at"] and r["status"] == "succeeded":
+                t0 = datetime.fromisoformat(r["created_at"])
+                k["_secs"].append((datetime.fromisoformat(r["finished_at"]) - t0).total_seconds())
+            if r["status"] == "failed" and r["error"]:
+                e = r["error"][:120]
+                k["errors"][e] = k["errors"].get(e, 0) + 1
+        for k in out.values():
+            secs = sorted(k.pop("_secs"))
+            done = sum(k["statuses"].get(s, 0) for s in ("succeeded", "failed"))
+            k["success_rate"] = round(k["statuses"].get("succeeded", 0) / done, 3) if done else None
+            k["avg_seconds"] = round(sum(secs) / len(secs), 1) if secs else None
+            k["p95_seconds"] = (
+                round(secs[min(len(secs) - 1, int(0.95 * len(secs)))], 1) if secs else None
+            )
+            k["errors"] = sorted(k["errors"].items(), key=lambda x: -x[1])[:5]
+        return out
 
     def delete_tutorial(self, tid: str) -> None:
         self._exec("DELETE FROM tutorials WHERE id = ?", (tid,))
@@ -699,12 +819,12 @@ class Store:
                 f"UPDATE usage_records SET {cols} WHERE job_id = ?", (*fields.values(), job_id)
             )
 
-    def finish_usage(self, job_id: str, status: str, detail: dict[str, Any] | None = None) -> None:
-        self._exec(
+    def finish_usage(self, job_id: str, status: str, detail: dict[str, Any] | None = None) -> int:
+        return self._exec(
             "UPDATE usage_records SET status = ?, finished_at = ?, detail = COALESCE(?, detail) "
             "WHERE job_id = ? AND status = 'reserved'",
             (status, now(), json.dumps(detail) if detail else None, job_id),
-        )
+        ).rowcount
 
     def list_usage(self, filters: dict[str, Any], limit: int = 100) -> list[dict[str, Any]]:
         cols = ("user_id", "session_id", "conversation_id", "job_id", "category", "kind",

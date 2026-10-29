@@ -5,6 +5,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app import guard
 from app.sandbox.contracts import live_path
 
 DEFAULT_JOB = "assistant.reply"
@@ -60,6 +61,8 @@ def send_message(
     Creates a conversation when `conversation_id` is None."""
     if not content.strip() and not attachment_ids:
         raise HTTPException(422, "Message needs text or an attachment")
+    guard.check(getattr(s, "limiter", None), "messages", user["id"],
+                s.settings.rate_messages_per_min, 60)  # fmt: skip
     attachments = s.store.get_uploads(attachment_ids, user["id"])
     if len(attachments) != len(set(attachment_ids)):
         raise HTTPException(422, "Unknown attachment id")

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ t.title }} · Made with Cueframe{% endblock %}
+{% block og %}
+  <meta name="description" content="{{ kind }}: {{ about[:150] }}">
+  <meta property="og:type" content="video.other">
+  <meta property="og:title" content="{{ t.title }}">
+  <meta property="og:description" content="{{ kind }} made with Cueframe from one sentence. {{ about[:120] }}">
+  <meta property="og:url" content="{{ page_url }}">
+  <meta property="og:image" content="{{ base }}/v/{{ slug }}/poster.png">
+  <meta property="og:video" content="{{ base }}/v/{{ slug }}/video.mp4">
+  <meta property="og:video:type" content="video/mp4">
+  <meta property="og:video:width" content="1920">
+  <meta property="og:video:height" content="1080">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="canonical" href="{{ page_url }}">
+{% endblock %}
+{% block body %}
+<main class="mx-auto max-w-5xl px-4 py-8 sm:py-12">
+  <p class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300">
+    <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> {{ kind }}{% if seconds %} · {{ seconds | round | int }} s{% endif %}{% if checks %} · {{ checks }} steps checked with SymPy{% endif %}
+  </p>
+  <h1 class="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">{{ t.title }}</h1>
+  {% if about %}<p class="mt-3 max-w-3xl text-zinc-400">{{ about[:400] }}</p>{% endif %}
+  <div class="mt-6 overflow-hidden rounded-2xl border border-white/10 bg-black shadow-2xl">
+    <video class="aspect-video w-full" src="/v/{{ slug }}/video.mp4" poster="/v/{{ slug }}/poster.png" controls playsinline preload="metadata"></video>
+  </div>
+  <div class="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between rounded-2xl border border-white/10 bg-gradient-to-r from-fuchsia-500/10 to-sky-500/10 p-5">
+    <div>
+      <p class="font-semibold">Make your own in one sentence or one photo</p>
+      <p class="text-sm text-zinc-400">Maths lessons, tutorials, reels and explainers. 3 free videos a month.</p>
+    </div>
+    <a href="/r/{{ ref }}" class="shrink-0 rounded-lg bg-sky-600 px-5 py-2.5 text-center text-sm font-medium text-white hover:bg-sky-500">Make your own, free</a>
+  </div>
+  <div class="mt-4 flex flex-wrap gap-2 text-sm">
+    <button type="button" id="copy" class="rounded-lg border border-white/10 px-3 py-1.5 hover:bg-white/5">Copy link</button>
+    <a class="rounded-lg border border-white/10 px-3 py-1.5 hover:bg-white/5" target="_blank" rel="noopener" href="https://twitter.com/intent/tweet?text={{ t.title | urlencode }}&url={{ page_url | urlencode }}">Share on X</a>
+    <a class="rounded-lg border border-white/10 px-3 py-1.5 hover:bg-white/5" target="_blank" rel="noopener" href="https://wa.me/?text={{ (t.title ~ ' ' ~ page_url) | urlencode }}">WhatsApp</a>
+    <a class="rounded-lg border border-white/10 px-3 py-1.5 hover:bg-white/5" target="_blank" rel="noopener" href="https://www.linkedin.com/sharing/share-offsite/?url={{ page_url | urlencode }}">LinkedIn</a>
+  </div>
+</main>
+<script>
+  document.getElementById("copy").addEventListener("click", async (e) => {
+    await navigator.clipboard?.writeText({{ page_url | tojson }}).catch(() => {});
+    e.target.textContent = "Copied";
+  });
+</script>
+{% endblock %}
