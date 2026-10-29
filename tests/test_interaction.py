@@ -126,7 +126,13 @@ def test_gui_tutorial_repairs_a_missing_element_from_what_is_visible(client, mon
     states = {s["id"]: s for s in tut["graph"]["states"]}
     assert states["launch"]["app"] == "mousepad" and states["download"]["app"] == "browser"
     assert states["download"]["highlights"]  # zoomed onto the found element
-    assert all(b["status"] == "terminated" for b in _sandboxes(client))
+    boxes = _sandboxes(client)
+    assert len(boxes) == 1 and boxes[0]["status"] == "terminated"  # fixed mid-take
+    cap = tut["capture"]
+    assert cap["take"] == 1 and cap["rehearsal"]["kept_repairs"] == 1
+    tries = [r for r in cap["records"] if r["step"] == "download"]
+    assert [(r["ok"], r["in_video"]) for r in tries] == [(False, False), (True, True)]
+    assert "kept recording the take" in str(client.app.state.store.get_job(jid))
 
 
 def test_sandbox_limits_stop_new_sandboxes_before_any_cost(client, monkeypatch):

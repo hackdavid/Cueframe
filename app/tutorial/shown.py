@@ -16,6 +16,11 @@ from app.jobs import JobContext
 FRAMES_AT = (0.35, 0.9)  # where in each step's footage to look
 TIMEOUT = 150
 SLACK_WORDS = 3
+TONE = {
+    "tutorial": "tutorial; friendly teacher, says what each step does and why",
+    "influencer": "reel; energetic and punchy, speaks to the viewer ('you'), facts with numbers",
+    "explainer": "explainer; calm, clear and curious, problem -> idea -> why it matters",
+}
 
 SHOWN = """You check that a narrated screen recording shows what its narration says. For each
 step you get its narration lines and frames cut from the recording while those lines play.
@@ -23,8 +28,13 @@ A line is fine when the frames show what it talks about (the page, section, code
 figure or element it names), or when it is a plain transition or call to action. When a
 line names or describes something that is not visible in its frames, rewrite it so it
 describes what IS visible in them, in the same voice, tense and style, with at most as
-many words as the original. Use only facts visible in the frames or stated in the source
-brief; never add numbers or claims. Return only the lines that need rewriting (none when
+many words as the original. Keep the line's job in the video (hook, fact, step, result,
+payoff) and the format's tone: tie what is visible to the point the line was making, so
+it still tells the viewer why it matters, instead of listing the screen ('Folders and
+links fill the page' is a bad rewrite; 'Here's the code: the whole method is open
+source' is good when the frames show its repo). Never start with 'I will' or 'Let me'.
+Use only facts visible in the frames or stated in the source brief; never add numbers
+or claims. Return only the lines that need rewriting (none when
 every line matches). Each step's badge is shown on screen when it ends: when it claims
 the same unshown thing, give a new 2-4 word badge too."""
 
@@ -80,7 +90,12 @@ async def check(
         return []
     at = FRAMES_AT if len(shown) <= 8 else (0.6,)
     lines, keys = spec["lines"], set()
-    content: list[dict[str, str]] = []
+    content: list[dict[str, str]] = [
+        {
+            "type": "input_text",
+            "text": f"Format: {TONE.get(spec.get('mode') or 'tutorial', TONE['tutorial'])}",
+        }
+    ]
     if spec.get("brief"):
         content.append({"type": "input_text", "text": f"Source brief:\n{spec['brief']}"})
     for r in shown:

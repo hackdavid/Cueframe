@@ -101,6 +101,9 @@ FIND_JS = r"""
     const n = name(el);
     if (!n) continue;
     let s = n === want ? 30 : n.startsWith(want) ? 20 : n.includes(want) ? 10 : 0;
+    // Scrolling to words in running text: the smallest element whose whole text has them.
+    if (!s && mode === "scroll" && el.children.length < 8 && norm(el.innerText).includes(want))
+      s = 6;
     if (!s) continue;
     if (mode === "type") s += field(el) ? 8 : -8;
     else s += active(el) ? 6 : 0;

@@ -25,7 +25,7 @@ from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
 from app.sandbox.contracts import Action, live_path
 from app.sandbox.manager import SandboxLimit
-from app.tutorial import formats, planner, qa, recipes, shown
+from app.tutorial import formats, planner, qa, recipes, shown, sources
 from app.tutorial.build import build
 from app.tutorial.contracts import Tutorial
 from app.tutorial.render import render
@@ -33,7 +33,7 @@ from app.tutorial.voice import sound, speak
 
 SKIP = "Already installed - leave the install out of the video"
 SHOW = "Not installed - show me how to install it"
-RUN = "Yes, run it and record the tutorial"
+RUN = "Yes, run it and record the video"
 CANCEL = "No, cancel"
 DESKTOP = {"sandbox_width": 1920, "sandbox_height": 1080, "sandbox_scale": 1.5,
            "sandbox_term_font": 22, "sandbox_cpu": 4}  # fmt: skip
@@ -105,6 +105,11 @@ async def ensure_sfx(ctx: JobContext, audio: Path) -> None:
             (audio / name).write_bytes(cached.read_bytes())
 
 
+def kind(spec: dict[str, Any]) -> str:
+    """What the user asked for, in their words: tutorial, reel or explainer."""
+    return formats.NAMES.get(spec.get("mode") or "tutorial", "video")
+
+
 def _lively(spec: dict[str, Any]) -> bool:
     return spec.get("mode") == "influencer"
 
@@ -145,6 +150,39 @@ async def voice_lines(
     return todo
 
 
+def untouched(rec: Any) -> bool:
+    """A GUI step that failed without acting: its target wasn't on screen, so nothing
+    was clicked or typed and the screen is as the previous step left it."""
+    return not rec.ok and rec.returncode == 3 and "No element matching" in (rec.error or "")
+
+
+async def mend(
+    ctx: JobContext, tid: str, spec: dict[str, Any], voice: dict[str, Any],
+    rehearsal: tuple[Healer, dict[str, Any]], i: int, rec: Any,
+) -> bool:  # fmt: skip
+    """Fix step `i` in the middle of a recorded rehearsal: it failed without touching the
+    screen, so the take can go on with the fixed step instead of a second take. The
+    failed attempt stays out of the video. False when it can't be fixed here."""
+    heal, state = rehearsal
+    step = spec["steps"][i]
+    tries = state.get(step["id"], 0)
+    if tries >= planner.MAX_REPAIRS or state["repairs"] >= planner.MAX_TOTAL_REPAIRS:
+        return False
+    state["repairs"] += 1
+    state[step["id"]] = tries + 1
+    ctx.phase("plan", f"Fixing step {i + 1} from its real output, still recording")
+    n = len(spec["steps"])
+    if await planner.repair(ctx, spec, i, rec):
+        return False
+    brief = planner.failure(step, rec)[0].split(" Visible:")[0]
+    how = planner.fixed(spec, i, n)
+    heal(f"Rehearsal: step **{step['label']}** failed before acting ({brief}); rewrote it "
+         f"from the real output as {how} and kept recording the take")  # fmt: skip
+    await voice_lines(ctx, tid, spec["lines"], voice, heal, lively=_lively(spec))
+    state["kept"] = state.get("kept", 0) + 1
+    return True
+
+
 async def capture(
     ctx: JobContext,
     tid: str,
@@ -169,7 +207,9 @@ async def capture(
         await box.run(-1, Action(kind="terminal", command="clear", ask=False))
         t0 = await box.start_recording()
         await asyncio.sleep(LEAD * PACE)
-        for i, step in enumerate(steps):
+        i = 0
+        while i < len(steps):
+            step = steps[i]
             ctx.phase("act", f"Step {i + 1}/{len(steps)}: {step['label']}")
             action = Action.model_validate(step["action"])
             need = 0.0
@@ -207,7 +247,14 @@ async def capture(
             ctx.emit("sandbox.action", {"sandbox_id": sid, "record": records[-1]})
             ctx.progress(0.15 + 0.45 * (i + 1) / len(steps))
             if not rec.ok:
+                if rehearsal and untouched(rec):
+                    async with mgr.busy(sid):  # the take keeps recording while it's fixed
+                        mended = await mend(ctx, tid, spec, voice, rehearsal, i, rec)
+                    if mended:
+                        records[-1]["in_video"] = False
+                        continue  # step i is now the fixed step (or the next one)
                 break
+            i += 1
         ctx.phase("upload", "Saving the recording")
         video = await box.stop_recording()
         failed = not records or not records[-1]["ok"]
@@ -217,7 +264,8 @@ async def capture(
             err, changed = await planner.settle(
                 ctx, spec, heal, state, sid, box, len(records) - 1 if failed else None
             )
-            verdict = {"error": err, "clean": not (failed or changed or err)}
+            verdict = {"error": err, "clean": not (failed or changed or err),
+                       "kept_repairs": state.get("kept", 0)}  # fmt: skip
             failed = bool(err)
         await mgr.stop(sid, "job failed" if failed else "job finished")
     if verdict and not verdict["clean"]:
@@ -417,7 +465,11 @@ async def make(
     else:
         files = planner.attached(ctx)
         goal = planner.with_files(goal or ctx.input.get("text", ""), files)
-        brief = ""
+        brief, kicker = "", ""
+        if not trending and (brief := await sources.brief(ctx, goal, files)):
+            kicker = "FROM YOUR SOURCE"
+            ctx.reply("I'll build the video from your source: every fact in it comes from "
+                      "what you attached or linked.")  # fmt: skip
         if trending:
             found = await planner.scout(ctx, goal)
             if isinstance(found, str):
@@ -447,7 +499,7 @@ async def make(
     asked = await intake(ctx, spec, answers)
     if recipe_id == "planned" and not asked:
         ans = await ctx.ask(
-            "This tutorial runs the steps above in a private Linux sandbox. Shall I go ahead?",
+            f"This {kind(spec)} runs the steps above in a private Linux sandbox. Shall I go ahead?",
             [RUN, CANCEL],
             key="confirm",
         )
@@ -523,7 +575,7 @@ async def intake(ctx: JobContext, spec: dict[str, Any], answers: dict[str, bool]
         a = step["action"]
         if a["kind"] == "terminal" and a.get("ask", True) and a["command"] not in answers:
             ans = await ctx.ask(
-                f"This tutorial runs `{a['command']}` in a terminal. "
+                f"This {kind(spec)} runs `{a['command']}` in a terminal. "
                 f"Is {spec.get('software') or 'it'} already installed on your machine?",
                 [SKIP, SHOW],
                 key=f"install_{step['id']}" + (f"_{len(answers)}" if answers else ""),
@@ -620,20 +672,29 @@ class StateEdit(BaseModel):
     label: str | None = Field(None, description="New step label (or video title for 'title')")
     zoom: float | None = Field(None, ge=1, le=3, description="Camera zoom on the key area")
     highlight: str | None = Field(None, description="New text for the highlight label")
+    cut: bool | None = Field(None, description="True: leave this step out of the video")
+    pace: Literal["real", "fast", "cut"] | None = Field(None, description="How the step plays")
 
 
 class EditOp(BaseModel):
     state: str = Field(description="State id: 'title', 'outro' or a step id")
-    field: Literal["narration", "label", "zoom", "highlight"]
+    field: Literal["narration", "label", "zoom", "highlight", "cut", "pace"]
     value: str = Field(
         description="The new value. narration: the full new spoken lines, one per line; "
-        "label: the new text; zoom: a number from 1 to 3; highlight: the new label text"
+        "label: the new text; zoom: a number from 1 to 3; highlight: the new label text; "
+        "cut: 'yes' to leave the step out of the video, 'no' to bring it back; pace: "
+        "'real' (real time), 'fast' (fast-forward) or 'cut' (jump to the result)"
     )
 
     def to_edit(self) -> StateEdit:
         if self.field == "narration":
             lines = [x.strip() for x in self.value.splitlines() if x.strip()]
             return StateEdit(state=self.state, narration=lines)
+        if self.field == "cut":
+            return StateEdit(state=self.state, cut=self.value.strip().lower() != "no")
+        if self.field == "pace":
+            pace = self.value.strip().lower()
+            return StateEdit(state=self.state, pace=pace if pace in PACES else "fast")
         if self.field == "zoom":
             return StateEdit(state=self.state, zoom=min(3.0, max(1.0, float(self.value))))
         return StateEdit(state=self.state, **{self.field: self.value.strip()})
@@ -646,12 +707,26 @@ class EditPlan(BaseModel):
                        "states: then explain why and leave edits empty")  # fmt: skip
 
 
-EDIT_RULES = """You edit a tutorial video that is stored as a graph of states. Turn the
-user's request into the smallest set of state edits. Only change what they asked for.
+PACES = ("real", "fast", "cut")
+
+EDIT_RULES = """You edit a finished video (a tutorial, reel or explainer) that is stored as
+a graph of states cut from one real screen recording. Turn the user's request into the
+smallest set of state edits. Only change what they asked for. What you can do:
+- the hook / opening line is the 'title' state's narration; the closing line is 'outro'.
+- tone ("more energetic", "calmer", "funnier"): rewrite the narration of every state in
+  that tone, same facts, same number of lines per state.
+- length ("make it 30 s"): each state's length is listed. Reach the target by, in order:
+  shorter narration lines, `pace` 'fast' or 'cut' for slow steps (installs, typing,
+  waits, page loads), then `cut` whole steps that aren't the main point. Never cut the
+  step that shows the main result, and never cut every step. Narration plays at about
+  2.5 words a second.
+- cut a part ("cut the install part"): `cut` 'yes' on those steps; 'no' brings one back.
+  Then fix narration of the next shown step if it refers to the cut one.
 Narration is read by a text-to-speech voice: write tool names the way they are said
 (e.g. 'engine-x' for nginx, 'package manager' for apt) and keep each line short and
 natural. Never claim anything the recorded run did not show. You cannot re-record
-actions or change what happened on screen; if asked to, set `reply` and explain.
+actions, add footage or change what happened on screen; if asked to, set `reply` and
+explain that it needs a new video.
 Every edit must carry the new value itself: the full rewritten narration lines, the new
 label, the new zoom number, or the new highlight text. Example for "shorten the intro":
 {"edits": [{"state": "title", "field": "narration", "value": "<the new, shorter intro>"}],
@@ -660,21 +735,35 @@ label, the new zoom number, or the new highlight text. Example for "shorten the 
 
 def describe(row: dict[str, Any]) -> str:
     spec, lines = row["spec"], row["spec"]["lines"]
-    out = [f"Title: {spec['title']}", "States:"]
-    for st in (row.get("graph") or {}).get("states", []):
+    states = (row.get("graph") or {}).get("states", [])
+    total = sum(st.get("duration") or 0 for st in states)
+    out = [f"Format: {kind(spec)}", f"Title: {spec['title']}", f"Length now: {total:.0f} s",
+           "States:"]  # fmt: skip
+    hidden, shown = set(spec.get("hidden") or []), {st["id"] for st in states}
+    for st in states:
         keys = _keys(spec, st["id"])
         step = next((s for s in spec["steps"] if s["id"] == st["id"]), {})
         out.append(
             f"- {st['id']} ({st['kind']}, {st.get('app') or '-'}): label={st['label']!r} "
+            f"{st.get('duration', 0):.1f} s, pace={step.get('pace', 'real')} "
             f"zoom={step.get('zoom', (step.get('focus') or {}).get('zoom', 1.8))} "
             f"narration={[lines[k] for k in keys]}"
         )
+    cut = [s for s in spec["steps"] if s["id"] in hidden and s["id"] not in shown]
+    for s in cut:
+        out.append(f"- {s['id']} (cut, not in the video): label={s['label']!r}")
     return "\n".join(out)
+
+
+def _recorded(row: dict[str, Any]) -> set[str]:
+    """Steps the recording really shows working, so they can be brought back."""
+    return {r["step"] for r in (row.get("capture") or {}).get("records", []) if r.get("ok")}
 
 
 def apply(row: dict[str, Any], edits: list[StateEdit]) -> list[str]:
     spec, changed = row["spec"], []
     states = {s["id"] for s in (row.get("graph") or {}).get("states", [])}
+    states |= {s["id"] for s in spec["steps"] if s["id"] in (spec.get("hidden") or [])}
     for e in edits:
         if e.state not in states:
             raise ValueError(f"Unknown state {e.state!r}; states are {sorted(states)}")
@@ -692,6 +781,16 @@ def apply(row: dict[str, Any], edits: list[StateEdit]) -> list[str]:
                 step["zoom"] = e.zoom
             elif step.get("focus"):
                 step["focus"]["zoom"] = e.zoom
+        if e.cut is not None and step:
+            hidden = spec.setdefault("hidden", [])
+            if e.cut and e.state not in hidden:
+                if len([s for s in spec["steps"] if s["id"] not in hidden]) <= 1:
+                    raise ValueError("Cutting that would leave no steps in the video")
+                hidden.append(e.state)
+            elif not e.cut and e.state in hidden and e.state in _recorded(row):
+                hidden.remove(e.state)
+        if e.pace and step:
+            step["pace"] = e.pace
         if e.highlight and step:
             hl = step.setdefault("highlight", {})
             if "box" in hl:

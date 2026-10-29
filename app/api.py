@@ -388,10 +388,11 @@ def _edit_job(request: Request, tut: dict[str, Any], text: str, edits: list) -> 
 async def edit_state(
     request: Request, tid: str, state_id: str, body: StateEditIn, user: User
 ) -> dict[str, Any]:
-    """Change one state (narration, label, zoom, highlight). Starts a background job
+    """Change one state (narration, label, zoom, highlight, cut, pace). Starts a job
     that re-voices and re-renders only what changed, then posts the new version."""
     tut = _tutorial_or_404(request, tid, user)
     states = {s["id"] for s in (tut.get("graph") or {}).get("states", [])}
+    states |= set((tut.get("spec") or {}).get("hidden") or [])  # cut steps can come back
     if state_id not in states:
         raise HTTPException(404, f"Unknown state; states are {sorted(states)}")
     edit = {**body.model_dump(exclude_none=True, exclude={"state"}), "state": state_id}
