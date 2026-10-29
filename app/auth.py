@@ -52,13 +52,33 @@ def login(store: Store, username: str, password: str) -> tuple[str, dict[str, An
     return _start_session(store, user)
 
 
+def signup(
+    store: Store, username: str, password: str, *, plan: str, ref: str | None = None
+) -> tuple[str, dict[str, Any]]:
+    """A self-service password account; `ref` is the inviting user's referral code."""
+    referrer = store.user_by_ref(ref) if ref else None
+    user = store.create_account(username, hash_password(password), plan=plan,
+                                referred_by=referrer and referrer["id"])  # fmt: skip
+    log.info("signup", extra=fields(user_id=user["id"], referred_by=referrer and referrer["id"]))
+    return _start_session(store, user)
+
+
 def login_identity(
-    store: Store, provider: str, uid: str, *, email: str | None, name: str | None, plan: str
+    store: Store,
+    provider: str,
+    uid: str,
+    *,
+    email: str | None,
+    name: str | None,
+    plan: str,
+    ref: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Sign in a user verified by an external provider. A Firebase route would verify the
     ID token (firebase_admin.auth.verify_id_token) and call this with `provider="google"`."""
-    return _start_session(store, store.upsert_identity(provider, uid, email=email, name=name,
-                                                       plan=plan))  # fmt: skip
+    referrer = store.user_by_ref(ref) if ref else None
+    user = store.upsert_identity(provider, uid, email=email, name=name, plan=plan,
+                                 referred_by=referrer and referrer["id"])  # fmt: skip
+    return _start_session(store, user)
 
 
 def _start_session(store: Store, user: dict[str, Any]) -> tuple[str, dict[str, Any]]:

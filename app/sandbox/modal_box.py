@@ -48,7 +48,7 @@ def desktop_image(modal: Any, settings: Settings) -> Any:
 BOARD_APT = [
     "ffmpeg", "texlive-latex-base", "texlive-latex-recommended", "texlive-latex-extra",
     "texlive-fonts-recommended", "dvisvgm", "libcairo2-dev", "libpango1.0-dev", "pkg-config",
-    "build-essential", "fonts-dejavu-core",
+    "build-essential", "fonts-dejavu-core", "fonts-noto-core",  # Noto: Hindi etc. captions
 ]  # fmt: skip
 BOARD_PIP = ["manim==0.22.1", "sympy==1.14.0", "pydantic==2.14.1"]
 

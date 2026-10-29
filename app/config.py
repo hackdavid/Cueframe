@@ -50,6 +50,19 @@ class Settings:
     admin_plan: str = "unlimited"  # plan of the CUEFRAME_ADMIN_USERNAME account
     plan_limits: str = ""  # JSON overrides of app.plans.LIMITS
     log_retention_days: int = 30
+    public_url: str = "http://localhost:8000"  # share links, QR codes
+    open_signup: bool = True
+    turnstile_site_key: str = ""  # Cloudflare Turnstile captcha on sign-up (off when unset)
+    turnstile_secret: str = ""
+    rate_login_per_min: int = 10  # per IP; 0 turns a limit off
+    rate_signup_per_hour: int = 5  # per IP
+    rate_messages_per_min: int = 20  # per account
+    daily_spend_cap_usd: float = 25.0  # estimated spend across all users per UTC day
+    video_costs: str = ""  # JSON overrides of app.usage.COST_USD
+    alert_webhook: str = ""  # Slack/Discord incoming webhook
+    sentry_dsn: str = ""
+    watermark_plans: tuple[str, ...] = ("free",)
+    referral_bonus: int = 3  # videos a referrer gets when a friend's first video is made
     sandbox_usd_per_hour: float = 0.11
     sandbox_max_active: int = 4  # across all users: caps what can be billed at once
     user_max_sandboxes: int = 2  # running at once per user
@@ -111,6 +124,23 @@ def get_settings() -> Settings:
         admin_plan=os.environ.get("CUEFRAME_ADMIN_PLAN", "unlimited"),
         plan_limits=os.environ.get("CUEFRAME_PLAN_LIMITS", ""),
         log_retention_days=_int("CUEFRAME_LOG_RETENTION_DAYS", 30),
+        public_url=os.environ.get("CUEFRAME_PUBLIC_URL", "http://localhost:8000"),
+        open_signup=os.environ.get("CUEFRAME_OPEN_SIGNUP", "1").lower() not in ("0", "false"),
+        turnstile_site_key=os.environ.get("CUEFRAME_TURNSTILE_SITE_KEY", ""),
+        turnstile_secret=os.environ.get("CUEFRAME_TURNSTILE_SECRET", ""),
+        rate_login_per_min=_int("CUEFRAME_RATE_LOGIN_PER_MIN", 10),
+        rate_signup_per_hour=_int("CUEFRAME_RATE_SIGNUP_PER_HOUR", 5),
+        rate_messages_per_min=_int("CUEFRAME_RATE_MESSAGES_PER_MIN", 20),
+        daily_spend_cap_usd=_float("CUEFRAME_DAILY_SPEND_CAP_USD", 25.0),
+        video_costs=os.environ.get("CUEFRAME_VIDEO_COSTS", ""),
+        alert_webhook=os.environ.get("CUEFRAME_ALERT_WEBHOOK", ""),
+        sentry_dsn=os.environ.get("SENTRY_DSN", ""),
+        watermark_plans=tuple(
+            p.strip()
+            for p in os.environ.get("CUEFRAME_WATERMARK_PLANS", "free").split(",")
+            if p.strip()
+        ),
+        referral_bonus=_int("CUEFRAME_REFERRAL_BONUS", 3),
         board_cpu=_float("CUEFRAME_BOARD_CPU", 8),
         sandbox_usd_per_hour=_float("CUEFRAME_SANDBOX_USD_PER_HOUR", 0.11),
         sandbox_max_active=_int("CUEFRAME_SANDBOX_MAX_ACTIVE", 4),

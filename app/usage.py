@@ -6,10 +6,14 @@ user's plan (`app.plans.LIMITS`) for the current calendar month (UTC) atomically
 chats can't both take the last free video. Failed or cancelled jobs are refunded.
 """
 
+import json
+import logging
 from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Any
 
-from app.db import new_id, now
+from app import alerts
+from app.db import COUNTED_USAGE, new_id, now
 from app.log import fields, get_logger
 from app.plans import LIMIT_KEYS, PLAN_NAMES, plan_limits
 
@@ -21,6 +25,39 @@ LABELS = {
     "video": "tutorials, reels or explainers",
     "edit": "video edits",
 }
+
+
+# Estimated provider cost of one video (Modal + ElevenLabs + model calls), for the global
+# daily spend cap. Override with CUEFRAME_VIDEO_COSTS='{"video": 0.5}'.
+COST_USD = {"lesson": 0.15, "video": 0.40, "edit": 0.10}
+
+
+@lru_cache
+def costs(overrides: str) -> dict[str, float]:
+    return {**COST_USD, **(json.loads(overrides) if overrides.strip() else {})}
+
+
+def today() -> str:
+    d = datetime.now(UTC)
+    return datetime(d.year, d.month, d.day, tzinfo=UTC).isoformat(timespec="milliseconds")
+
+
+def spend(store: Any, settings: Any, since: str | None = None) -> float:
+    """Estimated spend of counted videos since `since` (default: today, UTC)."""
+    price = costs(settings.video_costs)
+    totals = store.usage_totals({"since": since or today()})
+    return round(sum(price.get(c, 0) * n for c, by in totals.items()
+                     for s, n in by.items() if s in COUNTED_USAGE), 2)  # fmt: skip
+
+
+def limits_for(settings: Any, user: dict[str, Any]) -> dict[str, int | None]:
+    """The plan's limits plus referral bonus videos (added to the video caps)."""
+    lim = plan_limits(settings.plan_limits, user.get("plan") or settings.default_plan)
+    bonus = user.get("bonus_videos") or 0
+    for k in ("total", "video"):
+        if lim[k] is not None:
+            lim[k] += bonus
+    return lim
 
 
 def video_kind(mode: str) -> str:
@@ -49,7 +86,7 @@ def over_limit(limits: dict[str, int | None], counts: dict[str, int], category: 
 
 def summary(store: Any, settings: Any, user: dict[str, Any]) -> dict[str, Any]:
     plan = user.get("plan") or settings.default_plan
-    limits = plan_limits(settings.plan_limits, plan)
+    limits = limits_for(settings, user)
     start, end = period()
     counts = store.usage_counts(user["id"], start)
     used = {c: counts.get(c, 0) for c in CATEGORIES}
@@ -59,8 +96,8 @@ def summary(store: Any, settings: Any, user: dict[str, Any]) -> dict[str, Any]:
         if left["total"] is not None:
             left[c] = left["total"] if left[c] is None else min(left[c], left["total"])
     return {"plan": plan, "plan_name": PLAN_NAMES.get(plan, plan.title()), "limits": limits,
-            "used": used, "remaining": left, "period_start": start,
-            "resets_at": end}  # fmt: skip
+            "used": used, "remaining": left, "period_start": start, "resets_at": end,
+            "bonus_videos": user.get("bonus_videos") or 0}  # fmt: skip
 
 
 def refusal(plan: str, limit: str, cap: int | None, resets_at: str) -> str:
@@ -80,15 +117,39 @@ def gate(ctx: Any, category: str, kind: str) -> dict[str, Any] | None:
         log.warning("unmetered job: no user", extra=fields(category=category, kind=kind))
         return None
     plan = user["plan"] or ctx.settings.default_plan
-    limits = plan_limits(ctx.settings.plan_limits, plan)
+    limits = limits_for(ctx.settings, user)
     start, end = period()
+    cap, cost = ctx.settings.daily_spend_cap_usd, costs(ctx.settings.video_costs)[category]
+    capped = cap > 0 and user.get("role") != "admin"
+
+    def blocked(counts: dict[str, int]) -> str | None:
+        if over := over_limit(limits, counts, category):
+            return over
+        if capped and spend(ctx.store, ctx.settings) + cost > cap:
+            return "daily_capacity"
+        return None
+
     row = {"id": new_id("use"), "user_id": user["id"], "session_id": ctx.session_id,
            "conversation_id": ctx.conversation_id, "job_id": ctx.id, "category": category,
            "kind": kind, "plan": plan, "status": "reserved", "created_at": now()}  # fmt: skip
-    counts, blocked = ctx.store.reserve_usage(row, start, lambda c: over_limit(limits, c, category))
-    if blocked is None:
+    counts, blocked_by = ctx.store.reserve_usage(row, start, blocked)
+    if blocked_by is None:
         log.info("usage reserved", extra=fields(category=category, kind=kind, plan=plan))
+        if capped and (spent := spend(ctx.store, ctx.settings)) >= 0.8 * cap:
+            alerts.alert(ctx.settings, f"spend80:{today()[:10]}",
+                         f"Daily spend at ${spent:.2f} of the ${cap:.2f} cap",
+                         level=logging.WARNING, every=86400)  # fmt: skip
         return None
+    blocked = blocked_by
+    if blocked == "daily_capacity":
+        alerts.alert(ctx.settings, f"spend100:{today()[:10]}",
+                     f"Daily spend cap ${cap:.2f} reached; new videos refused until 00:00 UTC",
+                     every=86400)  # fmt: skip
+        if ctx.conversation_id:
+            ctx.reply("Cueframe has reached today's video capacity. Please try again after "
+                      "midnight UTC; nothing was counted against your plan.")  # fmt: skip
+        ctx.emit("usage.limit", {"plan": plan, "limit": blocked, "category": category})
+        return {"limit_reached": blocked, "plan": plan}
     log.warning("usage limit reached", extra=fields(category=category, kind=kind, plan=plan,
                                                     limit=blocked, used=counts))  # fmt: skip
     if ctx.conversation_id:

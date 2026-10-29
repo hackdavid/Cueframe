@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app import endcard, languages
 from app.board import timeline
 from app.board.contracts import BoardPlan, Level, normalize, problems
 from app.jobs import JobContext, JobFailed
@@ -112,10 +113,15 @@ async def _checked(plan: BoardPlan) -> tuple[int, list[str]]:
     return n, bad + failed
 
 
-async def plan(ctx: JobContext, problem: str, level: Level, seconds: int | None) -> BoardPlan:
+async def plan(ctx: JobContext, problem: str, level: Level, seconds: int | None,
+               language: str | None = None) -> BoardPlan:  # fmt: skip
     want = (f"Aim for about {seconds} s of narration in total." if seconds
             else "Take as long as the problem needs; don't pad.")  # fmt: skip
     base = f"Level: {level}\n{want}\nProblem from the student:\n{problem}"
+    if language:  # board writing stays in English/LaTeX; only the voice changes language
+        base += languages.instruction(language) + (
+            " On the board itself write only maths, LaTeX and short English labels."
+        )
     feedback, reviewed = "", False
     prev: BoardPlan | None = None
     for attempt in range(1, TRIES + 1):
@@ -212,12 +218,13 @@ class Runner:
         return (self.local / name).read_bytes()  # type: ignore[operator]
 
 
-async def _voice(p: BoardPlan, work: Path) -> list[tuple[float, list[dict]]]:
+async def _voice(p: BoardPlan, work: Path, voice_id: str | None = None,
+                 ) -> list[tuple[float, list[dict]]]:  # fmt: skip
     sem = asyncio.Semaphore(4)
 
     async def one(i: int, say: str) -> tuple[float, list[dict]]:
         async with sem:
-            audio, words = await speak(say)
+            audio, words = await speak(say, voice_id=voice_id)
         (work / f"s{i}.mp3").write_bytes(audio)
         ws = [w.model_dump() for w in words]
         return (ws[-1]["end"] + 0.1 if ws else 1.0), ws
@@ -226,10 +233,10 @@ async def _voice(p: BoardPlan, work: Path) -> list[tuple[float, list[dict]]]:
 
 
 async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work: Path,
-                 ) -> tuple[BoardPlan, dict, dict, dict]:  # fmt: skip
+                 voice_id: str | None = None) -> tuple[BoardPlan, dict, dict, dict]:  # fmt: skip
     """LaTeX check (repairing the plan from the errors), voice, then the render. The
     voice is recorded while the board is typeset; only a repaired plan re-records it."""
-    voicing, voiced_for = asyncio.create_task(_voice(p, work)), p
+    voicing, voiced_for = asyncio.create_task(_voice(p, work, voice_id)), p
     for attempt in range(3):
         await run.put("plan.json", p.model_dump_json().encode())
         ctx.phase("check", "Typesetting every line of the board")
@@ -258,7 +265,7 @@ async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work:
         p = fixed
     if voiced_for is not p:
         voicing.cancel()
-        voicing = asyncio.create_task(_voice(p, work))
+        voicing = asyncio.create_task(_voice(p, work, voice_id))
     ctx.phase("voice", "Recording the teacher's voice")
     voiced = await voicing
     tl = timeline.build(p, voiced)
@@ -314,10 +321,15 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
     if not conv or ctx.llm is None or not ctx.llm.configured:
         raise ValueError("board lessons need a conversation and a model")
     t0 = time.monotonic()
+    language = (ctx.input.get("job_input") or {}).get("language") or languages.detect(problem)
     problem = await from_photo(ctx, problem)
     level = await clarify(ctx, level)
     ctx.phase("plan", "Planning the board")
-    p = await plan(ctx, problem, level, seconds)
+    if language:
+        ctx.reply(f"I'll teach this in **{languages.name(language)}**; the board stays in "
+                  "maths notation.")  # fmt: skip
+    p = await plan(ctx, problem, level, seconds, language)
+    vid = languages.voice_id(language)
     ctx.reply(f"**{p.title}**: here's the board plan ({level}).\n\n" + describe(p))
     row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, "board", p.title,
                                     {"board": p.model_dump(), "problem": problem})  # fmt: skip
@@ -326,7 +338,7 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
     work = ctx.settings.data_dir / "board" / tid
     work.mkdir(parents=True, exist_ok=True)
     if ctx.settings.board_runner == "local":
-        p, tl, chk, res = await _board(ctx, Runner(local=work), p, problem, work)
+        p, tl, chk, res = await _board(ctx, Runner(local=work), p, problem, work, vid)
     else:
         mgr = ctx._manager.sandboxes
         cfg = dataclasses.replace(ctx.settings, sandbox_image="board",
@@ -335,9 +347,10 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
         ctx.phase("sandbox", "Starting the board renderer")
         async with mgr.session(ctx.id, ctx.conversation_id, settings=cfg) as (sid, box):  # noqa: SIM117
             async with mgr.busy(sid):
-                p, tl, chk, res = await _board(ctx, Runner(box=box), p, problem, work)
+                p, tl, chk, res = await _board(ctx, Runner(box=box), p, problem, work, vid)
     ctx.phase("mix", "Adding the voice and captions")
     video = await asyncio.to_thread(_mix, work, tl, len(p.steps))
+    video = await endcard.brand(ctx, video)
     storage = ctx._manager.storage
     up = {
         "video": await storage.put(f"tutorials/{tid}/video-v1.mp4", video.read_bytes(),
@@ -352,7 +365,7 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
              "checks": n_checks, "board_height": chk["board_height"],
              "camera_moves": chk["camera_moves"], "render_seconds": res["render_seconds"],
              "parts": res["parts"], "total_seconds": round(time.monotonic() - t0, 1)}  # fmt: skip
-    output = {**up, "stats": stats, "job_id": ctx.id}
+    output = {**up, "stats": stats, "job_id": ctx.id, "language": language or "en"}
     ctx.store.update_tutorial(tid, status="ready", version=1, output=output,
                               spec={"board": p.model_dump(), "problem": problem})  # fmt: skip
     ctx.emit("tutorial.ready", {"tutorial_id": tid, "version": 1, "video_url": up["video"]["url"]})
@@ -360,6 +373,7 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
         f"**Your lesson is ready: {p.title}** ({tl['seconds']:.0f} s, 1080p)\n\n"
         f'<video src="{up["video"]["url"]}" poster="{up["thumbnail"]["url"]}" controls></video>'
         f"\n\n[Captions (.srt)]({up['captions']['url']}) · [Thumbnail]({up['thumbnail']['url']})"
+        f" · [Get a share link](/share/{tid})"
         f"\n\n{len(p.steps)} steps, {n_checks} SymPy checks passed. The board is "
         f"{chk['board_height']:.1f} units tall (one screen is 8); the camera scrolled "
         f"{chk['camera_moves'] - 1} times. Rendered in {res['render_seconds']:.0f} s "

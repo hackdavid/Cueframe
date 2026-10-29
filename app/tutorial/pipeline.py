@@ -20,6 +20,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app import endcard, languages
 from app.agents.trending import brief_text
 from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
@@ -389,6 +390,7 @@ async def publish(
                            force={s.id for s in tut.states}, on_retry=heal)  # fmt: skip
         issues = await qa.final(tut, res["video"], res["captions"], res["stats"]["duration"])
     issues = [*(cap.get("qa") or []), *issues]
+    res["video"] = await endcard.brand(ctx, res["video"])
     n = row["version"] + 1
     up = {
         "video": await storage.put(f"tutorials/{tid}/video-v{n}.mp4",
@@ -429,7 +431,8 @@ async def publish(
         f"{healed + chr(10) + chr(10) if healed else ''}"
         f'<video src="{up["video"]["url"]}" poster="{up["thumbnail"]["url"]}" controls></video>\n\n'
         f"[Captions (.srt)]({up['captions']['url']}) · [Thumbnail]({up['thumbnail']['url']}) · "
-        f"[YouTube title, description and chapters]({up['youtube']['url']})\n\n"
+        f"[YouTube title, description and chapters]({up['youtube']['url']}) · "
+        f"[Get a share link](/share/{tid})\n\n"
         f"Rendered {st['rendered']} of {st['states']} steps in {st['render_seconds']:.0f} s.{cost}\n\n"  # noqa: E501
         "| # | Step | Verified | Length |\n|---|---|---|---|\n" + rows + "\n\n"
         'To change something, just say it, e.g. *"make the intro shorter"* or '
@@ -479,7 +482,11 @@ async def make(
             kicker = f"TRENDING · {found.source.upper()}"[:44]
             ctx.reply(f"**Trending pick: {found.name}** ({found.source}, {found.why_trending})"
                       f"\n\n{found.one_liner}\n\n{found.url}")  # fmt: skip
-        planned = await planner.plan(ctx, goal, mode=mode, brief=brief, seconds=seconds)
+        language = (ctx.input.get("job_input") or {}).get("language") or languages.detect(
+            ctx.input.get("text")
+        )
+        planned = await planner.plan(ctx, goal, mode=mode, brief=brief, seconds=seconds,
+                                     language=language)  # fmt: skip
         if isinstance(planned, str):
             ctx.reply(f"I can't make that tutorial: {planned}")
             return {"routed": "make_tutorial", "planned": False, "reason": planned}

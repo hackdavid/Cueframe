@@ -350,10 +350,21 @@
     $("#usage-bar").style.width = cap ? `${Math.min(100, (100 * used) / cap)}%` : "0%";
     let text = cap == null ? `${u.used.total} videos this month` : `${used} of ${cap} videos used · resets ${resets}`;
     if (cap != null && u.limits.video != null) text += ` · ${u.remaining.video} tutorial/reel left`;
+    if (u.bonus_videos) text += ` · includes ${u.bonus_videos} bonus`;
     $("#usage-text").textContent = text;
+    if (u.referral) {
+      $("#ref-url").value = u.referral.url;
+      $("#ref-bonus").textContent = u.referral.bonus_per_friend;
+      $("#ref-stats").textContent = `${u.referral.invited || 0} joined · ${u.referral.credited || 0} made a video`;
+    }
     $("#usage").classList.remove("hidden");
   }
   loadUsage();
+  $("#ref-copy")?.addEventListener("click", async () => {
+    await navigator.clipboard?.writeText($("#ref-url").value).catch(() => {});
+    $("#ref-copy").textContent = "Copied";
+    setTimeout(() => ($("#ref-copy").textContent = "Copy"), 1500);
+  });
 
   function handleEvent(ev) {
     const p = ev.payload;

@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from app import alerts
 from app.config import Settings
 from app.db import Store, now
 from app.events import EventBus
@@ -209,7 +210,11 @@ class JobManager:
             job = self.store.update_job(
                 job["id"], status="succeeded", progress=1.0, result=result or {}, finished_at=now()
             )
-            self.store.finish_usage(job["id"], "succeeded", _usage_detail(result))
+            if self.store.finish_usage(job["id"], "succeeded", _usage_detail(result)) and (
+                ref := self.store.credit_referral(job["user_id"], self.settings.referral_bonus)
+            ):
+                bonus = self.settings.referral_bonus
+                log.info("referral credited", extra=fields(referrer=ref, bonus=bonus))
             self._publish_job("job.succeeded", job)
         except asyncio.CancelledError:
             job = self.store.update_job(job["id"], status="cancelled", finished_at=now())
@@ -225,6 +230,13 @@ class JobManager:
                 finished_at=now(),
             )
             self.store.finish_usage(job["id"], "failed", {"error": job["error"][:300]})
+            if self.settings.sentry_dsn:
+                import sentry_sdk
+
+                sentry_sdk.capture_exception(exc)
+            alerts.alert(self.settings, f"job:{job['id']}",
+                         f"{job['kind']} job {job['id']} failed: {job['error'][:300]}",
+                         kind=job["kind"])  # fmt: skip
             self._publish_job("job.failed", job)
         finally:
             self._tasks.pop(job["id"], None)

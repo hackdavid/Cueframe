@@ -205,7 +205,7 @@ def test_chat_makes_a_checked_board_lesson(client, monkeypatch):
     client.app.state.jobs.llm = llm
     seen = {}
 
-    async def board(ctx, run, p, problem, work):
+    async def board(ctx, run, p, problem, work, vid=None):
         seen["box"] = run.box
         tl = timeline.build(p, _voiced(p))
         return (
@@ -317,7 +317,7 @@ def test_photo_question_is_read_then_taught(client, monkeypatch, settings):
     llm = BoardLLM([SIMPLE])
     client.app.state.jobs.llm = llm
 
-    async def board(ctx, run, p, problem, work):
+    async def board(ctx, run, p, problem, work, vid=None):
         tl = timeline.build(p, _voiced(p))
         return (
             p,

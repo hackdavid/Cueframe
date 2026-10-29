@@ -32,6 +32,7 @@ PLANS = [
             "Photo of a question → full lesson",
             "Child, school and undergrad levels",
             "'Your turn' practice in every lesson",
+            "Hindi and 16 more narration languages",
             "No watermark, download MP4 + captions",
         ],
     },

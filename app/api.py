@@ -15,7 +15,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from app import auth, services, usage
+from app import auth, guard, services, usage
 from app.agents import feed
 from app.agents.contracts import ResearchRequest, ResearchResult
 from app.agents.docs_research import DocsResearchAgent
@@ -67,8 +67,45 @@ def health() -> dict[str, str]:
 
 
 # ---------- auth ----------
+class SignupIn(BaseModel):
+    username: str = Field(min_length=3, max_length=60, pattern=r"^[\w.@+-]+$")
+    password: str = Field(min_length=8, max_length=200)
+    captcha: str | None = None
+    ref: str | None = Field(default=None, max_length=40)
+
+
+def _set_session(request: Request, response: Response, token: str) -> None:
+    response.set_cookie(auth.COOKIE, token, httponly=True, samesite="lax",
+                        secure=_s(request).settings.cookie_secure,
+                        max_age=60 * 60 * 24 * 30)  # fmt: skip
+
+
+@router.post("/auth/signup", status_code=201, tags=["auth"])
+async def signup(request: Request, response: Response, body: SignupIn) -> dict[str, Any]:
+    """Create a Free account (when CUEFRAME_OPEN_SIGNUP is on). Rate-limited per IP and
+    behind a Cloudflare Turnstile captcha when it's configured. `ref` (or the `cf_ref`
+    cookie from a /r/CODE link) credits the inviting user."""
+    s, ip = _s(request), guard.client_ip(request)
+    if not s.settings.open_signup:
+        raise HTTPException(403, "Sign-up is closed")
+    guard.check(getattr(s, "limiter", None), "signup", ip, s.settings.rate_signup_per_hour, 3600)
+    if not await guard.captcha_ok(s.settings, body.captcha, ip):
+        raise HTTPException(400, "Please complete the captcha")
+    try:
+        token, user = auth.signup(s.store, body.username, body.password,
+                                  plan=s.settings.default_plan,
+                                  ref=body.ref or request.cookies.get("cf_ref"))  # fmt: skip
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    _set_session(request, response, token)
+    return {"token": token, "user": user}
+
+
 @router.post("/auth/login", tags=["auth"])
 def login(request: Request, response: Response, body: LoginIn) -> dict[str, Any]:
+    s = _s(request)
+    guard.check(getattr(s, "limiter", None), "login", guard.client_ip(request),
+                s.settings.rate_login_per_min, 60)  # fmt: skip
     result = auth.login(_s(request).store, body.username, body.password)
     if result is None:
         raise HTTPException(401, "Wrong username or password")
@@ -441,7 +478,52 @@ def my_usage(request: Request, user: User) -> dict[str, Any]:
     me = s.store.get_user(user["id"]) or user
     out = usage.summary(s.store, s.settings, me)
     out["recent"] = s.store.list_usage({"user_id": user["id"]}, limit=20)
+    code = s.store.ensure_ref_code(user["id"])
+    out["referral"] = {"code": code, "url": f"{s.settings.public_url.rstrip('/')}/r/{code}",
+                       "bonus_per_friend": s.settings.referral_bonus,
+                       **s.store.referral_counts(user["id"])}  # fmt: skip
+    out["watermark"] = out["plan"] in s.settings.watermark_plans
     return out
+
+
+class ShareIn(BaseModel):
+    public: bool = True
+
+
+@router.post("/tutorials/{tid}/share", tags=["tutorials"])
+def share_tutorial(request: Request, tid: str, body: ShareIn, user: User) -> dict[str, Any]:
+    """Turn the public share page (/v/SLUG) of a finished video on or off."""
+    s = _s(request)
+    tut = _tutorial_or_404(request, tid, user)
+    if not (tut.get("output") or {}).get("video"):
+        raise HTTPException(409, "The video isn't ready yet")
+    slug = s.store.share_tutorial(tid, body.public)
+    log.info("share", extra=fields(tutorial_id=tid, public=body.public))
+    return {"public": body.public, "slug": slug,
+            "url": f"{s.settings.public_url.rstrip('/')}/v/{slug}"}  # fmt: skip
+
+
+@router.get("/admin/stats", tags=["admin"])
+def admin_stats(request: Request, admin: Admin, hours: int = 24) -> dict[str, Any]:
+    """Monitoring: jobs by kind (statuses, success rate, avg/p95 seconds, top errors), today's
+    usage and estimated spend against the daily cap, and running sandboxes."""
+    from datetime import UTC, datetime, timedelta
+
+    s = _s(request)
+    since = (datetime.now(UTC) - timedelta(hours=max(1, min(hours, 24 * 31)))).isoformat(
+        timespec="milliseconds"
+    )
+    return {
+        "since": since,
+        "jobs": s.store.job_stats(since),
+        "usage_today": s.store.usage_totals({"since": usage.today()}),
+        "spend_today_usd": usage.spend(s.store, s.settings),
+        "spend_cap_usd": s.settings.daily_spend_cap_usd,
+        "sandboxes_active": len(s.store.list_sandboxes(active_only=True)),
+        "alerts": s.store.list_logs({"logger": "cueframe.alert", "since": since}, 20),
+        "sentry": bool(s.settings.sentry_dsn),
+        "alert_webhook": bool(s.settings.alert_webhook),
+    }
 
 
 @router.get("/admin/usage", tags=["admin"])

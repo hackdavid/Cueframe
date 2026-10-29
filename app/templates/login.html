@@ -1,33 +1,62 @@
 {% extends "base.html" %}
-{% block title %}Log in · Cueframe{% endblock %}
+{% block title %}{{ "Create your account" if signup else "Log in" }} · Cueframe{% endblock %}
+{% block head %}{% if turnstile_site_key %}<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>{% endif %}{% endblock %}
 {% block body %}
-<main class="grid min-h-[calc(100vh-3.5rem)] place-items-center px-4">
-  <form id="login" class="w-full max-w-sm rounded-2xl border border-white/10 bg-zinc-900/70 p-6 shadow-2xl">
-    <h1 class="text-xl font-semibold">Log in to the dashboard</h1>
-    <p class="mt-1 text-sm text-zinc-400">Use the account configured on the server.</p>
-    <label class="mt-6 block text-sm text-zinc-300">Username
+<main class="flex min-h-[70vh] items-center justify-center px-4 py-12">
+  <form id="login" data-mode="{{ 'signup' if signup else 'login' }}" class="w-full max-w-sm rounded-2xl border border-white/10 bg-zinc-900/70 p-6 shadow-2xl">
+    <h1 id="form-title" class="text-xl font-semibold">{{ "Create your free account" if signup else "Log in to Cueframe" }}</h1>
+    <p id="form-sub" class="mt-1 text-sm text-zinc-400 {{ '' if signup else 'hidden' }}">3 free videos a month. No card needed.{% if ref %} You were invited by a friend.{% endif %}</p>
+    <label class="mt-5 block text-sm text-zinc-300">Username
       <input name="username" autocomplete="username" required autofocus class="mt-1 w-full rounded-lg border border-white/10 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-sky-500">
     </label>
     <label class="mt-4 block text-sm text-zinc-300">Password
       <input name="password" type="password" autocomplete="current-password" required class="mt-1 w-full rounded-lg border border-white/10 bg-zinc-950 px-3 py-2 text-sm outline-none focus:border-sky-500">
     </label>
+    <input type="hidden" name="ref" value="{{ ref }}">
+    {% if turnstile_site_key %}<div id="captcha" class="mt-4 {{ '' if signup else 'hidden' }}"><div class="cf-turnstile" data-theme="dark" data-sitekey="{{ turnstile_site_key }}"></div></div>{% endif %}
     <p id="login-error" class="mt-3 hidden text-sm text-red-400"></p>
-    <button class="mt-6 w-full rounded-lg bg-sky-600 py-2 text-sm font-medium text-white hover:bg-sky-500">Log in</button>
+    <button id="submit" class="mt-6 w-full rounded-lg bg-sky-600 py-2 text-sm font-medium text-white hover:bg-sky-500">{{ "Create account" if signup else "Log in" }}</button>
+    {% if open_signup %}
+    <p class="mt-4 text-center text-sm text-zinc-400"><span id="switch-text">{{ "Already have an account?" if signup else "New to Cueframe?" }}</span>
+      <button type="button" id="switch" class="text-sky-400 hover:underline">{{ "Log in" if signup else "Create a free account" }}</button></p>
+    {% endif %}
   </form>
 </main>
 <script>
-  document.getElementById("login").addEventListener("submit", async (e) => {
+  const f = document.getElementById("login");
+  const setMode = (mode) => {
+    const up = mode === "signup";
+    f.dataset.mode = mode;
+    document.getElementById("form-title").textContent = up ? "Create your free account" : "Log in to Cueframe";
+    document.getElementById("form-sub").classList.toggle("hidden", !up);
+    document.getElementById("submit").textContent = up ? "Create account" : "Log in";
+    document.getElementById("captcha")?.classList.toggle("hidden", !up);
+    f.password.autocomplete = up ? "new-password" : "current-password";
+    const sw = document.getElementById("switch");
+    if (sw) {
+      sw.textContent = up ? "Log in" : "Create a free account";
+      document.getElementById("switch-text").textContent = up ? "Already have an account?" : "New to Cueframe?";
+    }
+  };
+  document.getElementById("switch")?.addEventListener("click", () => setMode(f.dataset.mode === "signup" ? "login" : "signup"));
+  setMode(f.dataset.mode);
+  f.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const form = new FormData(e.target);
-    const res = await fetch("/api/auth/login", {
+    const form = new FormData(f);
+    const up = f.dataset.mode === "signup";
+    const body = { username: form.get("username"), password: form.get("password") };
+    if (up) Object.assign(body, { ref: form.get("ref") || null, captcha: form.get("cf-turnstile-response") || null });
+    const res = await fetch(up ? "/api/auth/signup" : "/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: form.get("username"), password: form.get("password") }),
+      body: JSON.stringify(body),
     });
     if (res.ok) return location.assign({{ next | tojson }});
     const err = document.getElementById("login-error");
-    err.textContent = (await res.json().catch(() => ({}))).detail || "Login failed";
+    const detail = (await res.json().catch(() => ({}))).detail;
+    err.textContent = Array.isArray(detail) ? "Username: 3+ letters, numbers or . _ @ + -; password: 8+ characters" : detail || "Something went wrong";
     err.classList.remove("hidden");
+    window.turnstile?.reset();
   });
 </script>
 {% endblock %}
