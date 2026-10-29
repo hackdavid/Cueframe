@@ -33,6 +33,7 @@ SAM 3.1, Muse Image, Muse Voice Transcribe). Its design follows three ideas:
 | Background jobs | `@job_handler("kind")` registry with phases, progress, cancellation and crash recovery (`interrupted`); each job links to its conversation, connection and a future `sandbox_id` |
 | Realtime | `/api/ws` with persisted connection ids; opening a conversation reports `has_pending_job`, so a refresh re-attaches instead of starting a new job |
 | Self-healing tutorials | Failed steps are rewritten from their real output and re-recorded, broken sandboxes replaced, transient ElevenLabs/R2/render errors retried, the finished MP4 checked (size, length, sound, captions, black frames) and interrupted jobs resumed after a restart; every fix is shown in the chat ([docs](docs/tutorial-renderer.md#self-healing)) |
+| Math board tutor | "Solve…", "prove…" or "integrate…" in chat becomes a narrated board lesson, drawn (not recorded) from a checked board plan: LaTeX rows, graphs, shaded areas, Riemann sums, geometry in real coordinates. Every claim is verified with SymPy before drawing; the board grows downward without limit and a fixed 16:9 camera follows it. Renders in a headless Modal sandbox or on the server ([docs](docs/math-board.md)) |
 | Docs research agent | Meta `web_search` finds the official docs, we fetch and clean the pages locally, and the model reasons over text and doc images to produce Pydantic-validated steps with confidence. It falls back to model knowledge, clearly labelled |
 | Shared infrastructure | One logger (`app/log.py`, job id on every line plus key=value fields), one Meta client (`app/llm.py`: retries, JSON-schema contracts, token and cost accounting) |
 
@@ -93,6 +94,7 @@ uv run ruff check .       # lint
 | `CUEFRAME_MODAL_PROFILE` | unset | Modal CLI profile to use; overrides saved `MODAL_TOKEN_*` env vars |
 | `CUEFRAME_SANDBOX_IDLE_SECONDS` / `CUEFRAME_SANDBOX_MAX_SECONDS` | `120` / `900` | Auto-shutdown limits (also enforced by Modal) |
 | `CUEFRAME_SANDBOX_APT_EXTRA` | empty | Extra Debian packages baked into the desktop image (e.g. `gimp`) |
+| `CUEFRAME_BOARD_RUNNER` / `CUEFRAME_BOARD_CPU` | `sandbox` / `8` | Where math boards render (`sandbox` = headless Modal image, `local` = this server, needs Manim + LaTeX) and with how many CPUs (one parallel part each) |
 | `CUEFRAME_SANDBOX_USD_PER_HOUR` | `0.11` | Used for the per-sandbox cost estimate |
 | `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | unset | Store recordings/screenshots in R2 (else `data/artifacts`) |
 | `CUEFRAME_R2_PREFIX` | `cueframe` | Key prefix inside the bucket |

@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from app.board import tutor
 from app.handlers.demo import demo_reply
 from app.handlers.research import docs_research
 from app.jobs import JobContext, JobManager, job_handler
@@ -20,6 +21,13 @@ async def tutorial_make(ctx: JobContext) -> dict[str, Any]:
     return await pipeline.make(ctx, rid, goal=ctx.input["text"], mode=mode,
                                trending=bool(ji.get("trending")),
                                seconds=ji.get("seconds"))  # fmt: skip
+
+
+@job_handler("board.make")
+async def board_make(ctx: JobContext) -> dict[str, Any]:
+    ji = ctx.input.get("job_input") or {}
+    text, level, seconds = ctx.input["text"], ji.get("level"), ji.get("seconds")
+    return await tutor.make(ctx, text, level=level, seconds=seconds)
 
 
 @job_handler("tutorial.edit")
@@ -49,11 +57,12 @@ def resume_interrupted(jobs: JobManager, interrupted: list[dict[str, Any]]) -> l
 
 
 class Route(BaseModel):
-    intent: Literal["make_tutorial", "edit_tutorial", "chat"]
+    intent: Literal["make_tutorial", "edit_tutorial", "math_tutor", "chat"]
     recipe: str | None = None
     format: Literal["tutorial", "reel", "explainer"] | None = None
     seconds: int | None = None
     trending: bool = False
+    level: Literal["child", "school", "undergrad"] | None = None
 
 
 ROUTER = """You route messages in Cueframe, an app that makes narrated video tutorials
@@ -72,6 +81,12 @@ from real runs in a Linux desktop sandbox. Pick:
 - edit_tutorial: the user wants to change the tutorial already in this conversation
   (narration, wording, tone, hook, length, cutting or fast-forwarding a part, zoom,
   highlights, title, re-render).
+- math_tutor: the user wants a math problem solved, explained or taught step by step,
+  a formula derived or proved, an equation, derivative, integral or limit worked out,
+  or a geometry construction or proof. It becomes a narrated board lesson (drawn, not
+  a screen recording). Set `level` to "child" (primary school), "school" (high school)
+  or "undergrad" when the message says or clearly implies who it's for, else null;
+  `seconds` if they ask for a length.
 - chat: anything else (questions, docs lookups, small talk).
 
 Recipes:
@@ -141,6 +156,8 @@ async def assistant_reply(ctx: JobContext) -> dict[str, Any] | None:
             mode, seconds = await formats.clarify(ctx, r.format, r.seconds)
         return await pipeline.make(ctx, rid, goal=ctx.input.get("text"), mode=mode,
                                    trending=r.trending, seconds=seconds)  # fmt: skip
+    if r.intent == "math_tutor" and ctx.llm is not None and ctx.llm.configured:
+        return await tutor.make(ctx, ctx.input.get("text", ""), level=r.level, seconds=r.seconds)
     if r.intent == "edit_tutorial" and tuts:
         return await pipeline.edit(ctx, tuts[0]["id"], instruction=ctx.input.get("text"))
     if ctx.llm is not None and ctx.llm.configured:
