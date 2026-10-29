@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from app import usage
 from app.board import tutor
 from app.handlers.demo import demo_reply
 from app.handlers.research import docs_research
@@ -18,6 +19,8 @@ async def tutorial_make(ctx: JobContext) -> dict[str, Any]:
     ji = ctx.input.get("job_input") or {}
     rid = ji.get("recipe") or recipes.match(ctx.input["text"])
     mode = ji.get("mode") if ji.get("mode") in ("influencer", "explainer") else "tutorial"
+    if stop := usage.gate(ctx, "video", usage.video_kind(mode)):
+        return stop
     return await pipeline.make(ctx, rid, goal=ctx.input["text"], mode=mode,
                                trending=bool(ji.get("trending")),
                                seconds=ji.get("seconds"))  # fmt: skip
@@ -27,6 +30,8 @@ async def tutorial_make(ctx: JobContext) -> dict[str, Any]:
 async def board_make(ctx: JobContext) -> dict[str, Any]:
     ji = ctx.input.get("job_input") or {}
     text, level, seconds = ctx.input["text"], ji.get("level"), ji.get("seconds")
+    if stop := usage.gate(ctx, "lesson", "lesson"):
+        return stop
     return await tutor.make(ctx, text, level=level, seconds=seconds)
 
 
@@ -34,6 +39,8 @@ async def board_make(ctx: JobContext) -> dict[str, Any]:
 async def tutorial_edit(ctx: JobContext) -> dict[str, Any]:
     ji = ctx.input.get("job_input") or {}
     edits = ji.get("edits")
+    if stop := usage.gate(ctx, "edit", "edit"):
+        return stop
     return await pipeline.edit(
         ctx,
         ji["tutorial_id"],
@@ -52,7 +59,8 @@ def resume_interrupted(jobs: JobManager, interrupted: list[dict[str, Any]]) -> l
     out = []
     for t in jobs.store.tutorials_to_resume([j["id"] for j in interrupted]):
         payload = {"text": "", "attachments": [], "job_input": {"tutorial_id": t["id"]}}
-        out.append(jobs.submit("tutorial.resume", payload, t["conversation_id"])["id"])
+        job = jobs.submit("tutorial.resume", payload, t["conversation_id"], user_id=t["user_id"])
+        out.append(job["id"])
     return out
 
 
@@ -153,13 +161,20 @@ async def assistant_reply(ctx: JobContext) -> dict[str, Any] | None:
     if r.intent == "make_tutorial":
         rid = None if r.trending else r.recipe
         mode, seconds = "tutorial", None
+        if stop := usage.gate(ctx, "video", r.format or "video"):
+            return stop
         if not rid and ctx.llm is not None and ctx.llm.configured:  # recipes are fixed scripts
             mode, seconds = await formats.clarify(ctx, r.format, r.seconds)
+        ctx.store.update_usage(ctx.id, kind=usage.video_kind(mode))
         return await pipeline.make(ctx, rid, goal=ctx.input.get("text"), mode=mode,
                                    trending=r.trending, seconds=seconds)  # fmt: skip
     if r.intent == "math_tutor" and ctx.llm is not None and ctx.llm.configured:
+        if stop := usage.gate(ctx, "lesson", "lesson"):
+            return stop
         return await tutor.make(ctx, ctx.input.get("text", ""), level=r.level, seconds=r.seconds)
     if r.intent == "edit_tutorial" and tuts:
+        if stop := usage.gate(ctx, "edit", "edit"):
+            return stop
         return await pipeline.edit(ctx, tuts[0]["id"], instruction=ctx.input.get("text"))
     if ctx.llm is not None and ctx.llm.configured:
         return await docs_research(ctx)

@@ -123,9 +123,60 @@ CREATE TABLE IF NOT EXISTS events (
     payload TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS usage_records (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    session_id TEXT,
+    conversation_id TEXT,
+    job_id TEXT,
+    category TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    status TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_usage_user ON usage_records(user_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_usage_session ON usage_records(session_id, created_at);
+CREATE INDEX IF NOT EXISTS ix_usage_job ON usage_records(job_id);
+CREATE TABLE IF NOT EXISTS logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    level TEXT NOT NULL,
+    levelno INTEGER NOT NULL,
+    logger TEXT NOT NULL,
+    message TEXT NOT NULL,
+    user_id TEXT,
+    session_id TEXT,
+    conversation_id TEXT,
+    job_id TEXT,
+    fields TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS ix_logs_user ON logs(user_id, id);
+CREATE INDEX IF NOT EXISTS ix_logs_session ON logs(session_id, id);
+CREATE INDEX IF NOT EXISTS ix_logs_job ON logs(job_id, id);
+CREATE INDEX IF NOT EXISTS ix_logs_ts ON logs(ts);
 """
 
 ACTIVE_JOB_STATUSES = ("queued", "running", "waiting_input")
+COUNTED_USAGE = ("reserved", "succeeded", "interrupted")  # failed/cancelled are refunded
+USER_COLS = "id, username, email, display_name, plan, role, auth_provider, created_at"
+
+
+def _where(filters: dict[str, Any], cols: Collection[str], ts: str, alias: str = "") -> tuple:
+    parts, args = [], []
+    for k in cols:
+        if filters.get(k):
+            parts.append(f"{alias}{k} = ?")
+            args.append(filters[k])
+    if filters.get("since"):
+        parts.append(f"{alias}{ts} >= ?")
+        args.append(filters["since"])
+    if filters.get("until"):
+        parts.append(f"{alias}{ts} < ?")
+        args.append(filters["until"])
+    return (" WHERE " + " AND ".join(parts)) if parts else "", args
 
 
 def now() -> str:
@@ -150,7 +201,28 @@ class Store:
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(tutorials)")}
         if "active_job" not in cols:  # the job currently working on the tutorial
             self._conn.execute("ALTER TABLE tutorials ADD COLUMN active_job TEXT")
-        self._lock = threading.Lock()
+        self._add_columns("users", {
+            "plan": "TEXT NOT NULL DEFAULT 'free'", "role": "TEXT NOT NULL DEFAULT 'user'",
+            "email": "TEXT", "display_name": "TEXT",
+            "auth_provider": "TEXT NOT NULL DEFAULT 'password'", "provider_uid": "TEXT",
+        })  # fmt: skip
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_users_identity ON users(auth_provider, "
+            "provider_uid) WHERE provider_uid IS NOT NULL"
+        )
+        self._add_columns("sessions", {"id": "TEXT"})
+        self._conn.execute(
+            "UPDATE sessions SET id = 'ses_' || lower(hex(randomblob(8))) WHERE id IS NULL"
+        )
+        self._add_columns("jobs", {"user_id": "TEXT", "session_id": "TEXT"})
+        self._conn.execute("CREATE INDEX IF NOT EXISTS ix_jobs_user ON jobs(user_id, created_at)")
+        self._lock = threading.RLock()
+
+    def _add_columns(self, table: str, cols: dict[str, str]) -> None:
+        have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+        for col, decl in cols.items():
+            if col not in have:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
     def close(self) -> None:
         self._conn.close()
@@ -225,34 +297,80 @@ class Store:
         return self._all(sql + " ORDER BY s.created_at DESC", tuple(args))
 
     # users and auth sessions
-    def upsert_user(self, username: str, password_hash: str) -> dict[str, Any]:
+    def upsert_user(
+        self, username: str, password_hash: str, *, plan: str = "free", role: str = "user"
+    ) -> dict[str, Any]:
+        """Create or re-sync a password account (its password, plan and role)."""
         user = self.get_user_by_name(username)
         if user:
             self._exec(
-                "UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user["id"])
+                "UPDATE users SET password_hash = ?, plan = ?, role = ? WHERE id = ?",
+                (password_hash, plan, role, user["id"]),
             )
         else:
             self._insert(
                 "users",
                 {"id": new_id("usr"), "username": username, "password_hash": password_hash,
-                 "created_at": now()},
+                 "plan": plan, "role": role, "created_at": now()},
             )  # fmt: skip
         return self.get_user_by_name(username)  # type: ignore[return-value]
+
+    def upsert_identity(
+        self, provider: str, uid: str, *, email: str | None, name: str | None, plan: str
+    ) -> dict[str, Any]:
+        """The account for an external sign-in (e.g. Firebase Google); created on first use."""
+        sql = "SELECT * FROM users WHERE auth_provider = ? AND provider_uid = ?"
+        user = self._one(sql, (provider, uid))
+        if user:
+            self._exec(
+                "UPDATE users SET email = ?, display_name = ? WHERE id = ?",
+                (email, name, user["id"]),
+            )
+        else:
+            base = email or f"{provider}:{uid}"
+            username, n = base, 1
+            while self.get_user_by_name(username):
+                n += 1
+                username = f"{base}#{n}"
+            self._insert(
+                "users",
+                {"id": new_id("usr"), "username": username, "password_hash": "",
+                 "email": email, "display_name": name, "plan": plan, "role": "user",
+                 "auth_provider": provider, "provider_uid": uid, "created_at": now()},
+            )  # fmt: skip
+        return self._one(sql, (provider, uid))  # type: ignore[return-value]
+
+    def get_user(self, uid: str) -> dict[str, Any] | None:
+        return self._one(f"SELECT {USER_COLS} FROM users WHERE id = ?", (uid,))
+
+    def list_users(self) -> list[dict[str, Any]]:
+        return self._all(f"SELECT {USER_COLS} FROM users ORDER BY created_at")
+
+    def update_user(self, uid: str, **fields: Any) -> dict[str, Any] | None:
+        fields = {k: v for k, v in fields.items() if k in ("plan", "role", "email", "display_name")}
+        if fields:
+            cols = ", ".join(f"{k} = ?" for k in fields)
+            self._exec(f"UPDATE users SET {cols} WHERE id = ?", (*fields.values(), uid))
+        return self.get_user(uid)
 
     def get_user_by_name(self, username: str) -> dict[str, Any] | None:
         return self._one("SELECT * FROM users WHERE username = ?", (username,))
 
-    def create_session(self, token_hash: str, user_id: str) -> None:
-        ts = now()
+    def create_session(self, token_hash: str, user_id: str) -> str:
+        """Store a login; returns its public session id (logs and usage are tagged with it)."""
+        sid, ts = new_id("ses"), now()
         self._insert(
             "sessions",
-            {"token_hash": token_hash, "user_id": user_id, "created_at": ts, "last_seen_at": ts},
-        )
+            {"id": sid, "token_hash": token_hash, "user_id": user_id, "created_at": ts,
+             "last_seen_at": ts},
+        )  # fmt: skip
+        return sid
 
     def user_for_session(self, token_hash: str) -> dict[str, Any] | None:
         user = self._one(
-            """SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id
-               WHERE s.token_hash = ?""",
+            """SELECT u.id, u.username, u.email, u.display_name, u.plan, u.role,
+                      s.id AS session_id
+               FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?""",
             (token_hash,),
         )
         if user:
@@ -405,12 +523,16 @@ class Store:
         kind: str,
         payload: dict[str, Any],
         connection_id: str | None = None,
+        *,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         jid = new_id("j")
         self._insert(
             "jobs",
             {"id": jid, "conversation_id": cid, "kind": kind, "status": "queued",
-             "input": json.dumps(payload), "connection_id": connection_id, "created_at": now()},
+             "input": json.dumps(payload), "connection_id": connection_id, "created_at": now(),
+             "user_id": user_id, "session_id": session_id},
         )  # fmt: skip
         return self.get_job(jid)  # type: ignore[return-value]
 
@@ -451,6 +573,7 @@ class Store:
             "SELECT id FROM jobs WHERE status IN ('queued', 'running', 'waiting_input')"
         )
         for row in stale:
+            self.finish_usage(row["id"], "interrupted")
             self.update_job(
                 row["id"], status="interrupted", error="Server restarted", finished_at=now()
             )
@@ -542,6 +665,102 @@ class Store:
         row = self._one("SELECT COALESCE(MAX(seq), 0) AS seq FROM events")
         return int(row["seq"]) if row else 0
 
+    # usage: one record per metered video job, counted per calendar month
+    def usage_counts(self, user_id: str, since: str) -> dict[str, int]:
+        marks = ", ".join("?" * len(COUNTED_USAGE))
+        rows = self._all(
+            f"SELECT category, COUNT(*) AS n FROM usage_records WHERE user_id = ? "
+            f"AND created_at >= ? AND status IN ({marks}) GROUP BY category",
+            (user_id, since, *COUNTED_USAGE),
+        )
+        return {r["category"]: r["n"] for r in rows}
+
+    def reserve_usage(
+        self, row: dict[str, Any], since: str, blocked: Any
+    ) -> tuple[dict[str, int], str | None]:
+        """Atomically: count the user's usage since `since`, ask `blocked(counts)` which
+        limit (if any) one more would break, and insert `row` when none is."""
+        with self._lock:
+            if self._one(
+                "SELECT id FROM usage_records WHERE job_id = ? AND category = ?",
+                (row["job_id"], row["category"]),
+            ):
+                return {}, None
+            counts = self.usage_counts(row["user_id"], since)
+            reason = blocked(counts)
+            if reason is None:
+                self._insert("usage_records", row)
+            return counts, reason
+
+    def update_usage(self, job_id: str, **fields: Any) -> None:
+        if fields:
+            cols = ", ".join(f"{k} = ?" for k in fields)
+            self._exec(
+                f"UPDATE usage_records SET {cols} WHERE job_id = ?", (*fields.values(), job_id)
+            )
+
+    def finish_usage(self, job_id: str, status: str, detail: dict[str, Any] | None = None) -> None:
+        self._exec(
+            "UPDATE usage_records SET status = ?, finished_at = ?, detail = COALESCE(?, detail) "
+            "WHERE job_id = ? AND status = 'reserved'",
+            (status, now(), json.dumps(detail) if detail else None, job_id),
+        )
+
+    def list_usage(self, filters: dict[str, Any], limit: int = 100) -> list[dict[str, Any]]:
+        cols = ("user_id", "session_id", "conversation_id", "job_id", "category", "kind",
+                "status", "plan")  # fmt: skip
+        where, args = _where(filters, cols, "created_at", "r.")
+        rows = self._all(
+            f"SELECT r.*, u.username FROM usage_records r LEFT JOIN users u ON u.id = r.user_id"
+            f"{where} ORDER BY r.created_at DESC LIMIT ?",
+            (*args, max(1, min(limit, 1000))),
+        )
+        return [_decode(r, "detail") for r in rows]  # type: ignore[misc]
+
+    def usage_totals(self, filters: dict[str, Any]) -> dict[str, dict[str, int]]:
+        cols = ("user_id", "session_id", "conversation_id", "job_id", "category", "kind",
+                "status", "plan")  # fmt: skip
+        where, args = _where(filters, cols, "created_at")
+        rows = self._all(
+            f"SELECT category, status, COUNT(*) AS n FROM usage_records{where} "
+            "GROUP BY category, status",
+            tuple(args),
+        )
+        out: dict[str, dict[str, int]] = {}
+        for r in rows:
+            out.setdefault(r["category"], {})[r["status"]] = r["n"]
+        return out
+
+    # central logs
+    def add_log(self, row: dict[str, Any]) -> None:
+        self._insert("logs", row)
+
+    def list_logs(self, filters: dict[str, Any], limit: int = 200) -> list[dict[str, Any]]:
+        where, args = _where(filters, ("user_id", "session_id", "conversation_id", "job_id"), "ts")
+        extra = []
+        if filters.get("level"):
+            extra.append("levelno >= ?")
+            args.append(_LEVELS.get(str(filters["level"]).upper(), 0))
+        if filters.get("logger"):
+            extra.append("logger LIKE ?")
+            args.append(f"{filters['logger']}%")
+        if filters.get("q"):
+            extra.append("(message LIKE ? OR fields LIKE ?)")
+            args += [f"%{filters['q']}%"] * 2
+        if filters.get("before"):
+            extra.append("id < ?")
+            args.append(int(filters["before"]))
+        if extra:
+            where = (where + " AND " if where else " WHERE ") + " AND ".join(extra)
+        rows = self._all(
+            f"SELECT * FROM logs{where} ORDER BY id DESC LIMIT ?",
+            (*args, max(1, min(limit, 1000))),
+        )
+        return [_decode(r, "fields") for r in rows]  # type: ignore[misc]
+
+    def prune_logs(self, before: str) -> int:
+        return self._exec("DELETE FROM logs WHERE ts < ?", (before,)).rowcount
+
 
 def _decode(row: dict[str, Any] | None, *cols: str) -> dict[str, Any] | None:
     if row is None:
@@ -550,3 +769,6 @@ def _decode(row: dict[str, Any] | None, *cols: str) -> dict[str, Any] | None:
         if row.get(col) is not None:
             row[col] = json.loads(row[col])
     return row
+
+
+_LEVELS = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}

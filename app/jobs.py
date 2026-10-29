@@ -15,7 +15,7 @@ from typing import Any
 from app.config import Settings
 from app.db import Store, now
 from app.events import EventBus
-from app.log import get_logger, job_id_var
+from app.log import bind, fields, get_logger, session_id_var
 
 log = get_logger("jobs")
 
@@ -47,6 +47,8 @@ class JobContext:
         self.job = job
         self.id: str = job["id"]
         self.conversation_id: str | None = job["conversation_id"]
+        self.user_id: str | None = job.get("user_id")
+        self.session_id: str | None = job.get("session_id")
         self.input: dict[str, Any] = job["input"]
         self.settings = manager.settings
         self.store = manager.store
@@ -149,10 +151,20 @@ class JobManager:
         payload: dict[str, Any],
         conversation_id: str | None,
         connection_id: str | None = None,
+        *,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         if kind not in HANDLERS:
             raise KeyError(f"Unknown job kind: {kind}")
-        job = self.store.create_job(conversation_id, kind, payload, connection_id)
+        if user_id is None and conversation_id:
+            conv = self.store.get_conversation(conversation_id)
+            user_id = conv and conv["user_id"]
+        if session_id is None and session_id_var.get() != "-":
+            session_id = session_id_var.get()
+        job = self.store.create_job(
+            conversation_id, kind, payload, connection_id, user_id=user_id, session_id=session_id
+        )
         self._publish_job("job.queued", job)
         self._tasks[job["id"]] = asyncio.create_task(self._run(job), name=f"job:{job['id']}")
         return job
@@ -182,7 +194,8 @@ class JobManager:
         await asyncio.gather(*self._tasks.values(), return_exceptions=True)
 
     async def _run(self, job: dict[str, Any]) -> None:
-        job_id_var.set(job["id"])
+        bind(job_id=job["id"], user_id=job.get("user_id"), session_id=job.get("session_id"),
+             conversation_id=job.get("conversation_id"))  # fmt: skip
         try:
             await self._slots.acquire()
             ctx = JobContext(self, job)
@@ -196,9 +209,11 @@ class JobManager:
             job = self.store.update_job(
                 job["id"], status="succeeded", progress=1.0, result=result or {}, finished_at=now()
             )
+            self.store.finish_usage(job["id"], "succeeded", _usage_detail(result))
             self._publish_job("job.succeeded", job)
         except asyncio.CancelledError:
             job = self.store.update_job(job["id"], status="cancelled", finished_at=now())
+            self.store.finish_usage(job["id"], "cancelled")
             self._publish_job("job.cancelled", job)
         except Exception as exc:
             log.exception("Job %s failed", job["id"])
@@ -209,11 +224,19 @@ class JobManager:
                 result=getattr(exc, "result", None),
                 finished_at=now(),
             )
+            self.store.finish_usage(job["id"], "failed", {"error": job["error"][:300]})
             self._publish_job("job.failed", job)
         finally:
             self._tasks.pop(job["id"], None)
+            log.info("job finished", extra=fields(kind=job["kind"], status=job["status"]))
 
     def _publish_job(self, type_: str, job: dict[str, Any]) -> None:
         self.bus.publish(
             type_, {"job": job}, conversation_id=job["conversation_id"], job_id=job["id"]
         )
+
+
+def _usage_detail(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    keys = ("tutorial_id", "title", "duration", "seconds", "video", "url", "limit_reached")
+    picked = {k: result[k] for k in keys if isinstance(result, dict) and k in result}
+    return {k: v for k, v in picked.items() if isinstance(v, str | int | float)} or None

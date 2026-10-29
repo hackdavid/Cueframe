@@ -1,5 +1,5 @@
 import asyncio
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 import websockets
@@ -15,16 +15,19 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 
-from app import auth, services
+from app import auth, services, usage
 from app.agents import feed
 from app.agents.contracts import ResearchRequest, ResearchResult
 from app.agents.docs_research import DocsResearchAgent
-from app.auth import User, websocket_user
+from app.auth import Admin, User, websocket_user
 from app.llm import LLMError
+from app.log import fields, get_logger
+from app.plans import plans_known
 from app.sandbox.contracts import Action, Answer
 from app.tutorial.pipeline import StateEdit
 from app.uploads import save_upload
 
+log = get_logger("api")
 router = APIRouter(prefix="/api")
 
 
@@ -382,7 +385,8 @@ def get_tutorial(request: Request, tid: str, user: User) -> dict[str, Any]:
 def _edit_job(request: Request, tut: dict[str, Any], text: str, edits: list) -> dict[str, Any]:
     payload = {"text": text, "attachments": [],
                "job_input": {"tutorial_id": tut["id"], "edits": edits}}  # fmt: skip
-    return _s(request).jobs.submit("tutorial.edit", payload, tut["conversation_id"])
+    return _s(request).jobs.submit("tutorial.edit", payload, tut["conversation_id"],
+                                   user_id=tut["user_id"])  # fmt: skip
 
 
 @router.patch("/tutorials/{tid}/states/{state_id}", status_code=202, tags=["tutorials"])
@@ -410,3 +414,109 @@ async def rerender(request: Request, tid: str, user: User) -> dict[str, Any]:
 async def trending(user: User, niche: str = "all") -> list[dict[str, Any]]:
     """Today's trending repos, papers, models and tech news, each with video prompts."""
     return await feed.trending(niche)
+
+
+# ---------- usage, plans and central logs ----------
+class UserIn(BaseModel):
+    username: str = Field(min_length=2, max_length=80)
+    password: str = Field(min_length=8, max_length=200)
+    plan: str = "free"
+    role: Literal["user", "admin"] = "user"
+
+
+class UserPatch(BaseModel):
+    plan: str | None = None
+    role: Literal["user", "admin"] | None = None
+
+
+def _plan_or_422(request: Request, plan: str | None) -> None:
+    if plan is not None and plan not in plans_known(_s(request).settings.plan_limits):
+        raise HTTPException(422, f"Unknown plan: {plan}")
+
+
+@router.get("/usage", tags=["usage"])
+def my_usage(request: Request, user: User) -> dict[str, Any]:
+    """Your plan, its monthly limits, what you've used and what's left."""
+    s = _s(request)
+    me = s.store.get_user(user["id"]) or user
+    out = usage.summary(s.store, s.settings, me)
+    out["recent"] = s.store.list_usage({"user_id": user["id"]}, limit=20)
+    return out
+
+
+@router.get("/admin/usage", tags=["admin"])
+def admin_usage(
+    request: Request,
+    admin: Admin,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    conversation_id: str | None = None,
+    job_id: str | None = None,
+    category: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    plan: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Usage records (newest first) and totals by category and status, filtered."""
+    f = {"user_id": user_id, "session_id": session_id, "conversation_id": conversation_id,
+         "job_id": job_id, "category": category, "kind": kind, "status": status, "plan": plan,
+         "since": since, "until": until}  # fmt: skip
+    store = _s(request).store
+    return {"records": store.list_usage(f, limit), "totals": store.usage_totals(f)}
+
+
+@router.get("/admin/logs", tags=["admin"])
+def admin_logs(
+    request: Request,
+    admin: Admin,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    conversation_id: str | None = None,
+    job_id: str | None = None,
+    level: str | None = None,
+    logger: str | None = None,
+    q: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    before: int | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Central log (newest first). `level` is a minimum, `logger` a prefix, `q` free text,
+    `before` a log id for paging back."""
+    f = {"user_id": user_id, "session_id": session_id, "conversation_id": conversation_id,
+         "job_id": job_id, "level": level, "logger": logger, "q": q, "since": since,
+         "until": until, "before": before}  # fmt: skip
+    return _s(request).store.list_logs(f, limit)
+
+
+@router.get("/admin/users", tags=["admin"])
+def admin_users(request: Request, admin: Admin) -> list[dict[str, Any]]:
+    """Every account with its plan and this month's usage."""
+    s = _s(request)
+    return [{**u, "usage": usage.summary(s.store, s.settings, u)} for u in s.store.list_users()]
+
+
+@router.post("/admin/users", status_code=201, tags=["admin"])
+def admin_create_user(request: Request, body: UserIn, admin: Admin) -> dict[str, Any]:
+    s = _s(request)
+    _plan_or_422(request, body.plan)
+    if s.store.get_user_by_name(body.username):
+        raise HTTPException(409, "Username taken")
+    u = s.store.upsert_user(body.username, auth.hash_password(body.password), plan=body.plan,
+                            role=body.role)  # fmt: skip
+    log.info("user created", extra=fields(target=u["id"], plan=body.plan, role=body.role))
+    return s.store.get_user(u["id"])  # type: ignore[return-value]
+
+
+@router.patch("/admin/users/{uid}", tags=["admin"])
+def admin_update_user(request: Request, uid: str, body: UserPatch, admin: Admin) -> dict:
+    s = _s(request)
+    _plan_or_422(request, body.plan)
+    if s.store.get_user(uid) is None:
+        raise HTTPException(404, "User not found")
+    changes = body.model_dump(exclude_none=True)
+    log.info("user updated", extra=fields(target=uid, **changes))
+    return s.store.update_user(uid, **changes)  # type: ignore[return-value]

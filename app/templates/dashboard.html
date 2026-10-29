@@ -19,6 +19,14 @@
       </button>
     </div>
     <nav id="chat-list" class="scroll-thin mt-3 flex-1 space-y-0.5 overflow-y-auto px-2 pb-4"></nav>
+    <div id="usage" class="hidden border-t border-white/10 px-4 py-3 text-xs">
+      <div class="flex items-center justify-between">
+        <span id="usage-plan" class="font-medium text-zinc-300"></span>
+        <a href="/pricing" class="text-sky-400 hover:underline">Upgrade</a>
+      </div>
+      <div id="usage-track" class="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div id="usage-bar" class="h-full rounded-full bg-gradient-to-r from-fuchsia-500 to-sky-500" style="width:0%"></div></div>
+      <p id="usage-text" class="mt-1.5 text-zinc-500"></p>
+    </div>
     <div class="border-t border-white/10 px-4 py-3 text-xs text-zinc-500">
       <span id="conn-dot" class="mr-1 inline-block h-2 w-2 rounded-full bg-zinc-600"></span>
       <span id="conn-label">Connecting…</span>

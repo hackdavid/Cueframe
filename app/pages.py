@@ -112,3 +112,13 @@ def dashboard(request: Request) -> Response:
 @router.get("/dashboard/c/{cid}", response_class=HTMLResponse)
 def dashboard_conversation(request: Request, cid: str) -> Response:
     return _dashboard(request, cid)
+
+
+@router.get("/admin", response_class=HTMLResponse)
+def admin_page(request: Request) -> Response:
+    user = optional_user(request)
+    if not user:
+        return RedirectResponse("/login", 303)
+    if user.get("role") != "admin":
+        raise HTTPException(404, "Not found")
+    return templates.TemplateResponse(request, "admin.html", {"user": user})

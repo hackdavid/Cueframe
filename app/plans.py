@@ -1,4 +1,8 @@
-"""Plans and packages shown on /pricing (prices in USD; checkout is wired up at launch)."""
+"""Plans and packages shown on /pricing (prices in USD; checkout is wired up at launch),
+and the monthly video limits each plan enforces."""
+
+import json
+from functools import lru_cache
 
 PLANS = [
     {
@@ -9,8 +13,8 @@ PLANS = [
         "blurb": "Try it with your own questions.",
         "cta": "Start free",
         "features": [
-            "3 maths lessons a month (photo or text)",
-            "1 tutorial, reel or explainer a month",
+            "3 videos a month (photo or text maths lessons)",
+            "1 of them can be a tutorial, reel or explainer",
             "1080p 16:9 with voice and captions",
             "'Made with Cueframe' end card",
         ],
@@ -107,3 +111,36 @@ FAQ = [
     ),
     ("Is there a yearly discount?", "Yes, yearly plans are 2 months free."),
 ]
+
+# Videos each plan can make per calendar month (UTC). "total" counts maths lessons and
+# tutorials/reels/explainers together; "lesson", "video" and "edit" cap each kind on its own.
+# A missing key means no limit. Override with CUEFRAME_PLAN_LIMITS, e.g.
+# '{"free": {"total": 5}, "team": {"total": 300}}'.
+LIMIT_KEYS = ("total", "lesson", "video", "edit")
+LIMITS: dict[str, dict[str, int]] = {
+    "free": {"total": 3, "video": 1, "edit": 3},
+    "student": {"lesson": 150, "video": 1, "edit": 20},
+    "creator": {"total": 30, "edit": 100},
+    "studio": {"total": 120, "edit": 400},
+    "unlimited": {},
+}
+PLAN_NAMES = {p["slug"]: p["name"] for p in PLANS} | {"unlimited": "Unlimited"}
+
+
+@lru_cache
+def _table(overrides: str) -> dict[str, dict[str, int]]:
+    extra = json.loads(overrides) if overrides.strip() else {}
+    if not isinstance(extra, dict) or not all(isinstance(v, dict) for v in extra.values()):
+        raise ValueError("CUEFRAME_PLAN_LIMITS must be a JSON object of plan -> limits")
+    return {**LIMITS, **{p: {**LIMITS.get(p, {}), **v} for p, v in extra.items()}}
+
+
+def plans_known(overrides: str = "") -> list[str]:
+    return list(_table(overrides))
+
+
+def plan_limits(overrides: str, plan: str) -> dict[str, int | None]:
+    """Limits for `plan`; an unknown plan gets the Free limits."""
+    table = _table(overrides)
+    lim = table.get(plan, table["free"])
+    return {k: lim.get(k) for k in LIMIT_KEYS}

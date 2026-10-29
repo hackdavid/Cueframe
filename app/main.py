@@ -1,6 +1,8 @@
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -19,11 +21,13 @@ from app.events import EventBus
 from app.handlers.tutorial import resume_interrupted
 from app.jobs import JobManager
 from app.llm import MetaClient
-from app.log import setup_logging
+from app.log import attach_store, bind, detach, fields, get_logger, setup_logging, unbind
+from app.plans import plan_limits
 from app.sandbox.manager import SandboxManager
 from app.storage import Storage
 
 BASE = Path(__file__).parent
+rlog = get_logger("http")
 
 
 def _media_user(request: Request) -> dict | None:
@@ -42,7 +46,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         store = Store(settings.db_path)
-        store.upsert_user(settings.admin_username, hash_password(settings.admin_password))
+        plan_limits(settings.plan_limits, settings.default_plan)  # fail fast on bad overrides
+        store.upsert_user(settings.admin_username, hash_password(settings.admin_password),
+                          plan=settings.admin_plan, role="admin")  # fmt: skip
+        log_handler = attach_store(store)
+        cutoff = datetime.now(UTC) - timedelta(days=settings.log_retention_days)
+        store.prune_logs(cutoff.isoformat(timespec="milliseconds"))
         store.close_all_connections()
         bus = EventBus(store)
         jobs = JobManager(store, bus, settings)
@@ -65,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await jobs.shutdown()
         await jobs.sandboxes.shutdown()
         await llm.aclose()
+        detach(log_handler)
         store.close()
 
     app = FastAPI(
@@ -74,6 +84,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "`Authorization: Bearer <token>`.",
         lifespan=lifespan,
     )
+
+    @app.middleware("http")
+    async def request_context(request: Request, call_next):  # type: ignore[no-untyped-def]
+        """Tags every log line of an API call with its user and session, and logs the call
+        itself when it changes something or fails."""
+        path = request.url.path
+        if not path.startswith("/api/") or path in ("/api/events", "/api/health"):
+            return await call_next(request)
+        user = _media_user(request)
+        tokens = bind(user_id=user and user["id"], session_id=user and user.get("session_id"))
+        t0, status = time.perf_counter(), 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            if request.method != "GET" or status >= 400:
+                ms = round((time.perf_counter() - t0) * 1000)
+                level = logging.WARNING if status >= 400 else logging.INFO
+                rlog.log(level, "request", extra=fields(method=request.method, path=path,
+                                                        status=status, ms=ms))  # fmt: skip
+            unbind(tokens)
 
     @app.middleware("http")
     async def protect_media(request: Request, call_next):  # type: ignore[no-untyped-def]
