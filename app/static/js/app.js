@@ -571,14 +571,73 @@
     if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   });
 
+  function usePrompt(text) {
+    input.value = text;
+    autosize();
+    updateSend();
+    input.focus();
+  }
+
   document.querySelectorAll("[data-prompt]").forEach((b) =>
-    b.addEventListener("click", () => {
-      input.value = b.dataset.prompt;
-      autosize();
-      updateSend();
-      input.focus();
-    }),
+    b.addEventListener("click", () => usePrompt(b.dataset.prompt)),
   );
+
+  async function loadTrending(niche) {
+    const list = $("#trend-list");
+    if (!list) return;
+    document.querySelectorAll("[data-niche]").forEach((b) => {
+      const on = b.dataset.niche === niche;
+      b.classList.toggle("border-sky-500/60", on);
+      b.classList.toggle("bg-sky-500/10", on);
+      b.classList.toggle("border-white/10", !on);
+    });
+    list.innerHTML = '<p class="text-xs text-zinc-500">Loading what\'s hot today…</p>';
+    let items = [];
+    try {
+      items = await api(`/api/trending?niche=${niche}`);
+    } catch {
+      items = [];
+    }
+    if (!items.length) {
+      list.innerHTML = '<p class="text-xs text-zinc-500">Couldn\'t load trends right now.</p>';
+      return;
+    }
+    list.replaceChildren(
+      ...items.slice(0, 8).map((it) => {
+        const card = document.createElement("div");
+        card.className = "min-w-0 rounded-xl border border-white/10 bg-white/[0.03] p-3";
+        const head = document.createElement("p");
+        head.className = "text-[11px] text-zinc-500";
+        head.textContent = `${it.kind} · ${it.metric}`;
+        const title = document.createElement("a");
+        title.href = it.url;
+        title.target = "_blank";
+        title.rel = "noopener";
+        title.className = "mt-0.5 block truncate text-sm font-medium text-zinc-100 hover:underline";
+        title.textContent = it.title;
+        const blurb = document.createElement("p");
+        blurb.className = "mt-1 line-clamp-2 text-xs text-zinc-400";
+        blurb.textContent = it.blurb;
+        const row = document.createElement("div");
+        row.className = "mt-2 flex gap-1.5";
+        for (const [k, label] of [["reel", "Reel"], ["explainer", "Explainer"], ["tutorial", "Tutorial"]]) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "rounded-md border border-white/10 px-2 py-0.5 text-[11px] text-zinc-300 hover:border-fuchsia-400/60 hover:text-white";
+          b.textContent = label;
+          b.addEventListener("click", () => usePrompt(it.prompts[k]));
+          row.append(b);
+        }
+        card.append(head, title, blurb, row);
+        return card;
+      }),
+    );
+  }
+
+  document.querySelectorAll("[data-niche]").forEach((b) =>
+    b.addEventListener("click", () => loadTrending(b.dataset.niche)),
+  );
+  loadTrending("all");
 
   $("#composer").addEventListener("submit", async (e) => {
     e.preventDefault();
