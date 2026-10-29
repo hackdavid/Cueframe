@@ -83,6 +83,7 @@ async def plan(ctx: JobContext, problem: str, level: Level, seconds: int | None)
             else "Take as long as the problem needs; don't pad.")  # fmt: skip
     base = f"Level: {level}\n{want}\nProblem from the student:\n{problem}"
     feedback, reviewed = "", False
+    prev: BoardPlan | None = None
     for attempt in range(1, TRIES + 1):
         ctx.thinking("Tutor", "Planning the board" if attempt == 1 else "Fixing the plan")
         p, _ = await ctx.llm.parse(
@@ -92,6 +93,9 @@ async def plan(ctx: JobContext, problem: str, level: Level, seconds: int | None)
         if not p.feasible:
             raise JobFailed(f"I can't teach that on the board: {p.reason}", {"planned": False})
         p.level = level
+        if prev is not None:
+            keep_checks(prev, p)
+        prev = p
         n, issues = await _checked(normalize(p))
         if not issues and not reviewed:
             ctx.thinking("Reviewer", "A second teacher is reviewing the method")
@@ -112,6 +116,19 @@ async def plan(ctx: JobContext, problem: str, level: Level, seconds: int | None)
                     + "\n- ".join(issues))  # fmt: skip
     raise JobFailed(f"The plan still had problems after {TRIES} tries: {'; '.join(issues)}",
                     {"planned": False, "issues": issues})  # fmt: skip
+
+
+def keep_checks(prev: BoardPlan, new: BoardPlan) -> int:
+    """Repairs sometimes drop checks: put back the previous plan's checks on steps that
+    came back without any (they are verified again). Returns how many steps got them."""
+    if len(prev.steps) != len(new.steps):
+        return 0
+    n = 0
+    for old, step in zip(prev.steps, new.steps, strict=True):
+        if old.checks and not step.checks:
+            step.checks = [c.model_copy() for c in old.checks]
+            n += 1
+    return n
 
 
 def _trace(attempt: int, steps: int, n: int, issues: list[str]) -> str:
@@ -197,6 +214,7 @@ async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work:
             "whole plan with only those ops fixed:\n- " + "\n- ".join(errs),
         )  # fmt: skip
         fixed.level = p.level
+        keep_checks(p, fixed)
         n, issues = await _checked(normalize(fixed))
         if issues:
             raise JobFailed(f"The fixed plan failed its checks: {'; '.join(issues)}",

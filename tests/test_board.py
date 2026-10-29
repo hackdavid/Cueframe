@@ -282,3 +282,29 @@ def test_arrows_only_join_neighbouring_lines():
                                           Op(kind="arrow", target="l3", to="l4")])])  # fmt: skip
     out = problems(plan)
     assert len(out) == 1 and "too far apart" in out[0]
+
+
+def test_repairs_keep_the_checks_they_dropped():
+    fixed = SIMPLE.model_copy(deep=True)
+    for s in fixed.steps:
+        s.checks = []
+    assert tutor.keep_checks(SIMPLE, fixed) == 2
+    assert [len(s.checks) for s in fixed.steps] == [len(s.checks) for s in SIMPLE.steps]
+
+
+def test_point_labels_avoid_axis_numbers():
+    if not shutil.which("latex"):
+        pytest.skip("needs LaTeX")
+    from app.board.scene import Builder, _box, _overlap
+
+    plan = _plan([Step(say="Roots.", ops=[
+        Op(kind="figure", x_range=[0, 5], y_range=[-1, 6], axes=True),
+        Op(kind="plot", expr="x**2-5*x+6"),
+        Op(kind="point", id="A", latex="2", x=2, y=0),
+        Op(kind="point", id="B", latex="3", x=3, y=0)])])  # fmt: skip
+    b = Builder(plan)
+    items = b.all()[0]
+    ax = b.fig.ax
+    nums = [_box(n) for n in (*ax.x_axis.numbers, *ax.y_axis.numbers)]
+    for it in items[2:]:
+        assert not any(_overlap(_box(it.mobs[1]), n) for n in nums)

@@ -259,6 +259,8 @@ class Builder:
         )  # fmt: skip
         ax.move_to([*b.center, 0])
         self.fig = Figure(ax, b, op.axes)
+        if op.axes:  # labels keep clear of the axis numbers
+            self.fig.taken += [_box(n) for n in (*ax.x_axis.numbers, *ax.y_axis.numbers)]
         if not op.axes:
             ax.set_opacity(0)
             return Item([], None, b)
