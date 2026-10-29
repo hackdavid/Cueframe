@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.title }} · Cueframe{% endblock %}
+{% block body %}
+<main class="mx-auto max-w-3xl px-4 py-14">
+  <p class="text-xs font-medium uppercase tracking-widest text-sky-400">Cueframe</p>
+  <h1 class="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">{{ doc.title }}</h1>
+  <p class="mt-2 text-sm text-zinc-500">Last updated {{ updated }}</p>
+  <p class="mt-6 text-lg text-zinc-300">{{ doc.intro }}</p>
+  {% if slug == "contact" %}
+  <a href="mailto:{{ email }}" class="mt-6 inline-block rounded-xl bg-gradient-to-r from-fuchsia-500 to-sky-500 px-5 py-2.5 font-semibold text-white">Email {{ email }}</a>
+  {% endif %}
+  <div class="mt-10 space-y-8">
+    {% for h, p in doc.sections %}
+    <section><h2 class="text-lg font-semibold">{{ h }}</h2><p class="mt-2 leading-relaxed text-zinc-400">{{ p }}</p></section>
+    {% endfor %}
+  </div>
+</main>
+{% endblock %}

@@ -231,3 +231,22 @@ def test_sample_media_redirects_to_signed_r2_link(anon, monkeypatch):
     assert res.status_code == 307 and res.headers["location"].endswith("samples/mdn-fetch-api.mp4")
     assert anon.get("/samples/media/other.mp4", follow_redirects=False).status_code == 404
     assert anon.get("/samples/media/mdn-fetch-api.txt", follow_redirects=False).status_code == 404
+
+
+def test_marketing_and_legal_pages(client):
+    from fastapi.testclient import TestClient
+
+    anon = TestClient(client.app)
+    home = anon.get("/").text
+    for part in ("One sentence or one photo", "/static/img/hero.webp", "/pricing", "/privacy",
+                 "/samples/math-quadratic-formula", "/samples/reel-google-trends"):  # fmt: skip
+        assert part in home, part
+    pricing = anon.get("/pricing")
+    assert pricing.status_code == 200 and "Student Pro" in pricing.text and "$9" in pricing.text
+    for slug, words in [("terms", "Terms of service"), ("privacy", "Privacy policy"),
+                        ("refunds", "Refunds"), ("acceptable-use", "Acceptable use"),
+                        ("contact", "mailto:")]:  # fmt: skip
+        r = anon.get(f"/{slug}")
+        assert r.status_code == 200 and words in r.text, slug
+    assert anon.get("/static/img/og.jpg").status_code == 200
+    assert anon.get("/login").status_code == 200

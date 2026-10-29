@@ -1,0 +1,17 @@
+{% macro card(s) %}
+      <a href="/samples/{{ s.slug }}" data-slug="{{ s.slug }}"
+         class="sample-card group block overflow-hidden rounded-2xl border bg-zinc-900/50 transition hover:-translate-y-0.5 hover:border-sky-400/50 {% if current and s.slug == current.slug %}border-sky-400/60 ring-1 ring-sky-400/40{% else %}border-white/10{% endif %}">
+        <div class="relative aspect-video overflow-hidden bg-black">
+          <img src="{{ s.poster }}" alt="{{ s.title }}" loading="lazy" class="h-full w-full object-cover opacity-90 transition group-hover:scale-[1.03] group-hover:opacity-100">
+          <span class="absolute inset-0 grid place-items-center">
+            <span class="grid h-14 w-14 place-items-center rounded-full bg-white/90 text-xl text-zinc-900 shadow-lg transition group-hover:scale-110">▶</span>
+          </span>
+          <span class="absolute bottom-2 right-2 rounded-md bg-black/75 px-1.5 py-0.5 text-xs font-medium">{{ s.length }}</span>
+        </div>
+        <div class="p-4">
+          <p class="text-xs text-sky-400">{{ s.site }}</p>
+          <h3 class="mt-1 font-semibold">{{ s.title }}</h3>
+          <p class="mt-1 text-xs text-zinc-500">{{ s.steps|length }} steps · made in {{ s.made_in }}</p>
+        </div>
+      </a>
+{% endmacro %}
