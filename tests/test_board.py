@@ -274,3 +274,11 @@ def test_points_are_named_by_id_or_label():
     assert problems(plan) == []
     n, bad = checks.run(plan)
     assert n == 2 and len(bad) == 1 and "no drawn point named C" in bad[0]
+
+
+def test_arrows_only_join_neighbouring_lines():
+    rows = [Op(kind="write", id=f"l{i}", latex=f"x = {i}") for i in range(5)]
+    plan = _plan([Step(say="Lines.", ops=[*rows, Op(kind="arrow", target="l0", to="l4"),
+                                          Op(kind="arrow", target="l3", to="l4")])])  # fmt: skip
+    out = problems(plan)
+    assert len(out) == 1 and "too far apart" in out[0]

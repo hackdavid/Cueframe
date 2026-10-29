@@ -228,6 +228,8 @@ class Builder:
         between = [r for r in self.rows if r.get_bottom()[1] < hi and r.get_top()[1] > lo]
         xr = max(r.get_right()[0] for r in [t, to, *between]) + 0.25
         p1, p2 = np.array([xr, t.get_center()[1], 0]), np.array([xr, to.get_center()[1], 0])
+        if abs(p1[1] - p2[1]) > 2.5:  # far apart (e.g. a figure between): a short arrow in
+            p1 = p2 + (m.UP if p1[1] > p2[1] else m.DOWN) * 1.0
         a = m.CurvedArrow(p1, p2, angle=-m.PI / 2 if p2[1] < p1[1] else m.PI / 2, color=red,
                           stroke_width=3, tip_length=0.18)  # fmt: skip
         mobs: list[m.Mobject] = [a]

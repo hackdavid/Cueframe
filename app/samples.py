@@ -115,7 +115,7 @@ SAMPLES = [
             "Search the Python docs for asyncio using the search box and open the asyncio page"
         ),
         "steps": ["Open Python docs", "Type asyncio", "Run search", "Open asyncio page"],
-        "length": "1:04",
+        "length": "1:03",
         "made_in": "5.5 min",
         "fixes": 0,
     },
@@ -186,6 +186,28 @@ SAMPLES = [
 # plans sent back by the checks or the reviewer.
 MATH_SAMPLES = [
     {
+        "slug": "math-quadratic-formula",
+        "title": "Solve x² − 5x + 6 = 0 with the quadratic formula, like a teacher",
+        "site": "Math board · high school, 73 s",
+        "request": "Teach me how to solve x^2 - 5x + 6 = 0 using the quadratic formula, and show "
+        "the parabola crossing the x-axis at the answers.",
+        "steps": [
+            "Let's talk about the question",
+            "What we're given",
+            "How we'll think",
+            "The formula, on the right",
+            "The discriminant",
+            "Into the formula",
+            "Two paths: 3 and 2",
+            "The parabola",
+            "Common mistake",
+            "Check and box the answer",
+        ],  # fmt: skip
+        "length": "1:13",
+        "made_in": "2.9 min",
+        "fixes": 1,
+    },
+    {
         "slug": "math-linear-equation",
         "title": "Solve 3x − 5 = 16, the way a teacher would",
         "site": "Math board · high school, 45 s",
@@ -205,7 +227,7 @@ MATH_SAMPLES = [
     {
         "slug": "math-fractions-child",
         "title": "3/4 + 1/8 with cake slices, for a primary school child",
-        "site": "Math board · primary school, 64 s",
+        "site": "Math board · primary school, 63 s",
         "request": "For a primary school child: what is 3/4 + 1/8? Draw it.",
         "steps": [
             "The cake problem",
@@ -216,7 +238,7 @@ MATH_SAMPLES = [
             "6/8 + 1/8 = 7/8",
             "Common mistake, check",
         ],  # fmt: skip
-        "length": "1:04",
+        "length": "1:03",
         "made_in": "4.2 min",
         "fixes": 2,
     },

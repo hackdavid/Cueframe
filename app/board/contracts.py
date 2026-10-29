@@ -143,6 +143,7 @@ def problems(plan: BoardPlan) -> list[str]:
     if len(plan.steps) > 40:
         out.append(f"{len(plan.steps)} steps: keep it to 40 or fewer")
     ids: dict[str, str] = {}
+    order: dict[str, int] = {}  # row number of each write/text/section op
     points: set[str] = set()
     figure: Op | None = None
     for si, step in enumerate(plan.steps, 1):
@@ -167,6 +168,10 @@ def problems(plan: BoardPlan) -> list[str]:
                 out.append(f"{at}: needs a target")
             if op.kind == "arrow" and not op.to:
                 out.append(f"{at}: needs `to`")
+            far = op.target in order and op.to in order and abs(order[op.to] - order[op.target]) > 2
+            if op.kind == "arrow" and far:
+                out.append(f"{at}: an arrow only joins neighbouring lines; {op.target!r} "
+                               f"and {op.to!r} are too far apart")  # fmt: skip
             if op.kind == "figure":
                 for name, r in (("x_range", op.x_range), ("y_range", op.y_range)):
                     if len(r) != 2 or not r[0] < r[1]:
@@ -200,4 +205,6 @@ def problems(plan: BoardPlan) -> list[str]:
                 out.append(f"{at}: needs a radius or a second point")
             if op.id:
                 ids[op.id] = op.kind
+            if op.kind in ROW:
+                order[op.id or f"_{si}.{oi}"] = len(order)
     return out
