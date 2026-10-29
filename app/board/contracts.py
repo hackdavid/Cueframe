@@ -13,15 +13,17 @@ MARKS = ("box", "underline", "cross", "arrow")  # ops that annotate an earlier r
 FIGURE = ("plot", "area", "riemann", "tangent", "point", "segment", "polygon", "circle",
           "angle", "label")  # fmt: skip
 OpKind = Literal[
-    "write", "text", "section", "box", "underline", "cross", "arrow", "figure", "plot",
-    "area", "riemann", "tangent", "point", "segment", "polygon", "circle", "angle", "label",
+    "write", "text", "section", "formula", "box", "underline", "cross", "arrow", "figure",
+    "plot", "area", "riemann", "tangent", "point", "segment", "polygon", "circle", "angle", "label",
 ]  # fmt: skip
 
 
 class Op(BaseModel):
     kind: OpKind = Field(
         description="write: a LaTeX line on the next row; text: a short note in words; "
-        "section: a heading that starts a new part of the board; box/underline/cross: mark "
+        "section: a heading that starts a new part of the board; formula: the formula or "
+        "rule being used, in a card on the right side of the board (latex = the formula, "
+        "text = its name); box/underline/cross: mark "
         "an earlier row; arrow: curved arrow from one row to another; figure: start a "
         "diagram (axes for graphs, a blank plane for geometry) beside the next rows; "
         "plot/area/riemann/tangent: on the current figure's axes; point/segment/polygon/"
@@ -39,8 +41,11 @@ class Op(BaseModel):
         "section: the heading in plain words; label/segment/point/angle/plot: an optional "
         "LaTeX label, e.g. '5', '90^\\\\circ', 'y=x^2'",
     )
-    text: str = Field("", description="text: the note in plain words; arrow: a tiny label "
-                      "like '÷2'; else ''")  # fmt: skip
+    text: str = Field(
+        "",
+        description="text: the note in plain words; formula: its name, e.g. 'Quadratic "
+        "formula'; arrow: a tiny label like '÷2'; else ''",
+    )
     target: str = Field("", description="box/underline/cross/arrow: id of an earlier write or "
                         "text op; write: id of the line this one is rewritten from (it morphs "
                         "out of it), else ''")  # fmt: skip
@@ -150,9 +155,9 @@ def problems(plan: BoardPlan) -> list[str]:
             if op.id and op.id in ids:
                 out.append(f"{at}: id {op.id!r} is used twice")
             for ref, field in ((op.target, "target"), (op.to, "to")):
-                if ref and ids.get(ref) not in ("write", "text"):
-                    out.append(f"{at}: {field} {ref!r} is not an earlier write/text op")
-            if op.kind == "write" and not op.latex.strip():
+                if ref and ids.get(ref) not in ("write", "text", "formula"):
+                    out.append(f"{at}: {field} {ref!r} is not an earlier write/text/formula op")
+            if op.kind in ("write", "formula") and not op.latex.strip():
                 out.append(f"{at}: no latex")
             if op.kind == "text" and not op.text.strip():
                 out.append(f"{at}: no text")
@@ -181,13 +186,16 @@ def problems(plan: BoardPlan) -> list[str]:
             if op.kind == "point":
                 if not op.latex and not op.id:
                     out.append(f"{at}: name the point in latex (e.g. 'A')")
-                points.add(op.latex or op.id)
+                points.update(n for n in (op.id, op.latex) if n)
             need = {"segment": 2, "polygon": 3, "angle": 3, "circle": 1}.get(op.kind)
             if need and len(op.points) < need:
                 out.append(f"{at}: needs {need} points")
             for p in op.points:
                 if p not in points:
-                    out.append(f"{at}: point {p!r} isn't drawn on this figure yet")
+                    out.append(
+                        f"{at}: point {p!r} isn't drawn on this figure yet: add a "
+                        f"`point` op with id {p!r} after this figure's `figure` op"
+                    )
             if op.kind == "circle" and len(op.points) == 1 and op.radius <= 0:
                 out.append(f"{at}: needs a radius or a second point")
             if op.id:

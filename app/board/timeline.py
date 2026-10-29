@@ -17,7 +17,7 @@ def run_time(op: Op) -> float:
         return min(2.6, max(0.9, 0.5 + 0.07 * len(op.latex)))
     if op.kind == "text":
         return min(2.0, max(0.7, 0.4 + 0.03 * len(op.text)))
-    return {"section": 1.0, "figure": 1.2, "plot": 1.6, "area": 1.0, "riemann": 1.4,
+    return {"section": 1.0, "formula": 1.8, "figure": 1.2, "plot": 1.6, "area": 1.0, "riemann": 1.4,
             "tangent": 1.0, "polygon": 1.2, "circle": 1.2}.get(op.kind, 0.7)  # fmt: skip
 
 

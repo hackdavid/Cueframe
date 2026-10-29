@@ -149,6 +149,24 @@ def test_engine_renders_1080p_in_parallel_parts(tmp_path):
     assert size == "1920,1080"
 
 
+def test_formula_card_sits_right_of_the_working(tmp_path):
+    if not shutil.which("latex"):
+        pytest.skip("needs LaTeX")
+    from app.board.scene import Builder
+
+    plan = _plan([Step(say="Here is the rule.", ops=[
+        Op(kind="formula", id="f", text="Quadratic formula",
+           latex="x = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}"),
+        Op(kind="write", id="l1", latex="a = 1,\\; b = -5,\\; c = 6"),
+        Op(kind="box", target="f"),
+    ])])  # fmt: skip
+    assert problems(plan) == []
+    b = Builder(plan)
+    card, row, _ = b.all()[0]
+    assert card.focus.x1 == layout.RIGHT and row.focus.x1 <= card.focus.x0
+    assert row.focus.top == card.focus.top  # the working starts beside the formula
+
+
 def test_bad_latex_is_reported_per_op(tmp_path):
     if not shutil.which("latex"):
         pytest.skip("needs LaTeX")
@@ -243,3 +261,16 @@ def test_refused_lesson_explains_why_in_chat(client, monkeypatch):
     assert "I couldn't make this lesson" in msgs[-1]["content"]
     assert "1 = 2 is false" in msgs[-1]["content"]
     assert client.get("/api/sandboxes", headers=_auth(client)).json() == []
+
+
+def test_points_are_named_by_id_or_label():
+    ops = [Op(kind="figure", x_range=[0, 5], y_range=[-1, 3], axes=True),
+           Op(kind="point", id="A", latex="(2,0)", x=2, y=0),
+           Op(kind="point", id="B", latex="(3,0)", x=3, y=0),
+           Op(kind="segment", points=["A", "B"])]  # fmt: skip
+    plan = _plan([Step(say="Roots.", ops=ops, checks=[
+        Check(kind="geometry", a="dist(A,B)", b="1"),
+        Check(kind="geometry", a="dist(A,C)", b="1")])])  # fmt: skip
+    assert problems(plan) == []
+    n, bad = checks.run(plan)
+    assert n == 2 and len(bad) == 1 and "no drawn point named C" in bad[0]

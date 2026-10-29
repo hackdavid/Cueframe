@@ -2,13 +2,14 @@
 
 import json
 import random
+import re
 import signal
 import sys
 
 import sympy as sp
 
 from app.board.contracts import BoardPlan, Check
-from app.board.mathexpr import MathError, expr, relation
+from app.board.mathexpr import FUNCS, MathError, expr, relation
 
 TOL = 1e-7
 
@@ -50,7 +51,8 @@ def _points(plan: BoardPlan) -> dict[str, sp.Point2D]:
     for step in plan.steps:
         for op in step.ops:
             if op.kind == "point":
-                pts[op.latex or op.id] = sp.Point2D(sp.nsimplify(op.x), sp.nsimplify(op.y))
+                p = sp.Point2D(sp.nsimplify(op.x), sp.nsimplify(op.y))
+                pts.update({n: p for n in (op.id, op.latex) if n.isidentifier()})
     return pts
 
 
@@ -87,6 +89,9 @@ def check(c: Check, plan: BoardPlan) -> str | None:
     try:
         if c.kind == "geometry":
             names = _geometry(_points(plan))
+            used = set(re.findall(r"[A-Za-z_]\w*", f"{c.a} {c.b}"))
+            if missing := sorted(used - set(names) - set(FUNCS)):
+                return f"no drawn point named {', '.join(missing)}: add `point` ops with those ids"
             a, b = expr(c.a, names), expr(c.b, names)
             return None if is_zero(a - b) else f"{c.a} is {sp.N(a, 6)}, not {sp.N(b, 6)}"
         if c.kind in ("equal", "value"):

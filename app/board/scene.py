@@ -178,12 +178,32 @@ class Builder:
             rule = m.Line([L.LEFT, b.bottom, 0], [L.RIGHT, b.bottom, 0], color=COLORS["blue"],
                           stroke_width=2, stroke_opacity=0.5)  # fmt: skip
             return Item([t, rule], lambda: m.AnimationGroup(m.Write(t), m.Create(rule)), b)
+        if op.kind == "formula":
+            return self.formula(op, c)
         if op.kind in ("box", "underline", "cross", "arrow"):
             return self.mark(op, c)
         if op.kind == "figure":
             return self.figure(op)
         assert self.fig is not None, "draw a figure first"
         return self.draw(op, c, self.fig)
+
+    def formula(self, op: Op, c: str) -> Item:
+        """The rule in use, in a card on the right; the working continues on the left."""
+        edge = COLORS["blue"] if op.color == "ink" else c
+        tex = m.MathTex(op.latex, tex_template=TEMPLATE, color=INK, font_size=40)
+        parts: list[m.Mobject] = [tex]
+        if op.text:
+            parts.insert(0, text(op.text, L.FIG_W - 0.5, 22, edge, bold=True))
+        body = m.VGroup(*parts).arrange(m.DOWN, buff=0.18)
+        if body.width > L.FIG_W - 0.5:
+            body.scale_to_fit_width(L.FIG_W - 0.5)
+        card = m.RoundedRectangle(corner_radius=0.15, width=body.width + 0.5,
+                                  height=body.height + 0.4, stroke_color=edge, stroke_width=3,
+                                  fill_color="#ffffff", fill_opacity=0.9)  # fmt: skip
+        b = self.board.figure(card.width, card.height)
+        g = m.VGroup(card, body.move_to(card)).move_to([*b.center, 0])
+        return Item([g], lambda: m.AnimationGroup(m.Create(card), *(m.Write(x) for x in parts),
+                                                  lag_ratio=0.25), b)  # fmt: skip
 
     def mark(self, op: Op, c: str) -> Item:
         t = self.objs[op.target]
@@ -327,7 +347,7 @@ class Builder:
         if op.kind == "point":
             p = ax.c2p(op.x, op.y)
             name = op.latex or op.id
-            fig.pts[name] = p
+            fig.pts.update({n: p for n in (op.id, op.latex) if n})
             dot = m.Dot(p, radius=0.065, color=c)
             out = p - np.array([*b.center, 0])
             out = out / (np.linalg.norm(out) or 1) if np.linalg.norm(out) > 0.2 else m.UR

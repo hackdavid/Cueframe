@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from app.auth import COOKIE, logout, optional_user
-from app.samples import BY_SLUG, SAMPLES
+from app.samples import BY_SLUG, MATH_SAMPLES, SAMPLES
 
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 router = APIRouter(include_in_schema=False)
@@ -38,7 +38,12 @@ def samples_page(request: Request, slug: str | None = None) -> Response:
     return templates.TemplateResponse(
         request,
         "samples.html",
-        {"user": optional_user(request), "samples": SAMPLES, "current": current},
+        {
+            "user": optional_user(request),
+            "samples": SAMPLES,
+            "math": MATH_SAMPLES,
+            "current": current,
+        },  # fmt: skip
     )
 
 
