@@ -25,7 +25,7 @@ def _env(job: Path, tex: str = "tex", **extra: str) -> dict[str, str]:
 
 def check(job: Path) -> dict:
     """Build every op once (this also compiles and caches all the LaTeX)."""
-    os.environ.update(_env(job))
+    os.environ.update(_env(job), BOARD_MEDIA=str(job / "media"))
     from app.board.contracts import BoardPlan
     from app.board.scene import Builder
 
@@ -50,8 +50,8 @@ def _part(job: Path, i: int, n: int) -> Path:
     cmd = [sys.executable, "-m", "manim", "render", str(SCENE), "BoardScene",
            "-r", "1920,1080", "--fps", "30", "--disable_caching", "--progress_bar", "none",
            "-v", "WARNING", "--media_dir", str(media), "-o", f"part{i}"]  # fmt: skip
-    p = subprocess.run(cmd, env=_env(job, f"tex{i}", BOARD_PART=f"{i}/{n}"), capture_output=True,
-                       text=True, timeout=1800)  # fmt: skip
+    env = _env(job, f"tex{i}", BOARD_PART=f"{i}/{n}", BOARD_MEDIA=str(media))
+    p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=1800)
     out = next(media.rglob(f"part{i}.mp4"), None)
     if p.returncode or out is None:
         raise RuntimeError(f"part {i} failed: {(p.stderr or p.stdout)[-1500:]}")

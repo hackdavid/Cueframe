@@ -27,6 +27,8 @@ from app.board.timeline import FPS, captions
 
 if tex := os.environ.get("BOARD_TEX"):
     m.config.tex_dir = tex
+if media := os.environ.get("BOARD_MEDIA"):
+    m.config.media_dir = media
 
 INK, MUTED, PAPER, GRID = "#1f2430", "#5b6372", "#fbfaf6", "#e7eaf0"
 COLORS = {"ink": INK, "blue": "#1f5fbf", "red": "#c8323c", "green": "#1d8348",
