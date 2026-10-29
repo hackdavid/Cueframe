@@ -5,7 +5,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
 from app.auth import COOKIE, logout, optional_user
-from app.samples import BY_SLUG, SAMPLES
+from app.samples import BY_SLUG, MATH_SAMPLES, SAMPLES
 
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 router = APIRouter(include_in_schema=False)
@@ -14,7 +14,9 @@ router = APIRouter(include_in_schema=False)
 @router.get("/", response_class=HTMLResponse)
 def landing(request: Request) -> Response:
     return templates.TemplateResponse(
-        request, "landing.html", {"user": optional_user(request), "samples": SAMPLES[:3]}
+        request,
+        "landing.html",
+        {"user": optional_user(request), "samples": [MATH_SAMPLES[0], *SAMPLES[:2]]},
     )
 
 
@@ -34,11 +36,16 @@ def sample_media(request: Request, name: str) -> Response:
 def samples_page(request: Request, slug: str | None = None) -> Response:
     if slug is not None and slug not in BY_SLUG:
         raise HTTPException(404, "Sample not found")
-    current = BY_SLUG[slug] if slug else SAMPLES[0]
+    current = BY_SLUG[slug] if slug else MATH_SAMPLES[0]
     return templates.TemplateResponse(
         request,
         "samples.html",
-        {"user": optional_user(request), "samples": SAMPLES, "current": current},
+        {
+            "user": optional_user(request),
+            "samples": SAMPLES,
+            "math": MATH_SAMPLES,
+            "current": current,
+        },  # fmt: skip
     )
 
 

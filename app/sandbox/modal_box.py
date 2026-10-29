@@ -45,6 +45,26 @@ def desktop_image(modal: Any, settings: Settings) -> Any:
     )
 
 
+BOARD_APT = [
+    "ffmpeg", "texlive-latex-base", "texlive-latex-recommended", "texlive-latex-extra",
+    "texlive-fonts-recommended", "dvisvgm", "libcairo2-dev", "libpango1.0-dev", "pkg-config",
+    "build-essential", "fonts-dejavu-core",
+]  # fmt: skip
+BOARD_PIP = ["manim==0.22.1", "sympy==1.14.0", "pydantic==2.14.1"]
+
+
+def board_image(modal: Any) -> Any:
+    """Headless image for the math board: Manim, LaTeX and SymPy, no desktop. The
+    board code is mounted at start, so code changes don't rebuild the image."""
+    return (
+        modal.Image.debian_slim(python_version="3.12")
+        .apt_install(*BOARD_APT)
+        .pip_install(*BOARD_PIP)
+        .run_commands("mkdir -p /opt/board/app /work && touch /opt/board/app/__init__.py")
+        .add_local_dir(Path(__file__).parents[1] / "board", "/opt/board/app/board")
+    )
+
+
 class ModalSandbox(Sandbox):
     provider = "modal"
 
@@ -55,6 +75,12 @@ class ModalSandbox(Sandbox):
 
     @staticmethod
     async def _create_in(modal: Any, app: Any, settings: Settings, start_url: str) -> Any:
+        if settings.sandbox_image == "board":
+            return await modal.Sandbox.create.aio(
+                "sleep", "infinity", app=app, image=board_image(modal),
+                cpu=settings.sandbox_cpu, memory=settings.sandbox_memory_mb,
+                timeout=settings.sandbox_max_seconds, idle_timeout=settings.sandbox_idle_seconds,
+            )  # fmt: skip
         return await modal.Sandbox.create.aio(
             "/opt/cf/start.sh",
             app=app,
@@ -89,6 +115,12 @@ class ModalSandbox(Sandbox):
                     raise
                 log.warning("sandbox create failed; retrying with a fresh app lookup")
         box = cls(sb, settings)
+        if settings.sandbox_image == "board":
+            log.info(
+                "board sandbox ready",
+                extra=fields(sandbox=box.provider_id, seconds=round(time.monotonic() - t0, 1)),
+            )
+            return box
         tunnels = await sb.tunnels.aio()
         box.live_url = tunnels[6080].url + "/vnc.html?autoconnect=1&resize=scale&view_only=1"
         ready = await box.exec(
