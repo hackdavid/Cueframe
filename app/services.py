@@ -83,6 +83,8 @@ def send_message(
             {"text": content, "attachments": attachments, "job_input": job_input or {}},
             cid,
             connection_id,
+            user_id=user["id"],
+            session_id=user.get("session_id"),
         )
     except KeyError as exc:
         raise HTTPException(422, str(exc)) from exc

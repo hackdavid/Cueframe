@@ -21,6 +21,7 @@ from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from app import services
 from app.auth import websocket_user
+from app.log import bind
 
 router = APIRouter()
 
@@ -32,6 +33,7 @@ async def websocket_endpoint(ws: WebSocket) -> None:
     if user is None:
         await ws.close(code=4401, reason="Not logged in")
         return
+    bind(user_id=user["id"], session_id=user.get("session_id"))
     await ws.accept()
     conn = s.store.open_connection(
         user["id"], ws.query_params.get("client", "ws"), ws.headers.get("user-agent")

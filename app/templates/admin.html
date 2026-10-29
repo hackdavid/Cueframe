@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Admin · Cueframe{% endblock %}
+{% block body %}
+<main class="mx-auto max-w-7xl px-4 py-8">
+  <h1 class="text-2xl font-semibold">Admin</h1>
+  <p class="mt-1 text-sm text-zinc-400">Usage, central logs and accounts. Filter by user ID or session ID (from a usage row or a log line).</p>
+  <div class="mt-6 flex gap-2 text-sm" id="tabs">
+    <button data-tab="usage" class="rounded-lg border border-sky-500/60 bg-sky-500/10 px-3 py-1.5">Usage</button>
+    <button data-tab="logs" class="rounded-lg border border-white/10 px-3 py-1.5">Logs</button>
+    <button data-tab="users" class="rounded-lg border border-white/10 px-3 py-1.5">Users</button>
+  </div>
+  <form id="filters" class="mt-4 grid grid-cols-2 gap-2 text-sm md:grid-cols-6">
+    <input name="user_id" placeholder="user_id" class="rounded-lg border border-white/10 bg-zinc-900 px-3 py-2">
+    <input name="session_id" placeholder="session_id" class="rounded-lg border border-white/10 bg-zinc-900 px-3 py-2">
+    <input name="job_id" placeholder="job_id" class="rounded-lg border border-white/10 bg-zinc-900 px-3 py-2">
+    <input name="q" placeholder="text (logs)" class="rounded-lg border border-white/10 bg-zinc-900 px-3 py-2">
+    <select name="level" class="rounded-lg border border-white/10 bg-zinc-900 px-3 py-2"><option value="">any level</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select>
+    <button class="rounded-lg bg-sky-600 px-3 py-2 font-medium hover:bg-sky-500">Filter</button>
+  </form>
+  <div id="totals" class="mt-4 flex flex-wrap gap-2 text-xs"></div>
+  <div class="mt-3 overflow-x-auto rounded-xl border border-white/10">
+    <table class="w-full text-left text-xs"><thead id="head" class="bg-white/5 text-zinc-400"></thead><tbody id="rows" class="divide-y divide-white/5"></tbody></table>
+  </div>
+</main>
+<script src="/static/js/admin.js"></script>
+{% endblock %}

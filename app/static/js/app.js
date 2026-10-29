@@ -335,8 +335,29 @@
     $("#conn-label").textContent = ok ? `Live · ${state.connectionId}` : "Reconnecting…";
   }
 
+  async function loadUsage() {
+    let u;
+    try {
+      u = await api("/api/usage");
+    } catch {
+      return;
+    }
+    const cap = u.limits.total ?? u.limits.lesson;
+    const used = u.limits.total != null ? u.used.total : u.used.lesson;
+    const resets = new Date(u.resets_at).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+    $("#usage-plan").textContent = `${u.plan_name} plan`;
+    $("#usage-track").classList.toggle("hidden", cap == null);
+    $("#usage-bar").style.width = cap ? `${Math.min(100, (100 * used) / cap)}%` : "0%";
+    let text = cap == null ? `${u.used.total} videos this month` : `${used} of ${cap} videos used · resets ${resets}`;
+    if (cap != null && u.limits.video != null) text += ` · ${u.remaining.video} tutorial/reel left`;
+    $("#usage-text").textContent = text;
+    $("#usage").classList.remove("hidden");
+  }
+  loadUsage();
+
   function handleEvent(ev) {
     const p = ev.payload;
+    if (/^job\.(succeeded|failed|cancelled)$/.test(ev.type)) loadUsage();
     const isCurrent = ev.conversation_id && ev.conversation_id === state.currentId;
     switch (ev.type) {
       case "message.created":
