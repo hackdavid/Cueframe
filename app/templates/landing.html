@@ -1,150 +1,142 @@
 {% extends "base.html" %}
+{% from "_card.html" import card with context %}
 {% block body %}
 <main>
-  <!-- Hero -->
   <section class="relative overflow-hidden">
-    <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(56,189,248,0.18),transparent_60%)]"></div>
-    <div class="relative mx-auto max-w-6xl px-4 pb-20 pt-20 text-center sm:pt-28">
-      <p class="mx-auto inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300">
-        <span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span> Learn software by watching it done for real
-      </p>
-      <h1 class="mx-auto mt-6 max-w-3xl text-4xl font-semibold tracking-tight sm:text-6xl">
-        Tell it your goal.<br><span class="bg-gradient-to-r from-fuchsia-400 to-sky-400 bg-clip-text text-transparent">Get a tutorial made by actually doing it.</span>
-      </h1>
-      <p class="mx-auto mt-6 max-w-2xl text-lg text-zinc-400">
-        Cueframe opens the real app in a sandbox, performs every step, checks that it worked, and stitches the recording into a short narrated video — personalised to your goal, your level and, if you want, your own files.
-      </p>
-      <div class="mt-8 flex flex-wrap justify-center gap-3">
-        <a href="/dashboard" class="rounded-xl bg-sky-600 px-5 py-3 font-medium text-white hover:bg-sky-500">Open the dashboard</a>
-        <a href="/samples" class="rounded-xl border border-white/10 px-5 py-3 font-medium text-zinc-200 hover:bg-white/5">▶ Watch sample videos</a>
-      </div>
-      <div class="mx-auto mt-14 max-w-3xl rounded-2xl border border-white/10 bg-zinc-900/70 p-4 text-left shadow-2xl">
-        <div class="flex justify-end"><div class="rounded-2xl bg-zinc-800 px-4 py-2.5 text-sm">I need a 30-second captioned vertical video from these 3 clips.</div></div>
-        <div class="mt-4 flex gap-3">
-          <div class="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-fuchsia-500 to-sky-500 text-xs font-bold">S</div>
-          <div class="flex-1 text-sm text-zinc-300">
-            <p>Using <b>Shotcut</b> (free, Linux). Plan: import clips → trim to 30 s → add captions → export 1080×1920.</p>
-            <div class="mt-3 grid grid-cols-4 gap-2 text-[11px]">
-              <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-300">Import clips<br><span class="text-emerald-400/70">verified</span></div>
-              <div class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-2 text-emerald-300">Trim to 30 s<br><span class="text-emerald-400/70">verified</span></div>
-              <div class="rounded-lg border border-sky-500/30 bg-sky-500/10 p-2 text-sky-300">Add captions<br><span class="animate-pulse text-sky-400/70">recording…</span></div>
-              <div class="rounded-lg border border-white/10 bg-white/5 p-2 text-zinc-400">Export vertical<br><span class="text-zinc-500">queued</span></div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Sample videos -->
-  <section id="samples" class="border-t border-white/10">
-    <div class="mx-auto max-w-6xl px-4 py-20">
-      <div class="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h2 class="text-3xl font-semibold tracking-tight">Made by Cueframe, start to finish</h2>
-          <p class="mt-3 max-w-2xl text-zinc-400">Each of these started as one sentence in the chat. Cueframe did the task on a real website or terminal, checked every step, and narrated it. Nobody edited them.</p>
-        </div>
-        <a href="/samples" class="rounded-xl border border-white/10 px-4 py-2 text-sm hover:bg-white/5">All sample videos →</a>
-      </div>
-      <div class="mt-10 grid gap-5 md:grid-cols-3">
-        {% for s in samples %}
-        <a href="/samples/{{ s.slug }}" class="group block overflow-hidden rounded-2xl border border-white/10 bg-zinc-900/50 transition hover:-translate-y-0.5 hover:border-sky-400/50">
-          <div class="relative aspect-video overflow-hidden bg-black">
-            <img src="{{ s.poster }}" alt="{{ s.title }}" loading="lazy" class="h-full w-full object-cover opacity-90 transition group-hover:scale-[1.03] group-hover:opacity-100">
-            <span class="absolute inset-0 grid place-items-center"><span class="grid h-14 w-14 place-items-center rounded-full bg-white/90 text-xl text-zinc-900 shadow-lg transition group-hover:scale-110">▶</span></span>
-            <span class="absolute bottom-2 right-2 rounded-md bg-black/75 px-1.5 py-0.5 text-xs font-medium">{{ s.length }}</span>
-          </div>
-          <div class="p-4">
-            <p class="text-xs text-sky-400">{{ s.site }}</p>
-            <h3 class="mt-1 font-semibold">{{ s.title }}</h3>
-          </div>
-        </a>
-        {% endfor %}
-      </div>
-    </div>
-  </section>
-
-  <!-- Why it matters -->
-  <section id="why" class="border-t border-white/10 bg-zinc-900/40">
-    <div class="mx-auto max-w-6xl px-4 py-20">
-      <h2 class="text-3xl font-semibold tracking-tight">Why it matters</h2>
-      <p class="mt-3 max-w-2xl text-zinc-400">Most people learn software from tutorials made for someone else, for another version, about a task that is almost — but not quite — theirs.</p>
-      <div class="mt-10 grid gap-5 md:grid-cols-3">
-        <div class="rounded-2xl border border-white/10 bg-zinc-950/60 p-6">
-          <div class="text-2xl">01</div>
-          <h3 class="mt-3 font-semibold">Tutorials go stale</h3>
-          <p class="mt-2 text-sm text-zinc-400">Menus move and options get renamed. Cueframe plans from the current official docs, then confirms every control against the real UI before recording.</p>
-        </div>
-        <div class="rounded-2xl border border-white/10 bg-zinc-950/60 p-6">
-          <div class="text-2xl">02</div>
-          <h3 class="mt-3 font-semibold">Generic isn't your goal</h3>
-          <p class="mt-2 text-sm text-zinc-400">You get only the minimum path to <em>your</em> outcome, at your level — or hand over your files and get the finished result plus how it was done.</p>
-        </div>
-        <div class="rounded-2xl border border-white/10 bg-zinc-950/60 p-6">
-          <div class="text-2xl">03</div>
-          <h3 class="mt-3 font-semibold">Nothing is invented</h3>
-          <p class="mt-2 text-sm text-zinc-400">Every step shown was executed and verified. Failed steps are labelled as failed, never faked — so you can trust what you're copying.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- How it works -->
-  <section id="how" class="border-t border-white/10">
-    <div class="mx-auto max-w-6xl px-4 py-20">
-      <h2 class="text-3xl font-semibold tracking-tight">How it works</h2>
-      <ol class="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {% for title, text in [
-          ("Intake", "Up to three questions: the outcome, your level and tool, and your files if it's doing the work for you."),
-          ("Research", "Official docs and the current app version, pinned in the plan with links."),
-          ("Plan", "4–8 milestones you'd name yourself, each split into small, checkable actions."),
-          ("Explore", "It looks around the real app first and maps the controls before recording anything."),
-          ("Execute & verify", "Each action is recorded with before/after snapshots and a check that it really worked."),
-          ("Stitch", "A background editor trims, narrates, highlights and captions clips into the final video."),
-        ] %}
-        <li class="rounded-2xl border border-white/10 bg-zinc-900/50 p-5">
-          <div class="text-xs font-semibold text-sky-400">STEP {{ loop.index }}</div>
-          <h3 class="mt-1 font-semibold">{{ title }}</h3>
-          <p class="mt-1.5 text-sm text-zinc-400">{{ text }}</p>
-        </li>
-        {% endfor %}
-      </ol>
-      <div class="mt-10 grid gap-5 md:grid-cols-2">
-        <div class="rounded-2xl border border-fuchsia-500/20 bg-fuchsia-500/5 p-6">
-          <h3 class="font-semibold">Teach me</h3>
-          <p class="mt-2 text-sm text-zinc-400">A tutorial on sample files with "your turn" pauses, option call-outs at decision points and a project file to follow along.</p>
-        </div>
-        <div class="rounded-2xl border border-sky-500/20 bg-sky-500/5 p-6">
-          <h3 class="font-semibold">Do it for me</h3>
-          <p class="mt-2 text-sm text-zinc-400">Works on copies of your files, delivers the finished output with a before/after check — and you can change any step afterwards.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- API first -->
-  <section class="border-t border-white/10 bg-zinc-900/40">
-    <div class="mx-auto grid max-w-6xl gap-10 px-4 py-20 md:grid-cols-2 md:items-center">
+    <div class="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_top_left,rgba(217,70,239,0.18),transparent_55%),radial-gradient(ellipse_at_top_right,rgba(14,165,233,0.18),transparent_55%)]"></div>
+    <div class="relative mx-auto grid max-w-6xl items-center gap-10 px-4 pb-14 pt-12 md:pt-20 lg:grid-cols-2">
       <div>
-        <h2 class="text-3xl font-semibold tracking-tight">Built API-first</h2>
-        <p class="mt-3 text-zinc-400">The chat is just one client. Every input — messages, images, videos, files — goes through the same REST and WebSocket API, so the agent can be driven from Postman, scripts or MCP, and long jobs keep running when you close the tab.</p>
-        <a href="/docs" class="mt-6 inline-block rounded-xl border border-white/10 px-4 py-2 text-sm hover:bg-white/5">Browse the API</a>
+        <span class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300"><span class="h-1.5 w-1.5 rounded-full bg-emerald-400"></span>Every step checked before it's shown</span>
+        <h1 class="mt-5 text-4xl font-bold leading-tight tracking-tight sm:text-5xl lg:text-6xl">
+          One sentence or one photo.<br>
+          <span class="bg-gradient-to-r from-fuchsia-400 via-violet-300 to-sky-400 bg-clip-text text-transparent">A video lesson that's actually right.</span>
+        </h1>
+        <p class="mt-5 max-w-xl text-lg text-zinc-400">Cueframe is the AI video teacher that checks its own work. Snap a maths question and watch it taught step by step on a board, or ask for a software tutorial, reel or explainer and get it recorded from a real run in a cloud sandbox, with voice and captions.</p>
+        <div class="mt-8 flex flex-col gap-3 sm:flex-row">
+          <a href="/dashboard" class="rounded-xl bg-gradient-to-r from-fuchsia-500 to-sky-500 px-6 py-3 text-center font-semibold text-white shadow-lg shadow-fuchsia-500/20 hover:opacity-90">Make your first video free</a>
+          <a href="/samples" class="rounded-xl border border-white/15 px-6 py-3 text-center font-semibold text-zinc-100 hover:bg-white/5">▶ Watch real samples</a>
+        </div>
+        <p class="mt-4 text-xs text-zinc-500">No credit card. 3 free lessons every month.</p>
       </div>
-      <pre class="overflow-x-auto rounded-2xl border border-white/10 bg-black/50 p-5 text-xs leading-relaxed text-zinc-300"><span class="text-zinc-500"># log in, then send a goal with a file</span>
-curl -X POST /api/auth/login -d '{"username":"…","password":"…"}'
-curl -X POST /api/uploads -H "Authorization: Bearer $TOKEN" \
-     -F files=@clip.mp4
-curl -X POST /api/messages -H "Authorization: Bearer $TOKEN" \
-     -d '{"content":"30 s vertical video","attachment_ids":["u_…"]}'
-<span class="text-zinc-500"># → {"conversation": …, "message": …, "job": {"status": "queued"}}</span></pre>
+      <picture>
+        <source media="(max-width: 640px)" srcset="/static/img/hero-sm.webp">
+        <img src="/static/img/hero.webp" alt="A photo of a homework question turning into a step-by-step board lesson on a laptop" class="w-full rounded-3xl" width="1536" height="1024">
+      </picture>
+    </div>
+    <div class="relative mx-auto grid max-w-6xl grid-cols-2 gap-3 px-4 pb-16 md:grid-cols-4">
+      {% for k, v in [("2–5 min", "from request to finished video"), ("Every line", "of maths checked with SymPy"), ("Real runs", "software recorded in a sandbox, never faked"), ("1080p 16:9", "voice, captions, thumbnail")] %}
+      <div class="rounded-2xl border border-white/10 bg-white/[0.03] p-4"><p class="text-xl font-semibold">{{ k }}</p><p class="mt-1 text-sm text-zinc-500">{{ v }}</p></div>
+      {% endfor %}
     </div>
   </section>
 
-  <footer class="border-t border-white/10">
-    <div class="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-8 text-sm text-zinc-500">
-      <span>Cueframe</span>
-      <a href="/dashboard" class="hover:text-white">Dashboard →</a>
+  <section id="samples" class="border-t border-white/10 bg-zinc-900/30">
+    <div class="mx-auto max-w-6xl px-4 py-16">
+      <div class="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+        <div>
+          <p class="text-xs font-medium uppercase tracking-widest text-sky-400">Made by Cueframe</p>
+          <h2 class="mt-2 text-3xl font-semibold tracking-tight">The best of what it has made</h2>
+          <p class="mt-2 max-w-2xl text-zinc-400">Each one started as a single chat message. Nobody edited them.</p>
+        </div>
+        <a href="/samples" class="text-sm font-medium text-sky-400 hover:text-sky-300">See all samples →</a>
+      </div>
+      <div class="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        {% for s in samples %}{{ card(s) }}{% endfor %}
+      </div>
     </div>
-  </footer>
+  </section>
+
+  <section id="who" class="mx-auto max-w-6xl px-4 py-16">
+    <h2 class="text-3xl font-semibold tracking-tight">Built for three kinds of people</h2>
+    <div class="mt-8 grid gap-5 md:grid-cols-3">
+      <div class="rounded-2xl border border-white/10 bg-gradient-to-b from-emerald-500/10 to-transparent p-6">
+        <span class="grid h-11 w-11 place-items-center rounded-xl bg-emerald-500/15 text-emerald-300"><svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg></span><h3 class="mt-3 text-lg font-semibold">Students &amp; parents</h3>
+        <p class="mt-2 text-sm text-zinc-400">Photograph one question. Cueframe explains what it asks, what's given, how to think about it, the formula, every step and a practice question to try. For a child, a school student or an undergrad.</p>
+      </div>
+      <div id="creators" class="rounded-2xl border border-white/10 bg-gradient-to-b from-fuchsia-500/10 to-transparent p-6">
+        <span class="grid h-11 w-11 place-items-center rounded-xl bg-fuchsia-500/15 text-fuchsia-300"><svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9.5v5l4.5-2.5z"/></svg></span><h3 class="mt-3 text-lg font-semibold">Creators &amp; dev teams</h3>
+        <p class="mt-2 text-sm text-zinc-400">Tutorials, reels and explainers from a sentence, a link, a PDF or a trending topic. Recorded from a real run, fast-forwarded where it's dull, with captions, hashtags and edits from chat.</p>
+      </div>
+      <div class="rounded-2xl border border-white/10 bg-gradient-to-b from-sky-500/10 to-transparent p-6">
+        <span class="grid h-11 w-11 place-items-center rounded-xl bg-sky-500/15 text-sky-300"><svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-5 9 5-9 5z"/><path d="M7 11.5V16c0 1.5 2.5 3 5 3s5-1.5 5-3v-4.5"/></svg></span><h3 class="mt-3 text-lg font-semibold">Teachers &amp; institutes</h3>
+        <p class="mt-2 text-sm text-zinc-400">Build a library of checked lessons in your syllabus order, share links with students, and let them ask for any question again in their own words.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="for-creators" class="border-t border-white/10">
+    <div class="mx-auto grid max-w-6xl gap-10 px-4 py-16 lg:grid-cols-2">
+      <div>
+        <p class="text-xs font-medium uppercase tracking-widest text-fuchsia-400">For content creators</p>
+        <h2 class="mt-2 text-3xl font-semibold tracking-tight">Never run out of things to post</h2>
+        <p class="mt-3 text-zinc-400">Open Cueframe and see what's trending today in your niche: GitHub repos, AI papers, models and tech news, read live. One click turns any of them into a reel, explainer or tutorial built from the source itself.</p>
+        <ul class="mt-6 space-y-3 text-sm">
+          {% for t, d in [("Trending for you", "Today's hot repos, papers, models and stories, with a Reel / Explainer / Tutorial button on each."), ("Your files and links", "Turn a PDF, slides, a repo or any link into a fact-checked explainer."), ("Real footage", "Tutorials are recorded from a real run, so the demo always works."), ("Ready to post", "Captions, hashtags, thumbnail and a hook. Ask in chat for shorter, punchier or a new hook.")] %}
+          <li class="flex gap-3"><span class="mt-1 h-2 w-2 shrink-0 rounded-full bg-fuchsia-400"></span><span><span class="font-semibold text-zinc-100">{{ t }}.</span> <span class="text-zinc-400">{{ d }}</span></span></li>
+          {% endfor %}
+        </ul>
+        <a href="/dashboard" class="mt-8 inline-block rounded-xl bg-gradient-to-r from-fuchsia-500 to-sky-500 px-6 py-3 font-semibold text-white hover:opacity-90">See what's trending now</a>
+      </div>
+      <div class="rounded-3xl border border-white/10 bg-zinc-900/60 p-4">
+        <p class="text-sm font-semibold">Trending for you <span class="font-normal text-zinc-500">· live</span></p>
+        <div class="mt-3 grid gap-2">
+          {% for k, m, t in [("Repo", "★ today on GitHub", "The repo everyone is starring today"), ("Paper", "▲ top on Hugging Face", "Today's most upvoted AI paper"), ("Model", "♥ trending model", "The new open model people are trying"), ("News", "▲ Hacker News front page", "The tech story everyone is discussing")] %}
+          <div class="rounded-xl border border-white/10 bg-white/[0.03] p-3">
+            <p class="text-[11px] text-zinc-500">{{ k }} · {{ m }}</p>
+            <p class="mt-0.5 text-sm font-medium">{{ t }}</p>
+            <div class="mt-2 flex gap-1.5 text-[11px]">{% for b in ["Reel", "Explainer", "Tutorial"] %}<span class="rounded-md border border-white/10 px-2 py-0.5 text-zinc-300">{{ b }}</span>{% endfor %}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="how" class="border-y border-white/10 bg-zinc-900/30">
+    <div class="mx-auto grid max-w-6xl items-center gap-10 px-4 py-16 lg:grid-cols-2">
+      <img src="/static/img/how.webp" alt="Chat message with a photo, checked steps in a cloud sandbox, finished video" loading="lazy" class="w-full rounded-3xl border border-white/10">
+      <div>
+        <h2 class="text-3xl font-semibold tracking-tight">How it works</h2>
+        <ol class="mt-6 space-y-5">
+          <li class="flex gap-4"><span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-fuchsia-500/20 font-semibold text-fuchsia-300">1</span><div><p class="font-semibold">Ask in chat</p><p class="text-sm text-zinc-400">A sentence, a photo, a link or a file. Cueframe asks only what it needs: the level, the format, the length.</p></div></li>
+          <li class="flex gap-4"><span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-violet-500/20 font-semibold text-violet-300">2</span><div><p class="font-semibold">It plans, then proves</p><p class="text-sm text-zinc-400">Maths is checked line by line with SymPy and reviewed by a second teacher pass. Software is rehearsed in a real cloud sandbox and fixed from what actually appeared on screen.</p></div></li>
+          <li class="flex gap-4"><span class="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-sky-500/20 font-semibold text-sky-300">3</span><div><p class="font-semibold">You get the video</p><p class="text-sm text-zinc-400">Narration, captions, highlights and a thumbnail, right in the chat. Ask for changes: shorter, more energetic, explain step 3 again.</p></div></li>
+        </ol>
+      </div>
+    </div>
+  </section>
+
+  <section id="why" class="mx-auto max-w-6xl px-4 py-16">
+    <h2 class="text-3xl font-semibold tracking-tight">Why people trust it</h2>
+    <div class="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+      {% for t, d in [("Checked, not guessed", "Every algebra, calculus and geometry claim is verified before it's drawn."), ("Truthful footage", "Tutorials show what really happened in the sandbox: real output, real results."), ("Teaches thinking", "Question → given → how to think → formula → steps → check → your turn."), ("Private by default", "Your files and videos are stored privately and shared through short-lived links.")] %}
+      <div class="rounded-2xl border border-white/10 p-5"><p class="font-semibold">{{ t }}</p><p class="mt-2 text-sm text-zinc-400">{{ d }}</p></div>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section class="border-t border-white/10 bg-zinc-900/30">
+    <div class="mx-auto max-w-6xl px-4 py-16">
+      <div class="flex flex-col justify-between gap-3 sm:flex-row sm:items-end">
+        <h2 class="text-3xl font-semibold tracking-tight">Simple pricing</h2>
+        <a href="/pricing" class="text-sm font-medium text-sky-400 hover:text-sky-300">Compare all plans →</a>
+      </div>
+      <div class="mt-8 grid gap-5 md:grid-cols-3">
+        {% for p in plans[:3] %}
+        <div class="rounded-2xl border {% if p.popular %}border-sky-400/50 bg-sky-500/5{% else %}border-white/10{% endif %} p-6">
+          <p class="font-semibold">{{ p.name }}</p>
+          <p class="mt-2"><span class="text-3xl font-bold">{{ p.price }}</span><span class="text-sm text-zinc-500">{{ p.per }}</span></p>
+          <p class="mt-2 text-sm text-zinc-400">{{ p.blurb }}</p>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 py-20 text-center">
+    <h2 class="text-3xl font-bold tracking-tight sm:text-4xl">Your next lesson is one photo away.</h2>
+    <p class="mx-auto mt-3 max-w-xl text-zinc-400">Try it with a question from today's homework, or a tutorial you've been meaning to make.</p>
+    <a href="/dashboard" class="mt-8 inline-block rounded-xl bg-gradient-to-r from-fuchsia-500 to-sky-500 px-8 py-3 font-semibold text-white hover:opacity-90">Start free</a>
+  </section>
 </main>
 {% endblock %}

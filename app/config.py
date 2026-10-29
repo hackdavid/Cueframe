@@ -45,6 +45,7 @@ class Settings:
     sandbox_image: str = "desktop"  # "board": headless math-board renderer, no desktop
     board_runner: str = "sandbox"  # "local": render math boards on this server instead
     board_cpu: float = 8
+    contact_email: str = "hello@cueframe.ai"
     sandbox_usd_per_hour: float = 0.11
     sandbox_max_active: int = 4  # across all users: caps what can be billed at once
     user_max_sandboxes: int = 2  # running at once per user
@@ -101,6 +102,7 @@ def get_settings() -> Settings:
         sandbox_term_font=_int("CUEFRAME_SANDBOX_TERM_FONT", 12),
         sandbox_apt_extra=tuple(os.environ.get("CUEFRAME_SANDBOX_APT_EXTRA", "").split()),
         board_runner=os.environ.get("CUEFRAME_BOARD_RUNNER", "sandbox"),
+        contact_email=os.environ.get("CUEFRAME_CONTACT_EMAIL", "hello@cueframe.ai"),
         board_cpu=_float("CUEFRAME_BOARD_CPU", 8),
         sandbox_usd_per_hour=_float("CUEFRAME_SANDBOX_USD_PER_HOUR", 0.11),
         sandbox_max_active=_int("CUEFRAME_SANDBOX_MAX_ACTIVE", 4),

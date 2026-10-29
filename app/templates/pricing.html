@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Pricing · Cueframe{% endblock %}
+{% block body %}
+<main class="mx-auto max-w-6xl px-4 py-14">
+  <div class="text-center">
+    <p class="text-xs font-medium uppercase tracking-widest text-sky-400">Pricing</p>
+    <h1 class="mt-2 text-4xl font-bold tracking-tight sm:text-5xl">Pay for finished videos, not minutes</h1>
+    <p class="mx-auto mt-4 max-w-2xl text-zinc-400">Start free. Upgrade when Cueframe is part of how you study, teach or publish. Yearly plans get 2 months free.</p>
+  </div>
+  <div class="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+    {% for p in plans %}
+    <div id="plan-{{ p.slug }}" class="relative flex flex-col rounded-2xl border {% if p.popular %}border-sky-400/60 bg-sky-500/5 ring-1 ring-sky-400/30{% else %}border-white/10 bg-zinc-900/40{% endif %} p-6">
+      {% if p.popular %}<span class="absolute -top-3 left-6 rounded-full bg-sky-500 px-2.5 py-0.5 text-xs font-semibold">Most popular</span>{% endif %}
+      <p class="font-semibold">{{ p.name }}</p>
+      <p class="mt-3"><span class="text-4xl font-bold">{{ p.price }}</span><span class="text-sm text-zinc-500">{{ p.per }}</span></p>
+      <p class="mt-2 text-sm text-zinc-400">{{ p.blurb }}</p>
+      <ul class="mt-5 flex-1 space-y-2 text-sm">
+        {% for f in p.features %}<li class="flex gap-2"><span class="text-emerald-400">✓</span><span class="text-zinc-300">{{ f }}</span></li>{% endfor %}
+      </ul>
+      <a href="{% if p.slug == 'studio' %}/contact{% else %}/dashboard{% endif %}" class="mt-6 rounded-xl {% if p.popular %}bg-gradient-to-r from-fuchsia-500 to-sky-500 text-white{% else %}border border-white/15 hover:bg-white/5{% endif %} px-4 py-2.5 text-center text-sm font-semibold">{{ p.cta }}</a>
+    </div>
+    {% endfor %}
+  </div>
+
+  <h2 class="mt-20 text-2xl font-semibold tracking-tight">Packages</h2>
+  <div class="mt-6 grid gap-5 md:grid-cols-3">
+    {% for k in packages %}
+    <div class="rounded-2xl border border-white/10 p-6"><p class="font-semibold">{{ k.name }}</p><p class="mt-1 text-sky-400">{{ k.price }}</p><p class="mt-2 text-sm text-zinc-400">{{ k.text }}</p></div>
+    {% endfor %}
+  </div>
+
+  <div id="creators" class="mt-20 overflow-hidden rounded-3xl border border-fuchsia-400/30 bg-gradient-to-br from-fuchsia-500/15 via-violet-500/10 to-sky-500/15 p-8 md:p-12">
+    <h2 class="text-2xl font-semibold tracking-tight sm:text-3xl">Creator program</h2>
+    <p class="mt-3 max-w-2xl text-zinc-300">Make videos with Cueframe for your audience and get free Creator access plus 30% of what your referrals pay for their first 12 months.</p>
+    <a href="/contact" class="mt-6 inline-block rounded-xl bg-white px-5 py-2.5 text-sm font-semibold text-zinc-900 hover:bg-zinc-200">Apply as a creator</a>
+  </div>
+
+  <h2 class="mt-20 text-2xl font-semibold tracking-tight">Questions</h2>
+  <div class="mt-6 divide-y divide-white/10 rounded-2xl border border-white/10">
+    {% for q, a in faq %}
+    <details class="group p-5"><summary class="cursor-pointer list-none font-medium">{{ q }}<span class="float-right text-zinc-500 group-open:rotate-45">+</span></summary><p class="mt-3 text-sm text-zinc-400">{{ a }}</p></details>
+    {% endfor %}
+  </div>
+  <p class="mt-8 text-center text-xs text-zinc-600">Prices in USD, excluding local taxes. See <a href="/terms" class="underline">terms</a> and <a href="/refunds" class="underline">refunds</a>.</p>
+</main>
+{% endblock %}

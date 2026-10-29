@@ -1,23 +1,36 @@
 <nav class="sticky top-0 z-40 h-14 border-b border-white/10 bg-zinc-950/80 backdrop-blur">
   <div class="mx-auto flex h-full {% if wide %}max-w-none{% else %}max-w-6xl{% endif %} items-center gap-6 px-4">
     <a href="/" class="flex items-center gap-2 font-semibold tracking-tight">
-      <span class="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-fuchsia-500 to-sky-500 text-sm font-bold">S</span>
+      <span class="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-fuchsia-500 to-sky-500 text-sm font-bold">C</span>
       Cueframe
     </a>
-    <div class="hidden items-center gap-5 text-sm text-zinc-400 sm:flex">
-      <a href="/samples" class="hover:text-white">Sample videos</a>
-      <a href="/#why" class="hover:text-white">Why it matters</a>
-      <a href="/#how" class="hover:text-white">How it works</a>
+    <div class="hidden items-center gap-5 text-sm text-zinc-400 md:flex">
+      <a href="/samples" class="hover:text-white">Samples</a>
+      <a href="/samples#math" class="hover:text-white">Math tutor</a>
+      <a href="/#creators" class="hover:text-white">For creators</a>
+      <a href="/pricing" class="hover:text-white">Pricing</a>
       <a href="/docs" class="hover:text-white">API</a>
     </div>
     <div class="ml-auto flex items-center gap-3 text-sm">
       {% if user %}
-        <span class="hidden text-zinc-500 sm:inline">{{ user.username }}</span>
+        <span class="hidden text-zinc-500 lg:inline">{{ user.username }}</span>
         <a href="/dashboard" class="rounded-lg bg-sky-600 px-3 py-1.5 font-medium text-white hover:bg-sky-500">Dashboard</a>
-        <a href="/logout" class="text-zinc-400 hover:text-white">Log out</a>
+        <a href="/logout" class="hidden text-zinc-400 hover:text-white sm:inline">Log out</a>
       {% else %}
-        <a href="/dashboard" class="rounded-lg bg-sky-600 px-3 py-1.5 font-medium text-white hover:bg-sky-500">Dashboard</a>
+        <a href="/login" class="hidden text-zinc-300 hover:text-white sm:inline">Log in</a>
+        <a href="/dashboard" class="rounded-lg bg-gradient-to-r from-fuchsia-500 to-sky-500 px-3 py-1.5 font-medium text-white hover:opacity-90">Try it free</a>
       {% endif %}
+      <details class="relative md:hidden" onclick="if (event.target.closest('a')) this.open = false">
+        <summary class="grid h-9 w-9 cursor-pointer list-none place-items-center rounded-lg border border-white/10 text-zinc-300" aria-label="Menu">☰</summary>
+        <div class="absolute right-0 top-11 w-52 rounded-xl border border-white/10 bg-zinc-900 p-2 text-sm shadow-xl">
+          <a href="/samples" class="block rounded-lg px-3 py-2 hover:bg-white/5">Samples</a>
+          <a href="/samples#math" class="block rounded-lg px-3 py-2 hover:bg-white/5">Math tutor</a>
+          <a href="/#creators" class="block rounded-lg px-3 py-2 hover:bg-white/5">For creators</a>
+          <a href="/pricing" class="block rounded-lg px-3 py-2 hover:bg-white/5">Pricing</a>
+          <a href="/docs" class="block rounded-lg px-3 py-2 hover:bg-white/5">API</a>
+          {% if user %}<a href="/logout" class="block rounded-lg px-3 py-2 hover:bg-white/5">Log out</a>{% else %}<a href="/login" class="block rounded-lg px-3 py-2 hover:bg-white/5">Log in</a>{% endif %}
+        </div>
+      </details>
     </div>
   </div>
 </nav>

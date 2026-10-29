@@ -4,7 +4,10 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
+from app import legal
 from app.auth import COOKIE, logout, optional_user
+from app.config import get_settings
+from app.plans import FAQ, PACKAGES, PLANS
 from app.samples import BY_SLUG, MATH_SAMPLES, SAMPLES
 
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
@@ -16,7 +19,11 @@ def landing(request: Request) -> Response:
     return templates.TemplateResponse(
         request,
         "landing.html",
-        {"user": optional_user(request), "samples": [MATH_SAMPLES[0], *SAMPLES[:2]]},
+        {
+            "user": optional_user(request),
+            "samples": [*MATH_SAMPLES[:3], *SAMPLES[:3]],
+            "plans": PLANS,
+        },
     )
 
 
@@ -47,6 +54,24 @@ def samples_page(request: Request, slug: str | None = None) -> Response:
             "current": current,
         },  # fmt: skip
     )
+
+
+@router.get("/pricing", response_class=HTMLResponse)
+def pricing(request: Request) -> Response:
+    ctx = {"user": optional_user(request), "plans": PLANS, "packages": PACKAGES, "faq": FAQ}
+    return templates.TemplateResponse(request, "pricing.html", ctx)
+
+
+def legal_page(request: Request) -> Response:
+    slug = request.url.path.strip("/")
+    email = get_settings().contact_email
+    ctx = {"user": optional_user(request), "doc": legal.docs(email)[slug], "slug": slug,
+           "email": email, "updated": legal.UPDATED}  # fmt: skip
+    return templates.TemplateResponse(request, "legal.html", ctx)
+
+
+for _slug in legal.docs(""):
+    router.add_api_route(f"/{_slug}", legal_page, response_class=HTMLResponse)
 
 
 @router.get("/login", response_class=HTMLResponse)

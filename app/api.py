@@ -16,6 +16,7 @@ from fastapi import (
 from pydantic import BaseModel, Field
 
 from app import auth, services
+from app.agents import feed
 from app.agents.contracts import ResearchRequest, ResearchResult
 from app.agents.docs_research import DocsResearchAgent
 from app.auth import User, websocket_user
@@ -403,3 +404,9 @@ async def edit_state(
 async def rerender(request: Request, tid: str, user: User) -> dict[str, Any]:
     """Render the current graph again (unchanged segments come from the cache)."""
     return {"job": _edit_job(request, _tutorial_or_404(request, tid, user), "Re-render", [])}
+
+
+@router.get("/trending", tags=["agents"])
+async def trending(user: User, niche: str = "all") -> list[dict[str, Any]]:
+    """Today's trending repos, papers, models and tech news, each with video prompts."""
+    return await feed.trending(niche)

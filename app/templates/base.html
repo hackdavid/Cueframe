@@ -3,13 +3,19 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Cueframe{% endblock %}</title>
-  <meta name="description" content="Cueframe learns real software by doing the task in a sandbox, records every verified step, and turns it into a personalised tutorial video.">
+  <title>{% block title %}Cueframe: video lessons from one sentence or one photo{% endblock %}</title>
+  <meta name="description" content="{% block description %}Cueframe turns one sentence or a photo of a question into a narrated, checked video lesson: step-by-step maths on a teacher's board, real software tutorials, reels and explainers.{% endblock %}">
+  <meta property="og:title" content="Cueframe: video lessons from one sentence or one photo">
+  <meta property="og:description" content="The AI video teacher that checks its own work.">
+  <meta property="og:image" content="/static/img/og.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="theme-color" content="#09090b">
   <link rel="stylesheet" href="/static/css/app.css">
   {% block head %}{% endblock %}
 </head>
 <body class="{% block body_class %}min-h-full{% endblock %} bg-zinc-950 font-sans text-zinc-100 antialiased">
   {% include "_nav.html" %}
   {% block body %}{% endblock %}
+  {% block footer %}{% include "_footer.html" %}{% endblock %}
 </body>
 </html>

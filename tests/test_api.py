@@ -231,3 +231,74 @@ def test_sample_media_redirects_to_signed_r2_link(anon, monkeypatch):
     assert res.status_code == 307 and res.headers["location"].endswith("samples/mdn-fetch-api.mp4")
     assert anon.get("/samples/media/other.mp4", follow_redirects=False).status_code == 404
     assert anon.get("/samples/media/mdn-fetch-api.txt", follow_redirects=False).status_code == 404
+
+
+def test_marketing_and_legal_pages(client):
+    from fastapi.testclient import TestClient
+
+    anon = TestClient(client.app)
+    home = anon.get("/").text
+    for part in ("One sentence or one photo", "/static/img/hero.webp", "/pricing", "/privacy",
+                 "/samples/math-quadratic-formula", "/samples/reel-google-trends"):  # fmt: skip
+        assert part in home, part
+    pricing = anon.get("/pricing")
+    assert pricing.status_code == 200 and "Student Pro" in pricing.text and "$9" in pricing.text
+    for slug, words in [("terms", "Terms of service"), ("privacy", "Privacy policy"),
+                        ("refunds", "Refunds"), ("acceptable-use", "Acceptable use"),
+                        ("contact", "mailto:")]:  # fmt: skip
+        r = anon.get(f"/{slug}")
+        assert r.status_code == 200 and words in r.text, slug
+    assert anon.get("/static/img/og.jpg").status_code == 200
+    assert anon.get("/login").status_code == 200
+
+
+def test_pricing_anchor_ids_are_unique(client):
+    import re
+
+    from fastapi.testclient import TestClient
+
+    ids = re.findall(r'id="([^"]+)"', TestClient(client.app).get("/pricing").text)
+    assert len(ids) == len(set(ids)) and ids.count("creators") == 1
+
+
+def test_trending_feed_interleaves_sources_and_skips_failures():
+    from app.agents import feed
+
+    class FakeTools:
+        async def github_trending(self):
+            return [{"repo": f"a/r{i}", "description": "d", "url": f"https://github.com/a/r{i}",
+                     "stars_gained": 900, "period": "today"} for i in range(3)]  # fmt: skip
+
+        async def hf_daily_papers(self, n):
+            raise RuntimeError("down")
+
+        async def hf_trending(self, kind, n):
+            return [{"id": "m/x", "task": "text-generation", "url": "https://hf.co/m/x",
+                     "likes": 5}]  # fmt: skip
+
+        async def hacker_news(self, n):
+            return [{"title": "Story", "comments": 3, "url": "", "points": 10,
+                     "discussion": "https://news.ycombinator.com/item?id=1"}]  # fmt: skip
+
+    items = asyncio.run(feed.trending("all", FakeTools()))
+    assert [i["kind"] for i in items] == ["Repo", "Model", "News", "Repo", "Repo"]
+    assert (
+        items[0]["prompts"]["reel"] == "Make a 45 second reel about a/r0 (https://github.com/a/r0)"
+    )
+    assert items[2]["url"] == "https://news.ycombinator.com/item?id=1"
+
+
+def test_trending_route_and_creator_section(client, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.agents import feed
+
+    async def fake(niche="all", tools=None):
+        return [{"kind": "Repo", "title": niche}]
+
+    monkeypatch.setattr(feed, "trending", fake)
+    assert client.get("/api/trending?niche=ai").json() == [{"kind": "Repo", "title": "ai"}]
+    assert TestClient(client.app).get("/api/trending").status_code == 401
+    home = TestClient(client.app).get("/").text
+    assert "Never run out of things to post" in home and "Trending for you" in home
+    assert 'id="trend-list"' in client.get("/dashboard").text
