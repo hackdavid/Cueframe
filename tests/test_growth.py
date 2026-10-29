@@ -127,3 +127,20 @@ def test_languages():
     assert languages.detect("make a reel about vllm") is None
     assert "Hindi (हिन्दी)" in languages.instruction("hi") and languages.instruction(None) == ""
     assert usage.costs('{"video": 1}')["video"] == 1
+
+
+def test_end_card_title_clears_qr(tmp_path):
+    from PIL import Image, ImageDraw
+
+    png = endcard.card(tmp_path / "c.png", "https://cueframe.ai/r/abcd1234")
+    d = ImageDraw.Draw(Image.open(png))
+    title = "Made with Cueframe"
+    size = next(s for s in range(92, 39, -4)
+                if d.textlength(title, font=endcard._font(s)) <= endcard.QR_X - 390)  # fmt: skip
+    assert 310 + d.textlength(title, font=endcard._font(size)) < endcard.QR_X
+
+
+def test_board_image_has_script_fonts():
+    from app.sandbox.modal_box import BOARD_APT
+
+    assert "fonts-noto-core" in BOARD_APT

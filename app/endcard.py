@@ -11,6 +11,7 @@ from app.log import fields, get_logger
 log = get_logger("endcard")
 SECONDS = 2.0
 W, H = 1920, 1080
+QR_X = 1400  # left edge of the 420 px QR code
 FONTS = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]  # fmt: skip
 
@@ -35,7 +36,10 @@ def card(path: Path, url: str) -> Path:
         d.line([(0, y), (W, y)], fill=(int(9 + 40 * a), int(9 + 18 * a), int(11 + 70 * a)))
     d.rounded_rectangle((150, 330, 270, 450), 28, fill="#8b5cf6")
     d.text((210, 390), "C", font=_font(78), fill="white", anchor="mm")
-    d.text((310, 340), "Made with Cueframe", font=_font(92), fill="white")
+    size = 92  # the title must end well before the QR code
+    while size > 40 and d.textlength("Made with Cueframe", font=_font(size)) > QR_X - 80 - 310:
+        size -= 4
+    d.text((310, 340), "Made with Cueframe", font=_font(size), fill="white")
     d.text((314, 470), "One sentence or one photo in,", font=_font(48, False), fill="#d4d4d8")
     d.text((314, 535), "a checked video lesson out.", font=_font(48, False), fill="#d4d4d8")
     d.text((314, 650), url.split("://")[-1], font=_font(46), fill="#38bdf8")
@@ -43,8 +47,8 @@ def card(path: Path, url: str) -> Path:
     qr.add_data(url)
     q = qr.make_image(fill_color="black", back_color="white").get_image().convert("RGB")
     q = q.resize((420, 420))
-    img.paste(q, (1350, 330))
-    d.text((1560, 790), "Scan to make your own", font=_font(34, False), fill="#a1a1aa",
+    img.paste(q, (QR_X, 330))
+    d.text((QR_X + 210, 790), "Scan to make your own", font=_font(34, False), fill="#a1a1aa",
            anchor="mm")  # fmt: skip
     img.save(path)
     return path
