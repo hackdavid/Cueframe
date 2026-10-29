@@ -218,7 +218,8 @@ def test_sample_videos_page_is_public(anon):
     assert "/samples/media/math-pythagoras-proof.mp4" in page.text
     assert anon.get("/samples/math-fractions-child").status_code == 200
     assert anon.get("/samples/nope").status_code == 404
-    assert "/samples/explainer-chronoreplay" in anon.get("/").text
+    assert "/samples/math-photo-rectangle" in anon.get("/").text
+    assert 'src="/samples/media/math-photo-rectangle.mp4"' in page.text  # shown first
 
 
 def test_sample_media_redirects_to_signed_r2_link(anon, monkeypatch):

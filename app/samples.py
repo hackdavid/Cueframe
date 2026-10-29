@@ -186,6 +186,28 @@ SAMPLES = [
 # plans sent back by the checks or the reviewer.
 MATH_SAMPLES = [
     {
+        "slug": "math-photo-rectangle",
+        "title": "From a photo of homework: a rectangle with area 40 cm²",
+        "site": "Math board · photo of a question · high school, 114 s",
+        "request": "Teach me this question (with a photo of the homework attached)",
+        "steps": [
+            "Read the question in the photo",
+            "Let's talk about the question",
+            "What we're given",
+            "How we'll think",
+            "Area formula, on the right",
+            "Build the quadratic",
+            "Factorise",
+            "Reject the negative width",
+            "Picture the rectangle",
+            "Your turn",
+            "Check and box the answer",
+        ],  # fmt: skip
+        "length": "1:54",
+        "made_in": "2.8 min",
+        "fixes": 0,
+    },
+    {
         "slug": "math-quadratic-formula",
         "title": "Solve x² − 5x + 6 = 0 with the quadratic formula, like a teacher",
         "site": "Math board · high school, 73 s",

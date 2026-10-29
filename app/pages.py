@@ -14,7 +14,9 @@ router = APIRouter(include_in_schema=False)
 @router.get("/", response_class=HTMLResponse)
 def landing(request: Request) -> Response:
     return templates.TemplateResponse(
-        request, "landing.html", {"user": optional_user(request), "samples": SAMPLES[:3]}
+        request,
+        "landing.html",
+        {"user": optional_user(request), "samples": [MATH_SAMPLES[0], *SAMPLES[:2]]},
     )
 
 
@@ -34,7 +36,7 @@ def sample_media(request: Request, name: str) -> Response:
 def samples_page(request: Request, slug: str | None = None) -> Response:
     if slug is not None and slug not in BY_SLUG:
         raise HTTPException(404, "Sample not found")
-    current = BY_SLUG[slug] if slug else SAMPLES[0]
+    current = BY_SLUG[slug] if slug else MATH_SAMPLES[0]
     return templates.TemplateResponse(
         request,
         "samples.html",
