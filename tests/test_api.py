@@ -250,3 +250,12 @@ def test_marketing_and_legal_pages(client):
         assert r.status_code == 200 and words in r.text, slug
     assert anon.get("/static/img/og.jpg").status_code == 200
     assert anon.get("/login").status_code == 200
+
+
+def test_pricing_anchor_ids_are_unique(client):
+    import re
+
+    from fastapi.testclient import TestClient
+
+    ids = re.findall(r'id="([^"]+)"', TestClient(client.app).get("/pricing").text)
+    assert len(ids) == len(set(ids)) and ids.count("creators") == 1

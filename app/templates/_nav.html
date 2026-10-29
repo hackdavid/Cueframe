@@ -20,7 +20,7 @@
         <a href="/login" class="hidden text-zinc-300 hover:text-white sm:inline">Log in</a>
         <a href="/dashboard" class="rounded-lg bg-gradient-to-r from-fuchsia-500 to-sky-500 px-3 py-1.5 font-medium text-white hover:opacity-90">Try it free</a>
       {% endif %}
-      <details class="relative md:hidden">
+      <details class="relative md:hidden" onclick="if (event.target.closest('a')) this.open = false">
         <summary class="grid h-9 w-9 cursor-pointer list-none place-items-center rounded-lg border border-white/10 text-zinc-300" aria-label="Menu">☰</summary>
         <div class="absolute right-0 top-11 w-52 rounded-xl border border-white/10 bg-zinc-900 p-2 text-sm shadow-xl">
           <a href="/samples" class="block rounded-lg px-3 py-2 hover:bg-white/5">Samples</a>

@@ -9,7 +9,7 @@
   </div>
   <div class="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
     {% for p in plans %}
-    <div id="{{ p.slug }}s" class="relative flex flex-col rounded-2xl border {% if p.popular %}border-sky-400/60 bg-sky-500/5 ring-1 ring-sky-400/30{% else %}border-white/10 bg-zinc-900/40{% endif %} p-6">
+    <div id="plan-{{ p.slug }}" class="relative flex flex-col rounded-2xl border {% if p.popular %}border-sky-400/60 bg-sky-500/5 ring-1 ring-sky-400/30{% else %}border-white/10 bg-zinc-900/40{% endif %} p-6">
       {% if p.popular %}<span class="absolute -top-3 left-6 rounded-full bg-sky-500 px-2.5 py-0.5 text-xs font-semibold">Most popular</span>{% endif %}
       <p class="font-semibold">{{ p.name }}</p>
       <p class="mt-3"><span class="text-4xl font-bold">{{ p.price }}</span><span class="text-sm text-zinc-500">{{ p.per }}</span></p>
