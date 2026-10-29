@@ -83,7 +83,8 @@ from real runs in a Linux desktop sandbox. Pick:
   highlights, title, re-render).
 - math_tutor: the user wants a math problem solved, explained or taught step by step,
   a formula derived or proved, an equation, derivative, integral or limit worked out,
-  or a geometry construction or proof. It becomes a narrated board lesson (drawn, not
+  or a geometry construction or proof, including a photo of a math question they
+  attached ("solve this", "teach me this"). It becomes a narrated board lesson (drawn, not
   a screen recording). Set `level` to "child" (primary school), "school" (high school)
   or "undergrad" when the message says or clearly implies who it's for, else null;
   `seconds` if they ask for a length.

@@ -32,7 +32,10 @@ teacher speaks while that step is written. Talk to the student ("we", "let's", "
    geometry figure with real coordinates for constructions and proofs.
 8. **Common mistake.** One short `text` note on the trap students fall into, with
    `cross` on a wrong line if you show it.
-9. **Check and wrap up.** Verify the answer (substitute back, differentiate the
+9. **Your turn.** A `section` "Your turn" with one similar practice question as a
+   `write` line. Say "Pause the video and try it", then in the next step write its
+   answer with a check.
+10. **Check and wrap up.** Verify the answer (substitute back, differentiate the
    antiderivative, compare with the picture), `box` the final answer in green, and end
    with one line on the thinking habit to remember.
 

@@ -190,6 +190,8 @@ class BoardLLM:
             return Route(intent="math_tutor", level=None), None
         if schema is BoardPlan:
             return self.plans.pop(0), None
+        if schema is tutor.Question:
+            return tutor.Question(found=True, question="Solve 2x + 3 = 11"), None
         if schema is tutor.Review:
             return tutor.Review(ok=True, issues=[]), None
         raise AssertionError(schema)
@@ -308,3 +310,42 @@ def test_point_labels_avoid_axis_numbers():
     nums = [_box(n) for n in (*ax.x_axis.numbers, *ax.y_axis.numbers)]
     for it in items[2:]:
         assert not any(_overlap(_box(it.mobs[1]), n) for n in nums)
+
+
+def test_photo_question_is_read_then_taught(client, monkeypatch, settings):
+    _fakes(monkeypatch)
+    llm = BoardLLM([SIMPLE])
+    client.app.state.jobs.llm = llm
+
+    async def board(ctx, run, p, problem, work):
+        tl = timeline.build(p, _voiced(p))
+        return (
+            p,
+            tl,
+            {"errors": [], "board_height": 9.5, "camera_moves": 3},
+            {"seconds": tl["seconds"], "render_seconds": 4.0, "parts": 2},
+        )
+
+    def mix(work, tl, n):
+        for f in ("tutor.mp4", "thumbnail.png", "captions.srt"):
+            (work / f).write_bytes(b"x")
+        return work / "tutor.mp4"
+
+    monkeypatch.setattr(tutor, "_board", board)
+    monkeypatch.setattr(tutor, "_mix", mix)
+    up = client.post("/api/uploads", headers=_auth(client),
+                     files={"files": ("q.png", b"\x89PNG fake", "image/png")}).json()  # fmt: skip
+    body = {"content": "For a high school student: teach me this", "attachment_ids": [up[0]["id"]]}
+    res = client.post("/api/messages", json=body, headers=_auth(client)).json()
+    job = _wait(client, res["job"]["id"], {"succeeded", "failed", "waiting_input"})
+    if job["status"] == "waiting_input":
+        ans = {"input_id": job["pending_input"]["input_id"], "value": "High school"}
+        client.post(f"/api/jobs/{job['id']}/answer", headers=_auth(client), json=ans)
+        job = _wait(client, job["id"], {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    assert "Question" in [n for n, _ in llm.inputs]
+    plan_input = next(i for n, i in llm.inputs if n == "BoardPlan")
+    assert "read from the student's photo: Solve 2x + 3 = 11" in plan_input
+    cid = res["conversation"]["id"]
+    msgs = client.get(f"/api/conversations/{cid}", headers=_auth(client)).json()["messages"]
+    assert any("The question in your photo" in m["content"] for m in msgs)

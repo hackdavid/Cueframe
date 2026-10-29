@@ -3,6 +3,7 @@ The board is drawn, never recorded: it renders in a headless sandbox (or on this
 with CUEFRAME_BOARD_RUNNER=local) and the narration is mixed in here."""
 
 import asyncio
+import base64
 import dataclasses
 import json
 import subprocess
@@ -41,6 +42,39 @@ class Review(BaseModel):
         "the level needs, narration that doesn't match the board, a figure that doesn't "
         "show what is said; [] if ok"
     )
+
+
+class Question(BaseModel):
+    """LLM contract: the one math question in a student's photo."""
+
+    found: bool = Field(description="True if the photo shows a math question")
+    question: str = Field(description="That question written out exactly in plain text "
+                          "(^ for powers, / for fractions), '' if none")  # fmt: skip
+    reason: str = Field("", description="Why not, when found is false")
+
+
+async def from_photo(ctx: JobContext, text: str) -> str:
+    """If the message has a photo, read the single question in it and teach that."""
+    imgs = [a for a in ctx.input.get("attachments") or []
+            if (a.get("content_type") or "").startswith("image/")]  # fmt: skip
+    if not imgs:
+        return text
+    a = imgs[0]
+    data = (ctx.settings.uploads_dir / a["id"] / a["filename"]).read_bytes()
+    url = f"data:{a['content_type']};base64,{base64.b64encode(data).decode()}"
+    ctx.thinking("Tutor", "Reading the question in your photo")
+    q, _ = await ctx.llm.parse(
+        Question, purpose="board.photo", model=ctx.settings.research_model,
+        instructions="Read the one math question in the student's photo. Copy it exactly; "
+        "don't solve it. If there are several, take the first.",
+        input=[{"role": "user", "content": [
+            {"type": "input_text", "text": f"Student's message: {text}"},
+            {"type": "input_image", "image_url": url}]}],
+    )  # fmt: skip
+    if not q.found or not q.question.strip():
+        raise JobFailed(f"I couldn't read a math question in the photo: {q.reason}", {})
+    ctx.reply(f"**The question in your photo:** {q.question}")
+    return f"{text}\n\nThe question, read from the student's photo: {q.question}"
 
 
 async def clarify(ctx: JobContext, level: Level | None) -> Level:
@@ -193,7 +227,9 @@ async def _voice(p: BoardPlan, work: Path) -> list[tuple[float, list[dict]]]:
 
 async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work: Path,
                  ) -> tuple[BoardPlan, dict, dict, dict]:  # fmt: skip
-    """LaTeX check (repairing the plan from the errors), voice, then the render."""
+    """LaTeX check (repairing the plan from the errors), voice, then the render. The
+    voice is recorded while the board is typeset; only a repaired plan re-records it."""
+    voicing, voiced_for = asyncio.create_task(_voice(p, work)), p
     for attempt in range(3):
         await run.put("plan.json", p.model_dump_json().encode())
         ctx.phase("check", "Typesetting every line of the board")
@@ -209,7 +245,7 @@ async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work:
             raise JobFailed("Some board lines still couldn't be drawn", {"errors": errs})
         fixed, _ = await ctx.llm.parse(
             BoardPlan, purpose="board.fix", model=ctx.settings.research_model,
-            instructions=skill(),
+            instructions=skill(), reasoning_effort="low",
             input=f"Plan:\n{p.model_dump_json()}\n\nThese ops failed to render; return the "
             "whole plan with only those ops fixed:\n- " + "\n- ".join(errs),
         )  # fmt: skip
@@ -220,8 +256,11 @@ async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work:
             raise JobFailed(f"The fixed plan failed its checks: {'; '.join(issues)}",
                             {"issues": issues})  # fmt: skip
         p = fixed
+    if voiced_for is not p:
+        voicing.cancel()
+        voicing = asyncio.create_task(_voice(p, work))
     ctx.phase("voice", "Recording the teacher's voice")
-    voiced = await _voice(p, work)
+    voiced = await voicing
     tl = timeline.build(p, voiced)
     (work / "timeline.json").write_text(json.dumps(tl))
     await run.put("timeline.json", json.dumps(tl).encode())
@@ -275,6 +314,7 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
     if not conv or ctx.llm is None or not ctx.llm.configured:
         raise ValueError("board lessons need a conversation and a model")
     t0 = time.monotonic()
+    problem = await from_photo(ctx, problem)
     level = await clarify(ctx, level)
     ctx.phase("plan", "Planning the board")
     p = await plan(ctx, problem, level, seconds)

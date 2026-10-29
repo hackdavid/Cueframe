@@ -167,7 +167,7 @@ class Builder:
                 return Item([t], lambda: m.AnimationGroup(
                     m.Indicate(src, color=COLORS["blue"], scale_factor=1.04), m.Write(t),
                     lag_ratio=0.3), b)  # fmt: skip
-            return Item([t], lambda: m.Write(t), b)
+            return Item([t], lambda: _pen(m.Write(t), t), b)
         if op.kind == "text":
             t = text(op.text, self.board.width(), 28, c if op.color != "ink" else MUTED)
             return Item([t], lambda: m.Write(t), self._row(t))
@@ -357,7 +357,10 @@ class Builder:
             out = out / (np.linalg.norm(out) or 1) if np.linalg.norm(out) > 0.2 else m.UR
             lab = m.MathTex(name, tex_template=TEMPLATE, font_size=34, color=c)
             fig.taken.append(_box(dot))
-            self._place(lab, p, [d for d in (m.UR, m.UL, m.DR, m.DL) if np.dot(d, out) > 0])
+            # On a graph, label above the point so it never reads as an axis number.
+            dirs = ([m.UL, m.UR, m.UP] if fig.axes else
+                    [d for d in (m.UR, m.UL, m.DR, m.DL) if np.dot(d, out) > 0])  # fmt: skip
+            self._place(lab, p, dirs)
             return Item([dot, lab], lambda: m.AnimationGroup(m.GrowFromCenter(dot),
                                                              m.Write(lab)), b)  # fmt: skip
         pts = [fig.pts[n] for n in op.points]
@@ -407,6 +410,22 @@ class Builder:
             self._place(lab, p, [m.UR, m.UL])
             return Item([lab], lambda: m.Write(lab), b)
         raise ValueError(f"unknown op {op.kind}")
+
+
+def _pen(write: m.Animation, t: m.Mobject) -> m.Animation:
+    """A pen tip that moves along the line while it is written, like a teacher's marker."""
+    pen = m.VGroup(
+        m.Dot(radius=0.075, color=COLORS["orange"]),
+        m.Line([0, 0, 0], [0.32, 0.5, 0], color=COLORS["orange"], stroke_width=6),
+    )
+    pen.set_opacity(0)
+    x0, x1, y = t.get_left()[0], t.get_right()[0], t.get_bottom()[1] + 0.05
+
+    def follow(mob: m.Mobject, a: float) -> None:
+        mob.move_to([x0 + (x1 - x0) * a + 0.15, y + 0.25, 0])
+        mob.set_opacity(0 if a >= 0.99 else 1)
+
+    return m.AnimationGroup(write, m.UpdateFromAlphaFunc(pen, follow))
 
 
 def _grid(top: float, bottom: float) -> m.VGroup:
