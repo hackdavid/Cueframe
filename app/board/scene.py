@@ -163,8 +163,10 @@ class Builder:
             t = m.MathTex(op.latex, tex_template=TEMPLATE, color=c, font_size=46)
             b = self._row(t)
             src = self.objs.get(op.target)
-            if src is not None:
-                return Item([t], lambda: m.TransformMatchingShapes(src.copy(), t), b)
+            if src is not None:  # flag the line it comes from, never draw over it
+                return Item([t], lambda: m.AnimationGroup(
+                    m.Indicate(src, color=COLORS["blue"], scale_factor=1.04), m.Write(t),
+                    lag_ratio=0.3), b)  # fmt: skip
             return Item([t], lambda: m.Write(t), b)
         if op.kind == "text":
             t = text(op.text, self.board.width(), 28, c if op.color != "ink" else MUTED)

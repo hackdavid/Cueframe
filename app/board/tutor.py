@@ -238,6 +238,16 @@ def _mix(work: Path, tl: dict, n: int) -> Path:
 
 async def make(ctx: JobContext, problem: str, level: Level | None = None,
                seconds: int | None = None) -> dict[str, Any]:  # fmt: skip
+    """A board lesson; any failure is also explained in the chat, not just on the job."""
+    try:
+        return await _make(ctx, problem, level, seconds)
+    except Exception as exc:
+        ctx.reply(f"**I couldn't make this lesson:** {exc}")
+        raise
+
+
+async def _make(ctx: JobContext, problem: str, level: Level | None = None,
+               seconds: int | None = None) -> dict[str, Any]:  # fmt: skip
     import os
 
     missing = [k for k in ("ELEVENLABS_API_KEY", "ELEVENLABS_VOICE_ID") if not os.environ.get(k)]

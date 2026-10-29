@@ -224,3 +224,22 @@ def test_chat_makes_a_checked_board_lesson(client, monkeypatch):
     tid = job["result"]["tutorial_id"]
     tut = client.get(f"/api/tutorials/{tid}", headers=_auth(client)).json()
     assert tut["status"] == "ready" and tut["recipe"] == "board"
+
+
+def test_refused_lesson_explains_why_in_chat(client, monkeypatch):
+    _fakes(monkeypatch)
+    no = SIMPLE.model_copy(update={"feasible": False, "reason": "1 = 2 is false"})
+    client.app.state.jobs.llm = BoardLLM([no])
+    body = {"content": "For a high school student: prove that 1 = 2"}
+    res = client.post("/api/messages", json=body, headers=_auth(client)).json()
+    job = _wait(client, res["job"]["id"], {"waiting_input", "failed", "succeeded"})
+    if job["status"] == "waiting_input":
+        ans = {"input_id": job["pending_input"]["input_id"], "value": "High school"}
+        client.post(f"/api/jobs/{job['id']}/answer", headers=_auth(client), json=ans)
+        job = _wait(client, job["id"], {"failed", "succeeded"})
+    assert job["status"] == "failed"
+    cid = res["conversation"]["id"]
+    msgs = client.get(f"/api/conversations/{cid}", headers=_auth(client)).json()["messages"]
+    assert "I couldn't make this lesson" in msgs[-1]["content"]
+    assert "1 = 2 is false" in msgs[-1]["content"]
+    assert client.get("/api/sandboxes", headers=_auth(client)).json() == []
