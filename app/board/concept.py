@@ -82,6 +82,21 @@ def unsupported(plan: BoardPlan, source: str) -> list[str]:
     return out
 
 
+WORDS_PER_SECOND = 2.5
+
+
+def too_long(plan: BoardPlan, seconds: int | None) -> list[str]:
+    """The narration must fit the length the viewer asked for (about 2.5 spoken words/s)."""
+    if not seconds:
+        return []
+    words = sum(len(st.say.split()) for st in plan.steps)
+    limit = int(seconds * WORDS_PER_SECOND * 1.1)
+    if words <= limit:
+        return []
+    return [f"the narration is {words} words, about {words / WORDS_PER_SECOND:.0f} s; "
+            f"cut it to at most {limit} words for {seconds} s"]  # fmt: skip
+
+
 async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
                language: str | None) -> BoardPlan:  # fmt: skip
     want = f"Aim for about {seconds} s of narration." if seconds else "Aim for 50-80 s."
@@ -96,7 +111,7 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
         if not p.feasible:
             raise JobFailed(f"I can't draw that as a board: {p.reason}", {"planned": False})
         p.level = "undergrad"
-        issues = problems(normalize(p)) + unsupported(p, source)
+        issues = problems(normalize(p)) + unsupported(p, source) + too_long(p, seconds)
         ctx.reply(
             f"**Board plan {attempt}:** {len(p.steps)} steps, "
             + (

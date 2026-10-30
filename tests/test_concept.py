@@ -92,3 +92,10 @@ def test_bad_figure_range_is_reported_not_raised():
     p = _plan()
     p.steps[0].ops[0].y_range = [0]
     assert "y_range must be [min, max]" in " | ".join(problems(p))
+
+
+def test_narration_must_fit_the_requested_length():
+    p = _plan()
+    assert concept.too_long(p, 60) == []
+    p.steps[0].say = "word " * 200
+    assert "cut it to at most 165 words for 60 s" in concept.too_long(p, 60)[0]
