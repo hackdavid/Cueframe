@@ -179,13 +179,17 @@ def _spread_rows(plan: BoardPlan) -> None:
             row.sort(key=lambda n: n.x)
             pos = {n.id: (n.x, n.y) for n in row}
             txt = {n.id: n.text for n in row}
-            if not any(_cramped(fig, pos, txt, [a.id, b.id]) for a, b in zip(row, row[1:])):
+            if not any(
+                _cramped(fig, pos, txt, [a.id, b.id]) for a, b in zip(row, row[1:], strict=False)
+            ):
                 continue
             widths = [_node_size(n.text)[0] / units[0] for n in row]
             x0, x1 = fig.x_range
-            gap = max(0.0, (x1 - x0 - sum(widths)) / (len(row) + 1))
+            gap = (x1 - x0 - sum(widths)) / (len(row) + 1)
+            if gap * units[0] < MIN_ARROW + 0.05:  # can't fit: the planner is told to fix it
+                continue
             x = x0 + gap
-            for n, w in zip(row, widths):
+            for n, w in zip(row, widths, strict=True):
                 n.x, x = round(x + w / 2, 2), x + w + gap
 
 
@@ -206,6 +210,9 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")[:24] or "node"
 
 
+MIN_ARROW = 0.6  # board units of visible arrow between two linked cards
+
+
 def _node_size(label: str) -> tuple[float, float]:
     """A node card's on-screen size in board units (bold 22 pt, wrapped at 2.6 units)."""
     per_line = 13
@@ -214,7 +221,7 @@ def _node_size(label: str) -> tuple[float, float]:
 
 
 def _cramped(fig: Op, nodes: dict[str, tuple[float, float]], labels: dict[str, str],
-             ends: list[str], min_gap: float = 0.6) -> bool:  # fmt: skip
+             ends: list[str], min_gap: float = MIN_ARROW) -> bool:  # fmt: skip
     """Two linked node cards so close that the arrow between them is too short to see."""
     if len(ends) != 2 or not all(e in nodes for e in ends) or ends[0] == ends[1]:
         return False
@@ -292,8 +299,9 @@ def problems(plan: BoardPlan) -> list[str]:
                 out.append(f"{at}: a link needs points [from_node, to_node]")
             elif op.kind == "link" and figure is not None:
                 if _cramped(figure, nodes, labels, op.points):
-                    out.append(f"{at}: nodes {op.points[0]!r} and {op.points[1]!r} almost touch, "
-                               "so the arrow can't be seen; move them further apart")  # fmt: skip
+                    out.append(f"{at}: nodes {op.points[0]!r} and {op.points[1]!r} almost "
+                               "touch, so the arrow can't be seen; shorten the labels or put "
+                               "fewer nodes in that row")  # fmt: skip
                 for name in _crossed(figure, nodes, op.points):
                     out.append(f"{at}: the arrow passes through node {name!r}; link neighbours "
                                "only, or move that node off the line")  # fmt: skip

@@ -17,7 +17,6 @@ from app.jobs import JobContext, JobFailed
 from app.tutorial import formats
 
 TRIES = 3
-LAYOUT_ONLY = "almost touch"
 SMALL = {"0", "1", "2", "3", "4", "5"}  # diagram counts like "3 steps"
 _NUM = re.compile(r"(?<![\w.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d,]*\d)")
 
@@ -129,8 +128,6 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
                 else f"{len(issues)} problem(s):\n" + "\n".join(f"- {i}" for i in issues[:8])
             )
         )
-        if all(LAYOUT_ONLY in i for i in issues):  # a short arrow never fails a video
-            return p
         if best is None or len(issues) < len(best[1]):
             best = (p, issues)
         # Repair from the best plan so far, never from a worse attempt.

@@ -154,5 +154,23 @@ def test_a_cramped_row_of_nodes_is_spread_out():
     ops[2].text, ops[2].x, ops[2].y = "Steady image", 7.1, 2
     ops[3].points = [ops[1].id, ops[2].id]
     normalize(p)
-    assert ops[1].x < 5 and ops[2].x > 7.1
+    assert ops[2].x - ops[1].x > 3
     assert "almost touch" not in " | ".join(problems(p))
+
+
+def test_a_row_too_wide_to_spread_keeps_its_error():
+    from app.board.contracts import normalize
+
+    p = _plan()
+    ops = p.steps[0].ops
+    ops[0].x_range, ops[0].y_range = [0, 10], [0, 4]
+    extra = [
+        ops[1].model_copy(update={"id": f"n{i}", "text": "Thirteen char", "x": 1 + 2 * i})
+        for i in range(5)
+    ]
+    links = [ops[3].model_copy(update={"points": [f"n{i}", f"n{i + 1}"]}) for i in range(4)]
+    p.steps[0].ops = [ops[0], *extra, *links]
+    before = [n.x for n in extra]
+    normalize(p)
+    assert [n.x for n in extra] == before
+    assert "fewer nodes in that row" in " | ".join(problems(p))
