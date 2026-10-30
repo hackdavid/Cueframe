@@ -167,6 +167,25 @@ class Tools:
         items = await self.arxiv_latest_by_id(arxiv_id)
         return items or f"paper {arxiv_id} not found"
 
+    async def read_model(self, model_id: str) -> Any:
+        if not re.fullmatch(r"[\w.-]+/[\w.-]+", model_id):
+            return "model_id must be owner/name"
+        r = await self.http.get(f"https://huggingface.co/api/models/{model_id}",
+                                headers={"User-Agent": UA})  # fmt: skip
+        if r.status_code != 200:
+            return f"model {model_id} not found on Hugging Face"
+        d = r.json()
+        card = await self.http.get(f"https://huggingface.co/{model_id}/raw/main/README.md",
+                                   headers={"User-Agent": UA})  # fmt: skip
+        readme = card.text if card.status_code == 200 else ""
+        readme = re.sub(r"\A---\n.*?\n---\n", "", readme, flags=re.S)
+        return {"model_id": model_id, "url": f"https://huggingface.co/{model_id}",
+                "likes": d.get("likes"), "downloads": d.get("downloads"),
+                "pipeline_tag": d.get("pipeline_tag") or "",
+                "readme_headings": [_strip(h) for h in
+                                    re.findall(r"^#{1,3}\s+(.+)$", readme, re.M)][:25],
+                "readme": readme[:README_CHARS]}  # fmt: skip
+
     async def arxiv_latest_by_id(self, arxiv_id: str) -> Any:
         xml = (await self._get("https://export.arxiv.org/api/query", id_list=arxiv_id)).text
         summ = re.search(r"<entry>.*?<title>(.*?)</title>.*?<summary>(.*?)</summary>", xml, re.S)
@@ -198,6 +217,8 @@ TOOL_SPECS = [
         {"category": {"type": "string"}, "limit": INT}),
     _fn("read_github_repo", "Read a GitHub repo's About text, README headings and README",
         {"repo": {"type": "string", "description": "owner/name"}}),
+    _fn("read_model", "Read a Hugging Face model's card (README), likes and downloads",
+        {"model_id": {"type": "string", "description": "owner/name on Hugging Face"}}),
     _fn("read_paper", "Read a paper's abstract, authors, upvotes and linked code",
         {"arxiv_id": {"type": "string"}}),
 ]  # fmt: skip
@@ -236,7 +257,8 @@ INSTRUCTIONS = """You are Cueframe's trending scout. Today is {today}. Use the t
 the single best item for the request: something genuinely trending right now (by the tools'
 own numbers) that makes a good 60-second explainer video in a web browser. Look at a
 ranking tool first, pick one item (prefer ones with a clear README or abstract and, for
-papers, linked code or a project page), then read it with read_github_repo or read_paper.
+papers, linked code or a project page), then read it with read_github_repo, read_paper
+or, for a Hugging Face model, read_model (a model id is not a GitHub repo).
 Skip sponsored entries, items whose page isn't in English (the video is narrated in
 English), and tools for piracy or for getting around a service's limits or terms.
 Never invent facts or numbers: every fact must come from what the tools returned. When you

@@ -30,9 +30,25 @@ def _http():
             return httpx.Response(200, text='<meta name="description" content="Rockets.">')
         if req.url.host == "raw.githubusercontent.com" and req.url.path.endswith("/README.md"):
             return httpx.Response(200, text="# Rocket\n## Quick start\nIt flies.")
+        if req.url.path == "/api/models/acme/flash":
+            return httpx.Response(200, json={"likes": 3926, "downloads": 10})
+        if req.url.path == "/acme/flash/raw/main/README.md":
+            return httpx.Response(200, text="---\nlicense: mit\n---\n# Flash\n## Benchmarks\n42.3")
         return httpx.Response(404)
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def test_model_tool_reads_the_hugging_face_card():
+    asyncio.run(_model_tool())
+
+
+async def _model_tool():
+    async with _http() as http:
+        r = await Tools(http).read_model("acme/flash")
+        assert r["likes"] == 3926 and r["readme_headings"] == ["Flash", "Benchmarks"]
+        assert "license" not in r["readme"]
+        assert "not found" in await Tools(http).read_model("acme/missing")
 
 
 def test_repo_tool_reads_readme_headings():

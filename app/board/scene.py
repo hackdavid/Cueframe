@@ -428,6 +428,8 @@ class Builder:
             g = m.VGroup(card, lab.move_to(card)).move_to(fig.ax.c2p(op.x, op.y))
             fig.pts[op.id] = g.get_center()
             fig.taken.append(_box(g))
+            if fig.box.x1 - fig.box.x0 > L.FIG_W:  # a full-width diagram: rows go below its cards
+                self.board.y = min(self.board.y, _box(g).bottom - L.GAP)
             return Item([g], lambda: m.AnimationGroup(m.Create(card), m.FadeIn(lab)), _box(g))
         if op.kind == "link":
             a, z = (self.objs[n] for n in op.points)

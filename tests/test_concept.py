@@ -3,7 +3,7 @@ import pytest
 from app.board import concept
 from app.board.contracts import BoardPlan, problems
 
-FILLER = " The old way was slow and the new way is fast." * 7
+FILLER = " The old way was slow and the new way is fast." * 8
 
 
 def _plan(**over):
@@ -104,7 +104,7 @@ def test_narration_must_fit_the_requested_length():
     p.steps[0].say = "word " * 200
     assert "cut it to at most 92 words" in concept.too_long(p, 60)[0]
     p.steps[0].say = "Too short."
-    assert "lengthen it to 69-92 words" in concept.too_long(p, 60)[0]
+    assert "lengthen it to 77-92 words" in concept.too_long(p, 60)[0]
     p.steps[0].say = "这是一个很长的中文句子" * 40
     assert concept.too_long(p, 30)
 
