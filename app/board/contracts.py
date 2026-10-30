@@ -135,17 +135,21 @@ def normalize(plan: BoardPlan) -> BoardPlan:
     """Fix what has only one sensible reading: a figure that gets a plot needs axes."""
     fig: Op | None = None
     labels: dict[str, str] = {}
+    node_ids: set[str] = set()
     for step in plan.steps:
         for op in step.ops:
             if op.kind == "figure":
-                fig, labels = op, {}
+                fig, labels, node_ids = op, {}, set()
             elif fig is not None and op.kind in ("plot", "area", "riemann", "tangent"):
                 fig.axes = True
             if fig is not None and op.kind == "node":
                 op.id = op.id or _slug(op.text)
-                labels[op.text.strip().lower()] = op.id
-            if fig is not None and op.kind == "link":  # nodes named by their label
-                op.points = [labels.get(q.strip().lower(), q) for q in op.points]
+                node_ids.add(op.id)
+                labels.setdefault(op.text.strip().lower(), op.id)
+            if fig is not None and op.kind == "link":  # a real id wins over a label
+                op.points = [
+                    q if q in node_ids else labels.get(q.strip().lower(), q) for q in op.points
+                ]
     return plan
 
 

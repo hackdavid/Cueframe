@@ -118,3 +118,15 @@ def test_missing_link_node_asks_for_a_node():
     p = _plan()
     p.steps[0].ops[3].points = ["a", "zz"]
     assert "add a `node` op with id 'zz'" in " | ".join(problems(p))
+
+
+def test_link_by_id_is_kept_when_a_label_matches_another_id():
+    from app.board.contracts import normalize
+
+    p = _plan()
+    ops = p.steps[0].ops
+    ops[1].id, ops[1].text = "input", "Prompt"
+    ops[2].id, ops[2].text = "output", "Input"
+    ops[3].points = ["input", "output"]
+    normalize(p)
+    assert ops[3].points == ["input", "output"]
