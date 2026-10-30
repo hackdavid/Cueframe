@@ -13,13 +13,9 @@ SAM 3.1, Muse Image, Muse Voice Transcribe). Its design follows three ideas:
 - **Never fake a step.** Each answer says where it came from (official docs or the model's own
   knowledge), with confidence, citations and cost.
 
-> Status: hackathon build in progress. Working today:
-> - the chat app
-> - background jobs and live events
-> - uploads and media playback
-> - the **docs research agent** (live on Meta)
->
-> Next: sandboxed execution on Modal, then step verification and the tutorial video.
+> Status: all features through PR #24 are merged on `main`. Before real users can sign up,
+> see **[docs/launch-readiness.md](docs/launch-readiness.md)** for what's left to build, fix
+> and verify (hosting, worker, payments, sign-in, legal, video quality).
 
 ---
 
@@ -191,7 +187,7 @@ async def run(ctx: JobContext) -> dict:
 3. **Verify:** Muse Spark video understanding checks each step clip, and SAM 3.1 highlights the clicked UI element.
 4. **Deliver:** narrated tutorial video stitched with ffmpeg, Muse Image thumbnail, and Muse Spark Open (Baseten) as an independent verifier.
 
-See `docs/services-plan.md` for the partner service map and `docs/meta-live-test.md` for live results per Meta model.
+Before launch: [docs/launch-readiness.md](docs/launch-readiness.md) (what's left before real users) and [docs/production-plan.md](docs/production-plan.md) (priorities). See `docs/services-plan.md` for the partner service map and `docs/meta-live-test.md` for live results per Meta model.
 
 ## Database note
 
