@@ -39,3 +39,11 @@ def test_a_real_key_is_never_overwritten_or_misread():
     data = {"kind": "point", "x": 1, "x junk": 5, "attempt": 3}
     repair_keys(BoardPlan.model_fields["steps"].annotation.__args__[0], {"ops": [data]})
     assert data["x"] == 1 and "x junk" in data and "attempt" in data
+
+
+def test_numbers_where_strings_belong_are_made_strings():
+    step = BoardPlan.model_fields["steps"].annotation.__args__[0]
+    data = {"say": "s", "ops": [{"kind": "link", "id": 0, "points": [1, "a"]}]}
+    assert repair_keys(step, data) == 2
+    op = step.model_validate(data).ops[0]
+    assert (op.id, op.points) == ("0", ["1", "a"])

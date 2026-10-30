@@ -264,3 +264,36 @@ async def test_a_short_voiced_board_is_renarrated_to_the_asked_length():
 
     ctx.llm = SimpleNamespace(parse=bad)
     assert await concept.stretch(ctx, p, tl, 60, src, "explainer", None) is None
+
+
+@pytest.mark.anyio
+async def test_an_unreadable_plan_is_planned_again_and_short_arrows_dont_fail_the_job(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from app.llm import LLMError
+
+    calls = []
+
+    async def parse(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise LLMError("BoardPlan contract violated: id should be a string")
+        return _plan(), None
+
+    ctx = SimpleNamespace(
+        llm=SimpleNamespace(parse=parse),
+        settings=SimpleNamespace(research_model="m"),
+        thinking=lambda *a: None,
+        reply=lambda *a: None,
+    )
+    src = "Baseline 41.2, ours 48.7."
+    assert (await concept.plan(ctx, src, "explainer", 60, None)).title == "T"
+    assert len(calls) == 2
+    cramped = [f"step 1 op 3 (link): nodes 'a' and 'b' {concept.CRAMPED}"]
+    monkeypatch.setattr(concept, "problems", lambda p: cramped)
+    assert (await concept.plan(ctx, src, "explainer", 60, None)).title == "T"
+    monkeypatch.setattr(concept, "problems", lambda p: [*cramped, "link to missing node 'z'"])
+    with pytest.raises(concept.JobFailed):
+        await concept.plan(ctx, src, "explainer", 60, None)

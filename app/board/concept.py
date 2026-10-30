@@ -15,11 +15,13 @@ from app import languages
 from app.board import timeline, tutor
 from app.board.contracts import BoardPlan, normalize, problems
 from app.jobs import JobContext, JobFailed
+from app.llm import LLMError
 from app.log import fields, get_logger
 from app.tutorial import formats
 
 log = get_logger("concept")
 TRIES = 3
+CRAMPED = "almost touch, so the arrow can't be seen"  # contracts.problems wording
 PLAN_TIMEOUT = 120  # a plan takes 30-50 s; a call still open at 120 s is stuck, retry it
 SMALL = {"0", "1", "2", "3", "4", "5"}  # diagram counts like "3 steps"
 _NUM = re.compile(r"(?<![\w.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d,]*\d)")
@@ -139,11 +141,20 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
     feedback, issues, best = "", [], None
     for attempt in range(1, TRIES + 1):
         ctx.thinking("Explainer", "Drawing the idea" if attempt == 1 else "Fixing the board")
-        p, _ = await ctx.llm.parse(
-            BoardPlan, purpose="concept.plan", model=ctx.settings.research_model,
-            instructions=skill(mode), input=base + feedback, reasoning_effort="medium",
-            timeout=PLAN_TIMEOUT,
-        )  # fmt: skip
+        try:
+            p, _ = await ctx.llm.parse(
+                BoardPlan, purpose="concept.plan", model=ctx.settings.research_model,
+                instructions=skill(mode), input=base + feedback, reasoning_effort="medium",
+                timeout=PLAN_TIMEOUT,
+            )  # fmt: skip
+        except LLMError as exc:  # one malformed answer shouldn't end the job: plan again
+            log.warning(
+                "concept plan unreadable", extra=fields(attempt=attempt, error=str(exc)[:300])
+            )
+            ctx.reply(
+                f"**Board plan {attempt}:** the answer wasn't a readable plan; planning again."
+            )
+            continue
         if not p.feasible:
             raise JobFailed(f"I can't draw that as a board: {p.reason}", {"planned": False})
         p.level = "undergrad"
@@ -172,6 +183,10 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
             "as it is, with the same kind, id, text and points. Never fix a problem by deleting "
             "nodes, links, quotes or bars:\n- " + "\n- ".join(best[1])
         )
+    if best and all(CRAMPED in i for i in best[1]):  # short arrows beat no video
+        log.warning("concept plan with short arrows", extra=fields(issues=best[1][:3]))
+        ctx.reply("Using the best plan; some arrows between close boxes are short.")
+        return best[0]
     issues = best[1] if best else issues
     raise JobFailed(f"The board still had problems: {'; '.join(issues[:5])}", {"issues": issues})
 

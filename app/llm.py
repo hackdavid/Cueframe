@@ -81,6 +81,10 @@ def _models(annotation: Any) -> list[type[BaseModel]]:
     return [m for a in get_args(annotation) for m in _models(a)]
 
 
+def _number(v: Any) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool)
+
+
 def repair_keys(schema: type[BaseModel], data: Any) -> int:
     """Restore keys the model garbled by appending junk, e.g. "x_range phenomena",
     "axesNormals" or "answer前方", so their values aren't silently dropped. Returns the
@@ -98,6 +102,11 @@ def repair_keys(schema: type[BaseModel], data: Any) -> int:
                 fixed += 1
                 break
     for name, field in schema.model_fields.items():
+        v = data.get(name)
+        if field.annotation is str and _number(v):  # "id": 0 where a handle is a string
+            data[name], fixed = str(v), fixed + 1
+        elif field.annotation == list[str] and isinstance(v, list) and any(map(_number, v)):
+            data[name], fixed = [str(x) if _number(x) else x for x in v], fixed + 1
         for model in _models(field.annotation):
             fixed += repair_keys(model, data.get(name))
     return fixed
