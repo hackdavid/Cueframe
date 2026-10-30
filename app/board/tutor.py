@@ -6,6 +6,7 @@ import asyncio
 import base64
 import dataclasses
 import json
+import re
 import subprocess
 import sys
 import time
@@ -219,13 +220,16 @@ class Runner:
         return (self.local / name).read_bytes()  # type: ignore[operator]
 
 
+_RANK = re.compile(r"#(\d+)")  # "#1" is read out as "one j one"
+
+
 async def _voice(p: BoardPlan, work: Path, voice_id: str | None = None,
                  ) -> list[tuple[float, list[dict]]]:  # fmt: skip
     sem = asyncio.Semaphore(4)
 
     async def one(i: int, say: str) -> tuple[float, list[dict]]:
         async with sem:
-            audio, words = await speak(say, voice_id=voice_id)
+            audio, words = await speak(_RANK.sub(r"number \1", say), voice_id=voice_id)
         (work / f"s{i}.mp3").write_bytes(audio)
         ws = [w.model_dump() for w in words]
         return (ws[-1]["end"] + 0.1 if ws else 1.0), ws

@@ -3,11 +3,13 @@ import pytest
 from app.board import concept
 from app.board.contracts import BoardPlan, problems
 
+FILLER = " The old way was slow and the new way is fast." * 7
+
 
 def _plan(**over):
     d = {
         "feasible": True, "title": "T", "level": "undergrad", "problem": "p", "steps": [
-            {"say": "Before and after.", "ops": [
+            {"say": "Before and after." + FILLER, "ops": [
                 {"kind": "figure", "x_range": [0, 10], "y_range": [0, 4]},
                 {"kind": "node", "id": "a", "text": "Old way", "x": 2, "y": 2},
                 {"kind": "node", "id": "b", "text": "New way", "x": 8, "y": 2},
@@ -101,6 +103,8 @@ def test_narration_must_fit_the_requested_length():
     assert concept.too_long(p, 60) == []
     p.steps[0].say = "word " * 200
     assert "cut it to at most 92 words" in concept.too_long(p, 60)[0]
+    p.steps[0].say = "Too short."
+    assert "lengthen it to 69-92 words" in concept.too_long(p, 60)[0]
     p.steps[0].say = "这是一个很长的中文句子" * 40
     assert concept.too_long(p, 30)
 
@@ -196,7 +200,7 @@ async def test_a_clean_plan_is_returned_on_the_first_try():
     )
     p = await concept.plan(ctx, "Baseline 41.2, ours 48.7.", "explainer", 60, None)
     assert p.title == "T" and len(calls) == 1
-    assert f"at most {concept.word_limit(60, 8)} words" in calls[0]
+    assert f"-{concept.word_limit(60, 8)} words" in calls[0]
 
 
 def test_an_empty_figure_and_no_diagram_are_rejected():

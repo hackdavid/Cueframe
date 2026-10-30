@@ -92,6 +92,7 @@ def unsupported(plan: BoardPlan, source: str) -> list[str]:
 
 
 WORDS_PER_SECOND = 1.7  # measured on the board voice, numbers read out in full
+FILL = 0.75  # least share of the word budget, so a 45 s request is not a 30 s video
 _UNSPACED = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0e00-\u0e7f]")
 
 
@@ -113,6 +114,9 @@ def too_long(plan: BoardPlan, seconds: int | None) -> list[str]:
         return []
     words = sum(spoken_words(st.say) for st in plan.steps)
     limit = word_limit(seconds, len(plan.steps))
+    if words < (low := int(limit * FILL)):
+        return [f"the narration is {words:.0f} words, too short for {seconds} s with "
+                f"{len(plan.steps)} steps; lengthen it to {low}-{limit} words"]  # fmt: skip
     if words <= limit:
         return []
     return [f"the narration is {words:.0f} words, too long for {seconds} s with "
@@ -122,8 +126,8 @@ def too_long(plan: BoardPlan, seconds: int | None) -> list[str]:
 async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
                language: str | None) -> BoardPlan:  # fmt: skip
     want = (
-        f"The video must be about {seconds} s: at most {word_limit(seconds, 8)} words of "
-        "narration in total across 6-8 steps."
+        f"The video must be about {seconds} s: {int(word_limit(seconds, 6) * FILL)}-"
+        f"{word_limit(seconds, 8)} words of narration in total across 6-8 steps."
         if seconds
         else "Aim for 50-80 s."
     )
