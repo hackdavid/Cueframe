@@ -179,7 +179,7 @@ class Builder:
                           stroke_width=2, stroke_opacity=0.5)  # fmt: skip
             return Item([t, rule], lambda: m.AnimationGroup(m.Write(t), m.Create(rule)), b)
         if op.kind == "quote":
-            body = text(f"“{op.text}”", self.board.width() - 2.6, 28, INK)  # clear of the step chip
+            body = text(f"“{op.text}”", self.board.width() - 0.8, 28, INK)
             fill = c if op.color != "ink" else COLORS["purple"]
             bar = m.Rectangle(
                 width=0.08,
@@ -530,10 +530,13 @@ def _grid(top: float, bottom: float) -> m.VGroup:
     return m.VGroup(*lines).set_stroke(GRID, 1.2)
 
 
+CAPTION_W = 9.4  # leaves the step chip its corner of the caption band
+
+
 def caption_card(s: str) -> m.VGroup:
     t = m.Text(s, font=FONT, font_size=26, color="#ffffff")
-    if t.width > 12:
-        t.scale_to_fit_width(12)
+    if t.width > CAPTION_W:
+        t.scale_to_fit_width(CAPTION_W)
     bg = m.RoundedRectangle(corner_radius=0.14, width=t.width + 0.5, height=t.height + 0.3,
                             fill_color=INK, fill_opacity=0.82, stroke_width=0)  # fmt: skip
     return m.VGroup(bg, t.move_to(bg))
@@ -566,7 +569,8 @@ class BoardScene(m.MovingCameraScene):
         cam_min = min([it.cam for row in items for it in row] or [0])
         self.add(_grid(4.5, min(b.board.bottom(), cam_min - L.FRAME_H / 2) - 1))
 
-        # Captions and the step chip stay fixed in the 16:9 frame while the board scrolls.
+        # Captions and the step chip stay fixed in the 16:9 frame while the board scrolls,
+        # both in the caption band, so the chip never covers what is drawn.
         caps = captions(tl)
         cards = [caption_card(s) for _, _, s in caps]
         chips = [_chip(f"Step {i} of {len(starts)}") for i in range(1, len(starts) + 1)]
@@ -589,7 +593,7 @@ class BoardScene(m.MovingCameraScene):
                 cap.move_to([c[0], c[1] - L.FRAME_H / 2 + 0.62, 0])
             if len(chip):
                 chip.move_to([c[0] + L.FRAME_W / 2 - 0.3 - chip.width / 2,
-                              c[1] + L.FRAME_H / 2 - 0.28, 0])  # fmt: skip
+                              c[1] - L.FRAME_H / 2 + 0.62, 0])  # fmt: skip
 
         cap.add_updater(tick)
         chip.add_updater(lambda mob, dt: None)
