@@ -67,3 +67,15 @@ def test_numbers_match_in_any_written_form():
     assert (
         concept.unsupported(p, "Base 41.2, ours 48.70; it reaches 90.20% on 1,000 prompts.") == []
     )
+
+
+def test_close_but_different_numbers_are_rejected():
+    for src, claim in (
+        ("1000001 tokens", "1000002 tokens"),
+        ("1,000,001 prompts", "1,000,002 prompts"),
+    ):
+        bad = concept.unsupported(_plan(title=claim), f"{src}; base 41.2, ours 48.7")
+        assert bad == [
+            f"title/problem/recap: the number {claim.split()[0].replace(',', '')} "
+            "is not in the source facts"
+        ]

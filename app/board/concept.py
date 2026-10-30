@@ -5,6 +5,7 @@ the source facts."""
 
 import re
 import time
+from decimal import Decimal
 from typing import Any
 
 from app import languages
@@ -15,7 +16,7 @@ from app.tutorial import formats
 
 TRIES = 3
 SMALL = {"0", "1", "2", "3", "4", "5"}  # diagram counts like "3 steps"
-_NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?%?")
+_NUM = re.compile(r"(?<![\w.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d,]*\d)")
 
 
 def skill(mode: str) -> str:
@@ -30,7 +31,13 @@ def skill(mode: str) -> str:
 
 def _nums(s: str) -> set[str]:
     """Numbers in canonical form, so "90.20%", "90.2" and "1,000" match their source."""
-    return {f"{float(n.replace(',', '').rstrip('%')):g}" for n in _NUM.findall(s)}
+    return {_canon(n.replace(",", "")) for n in _NUM.findall(s)}
+
+
+def _canon(n: str) -> str:
+    """Exact decimal form without trailing zeros: "90.20" -> "90.2", "1000" stays."""
+    d = Decimal(n)
+    return format(d.normalize() if d != d.to_integral() else d.to_integral(), "f")
 
 
 def unsupported(plan: BoardPlan, source: str) -> list[str]:
@@ -43,7 +50,7 @@ def unsupported(plan: BoardPlan, source: str) -> list[str]:
     ]
     for si, st in enumerate(plan.steps, 1):
         seen = " ".join([st.say, *(f"{o.text} {o.latex} {' '.join(o.labels)}" for o in st.ops)])
-        vals = {f"{v:g}" for o in st.ops for v in o.values}
+        vals = {_canon(repr(v)) for o in st.ops for v in o.values}
         for n in sorted((_nums(seen) | vals) - have):
             if n not in SMALL:
                 out.append(f"step {si}: the number {n} is not in the source facts")
