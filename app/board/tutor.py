@@ -221,50 +221,86 @@ class Runner:
 
 
 _RANK = re.compile(r"#(\d+)")  # "#1" is read out as "one j one"
-_DECIMAL = re.compile(r"(?<![\w.-])(\d+)\.(\d+)(?![\d.])")  # not "V4.1" in a name
-_SYMBOLS = {
-    "≥": " at least ",
-    ">=": " at least ",
-    "≤": " at most ",
-    "<=": " at most ",
-    "_": " ",
-}  # "90.20" is read "ninety twenty"
+# A number as written, not one inside a name like "V4.1": "3,947", "90.20", "48.7%".
+_NUM = re.compile(r"(?<![\w.,-])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\.?\d|,\d)(%?)")
+_SYMBOLS = {"≥": " at least ", ">=": " at least ", "≤": " at most ", "<=": " at most ", "_": " "}
+_ONES = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+]
+_TENS = ["_", "_", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
 
 
-def _spoken(say: str) -> tuple[str, list[int]]:
-    """What the voice reads: "#1" as "number 1" and "90.20" digit by digit ("90 point 2 0").
-    Also the decimal places of each number, so captions can show "90.20" again."""
-    places: list[int] = []
+def _words(n: int) -> str:
+    """3947 as "three thousand nine hundred forty-seven"."""
+    for scale, name in (
+        (10**9, "billion"),
+        (10**6, "million"),
+        (1000, "thousand"),
+        (100, "hundred"),
+    ):
+        if n >= scale:
+            rest = n % scale
+            return f"{_words(n // scale)} {name}" + (f" {_words(rest)}" if rest else "")
+    return _ONES[n] if n < 20 else _TENS[n // 10] + (f"-{_ONES[n % 10]}" if n % 10 else "")
 
-    def digits(m: re.Match) -> str:
-        places.append(len(m[2]))
-        return f"{m[1]} point {' '.join(m[2])}"
+
+def _spoken(say: str) -> tuple[str, list[tuple[str, list[str]]]]:
+    """What the voice reads: "#1" as "number 1", "3,947" in words (digits get misread) and
+    "90.20%" digit by digit ("90 point 2 0 percent"). Also each changed number with its
+    spoken words, so captions can show it as written again."""
+    reps: list[tuple[str, list[str]]] = []
+
+    def say_num(m: re.Match) -> str:
+        whole, dec, pct = m[1], m[2], m[3]
+        out = _words(int(whole.replace(",", ""))) if "," in whole else whole
+        if dec:
+            out += " point " + " ".join(dec)
+        if pct:
+            out += " percent"
+        if out != m[0]:
+            reps.append((m[0], out.lower().split()))
+        return out
 
     for sym, words in _SYMBOLS.items():
         say = say.replace(sym, words)
-    say = re.sub(r"(\d)%", r"\1 percent", say)  # "0%" runs together when read
-    return _DECIMAL.sub(digits, _RANK.sub(r"number \1", " ".join(say.split()))), places
+    say = _RANK.sub(r"number \1", " ".join(say.split()))
+    return _NUM.sub(say_num, say), reps
 
 
-def _rejoin(words: list[dict], places: list[int]) -> list[dict]:
-    """Caption words for "90 point 2 0%" back as one "90.20%", timed over all of them."""
-    out, i, left = [], 0, list(places)
+def _rejoin(words: list[dict], reps: list[tuple[str, list[str]]]) -> list[dict]:
+    """Caption words for "90 point 2 0 percent" back as one "90.20%", timed over all of them."""
+    out, i, left = [], 0, list(reps)
     while i < len(words):
-        w = words[i]
-        n = left[0] if left else 0
-        tail = words[i + 2 : i + 2 + n]
-        if (n and re.fullmatch(r"\d+", w["text"]) and i + 1 < len(words)
-                and words[i + 1]["text"].lower() == "point" and len(tail) == n
-                and all(re.match(r"\d", t["text"]) for t in tail)):  # fmt: skip
-            out.append({**w, "text": f"{w['text']}." + "".join(t["text"] for t in tail),
-                        "end": tail[-1]["end"]})  # fmt: skip
-            left.pop(0)
-            i += 2 + n
-            if i < len(words) and (pc := re.fullmatch(r"percent(\W*)", words[i]["text"])):
-                out[-1] = {**out[-1], "text": out[-1]["text"] + "%" + pc[1], "end": words[i]["end"]}
-                i += 1
+        for k, (text, toks) in enumerate(left):
+            got = words[i : i + len(toks)]
+            said = [w["text"].lower() for w in got]
+            if len(got) == len(toks) and said[:-1] == toks[:-1] and said[-1].startswith(toks[-1]):
+                tail = got[-1]["text"][len(toks[-1]) :]  # "5x," keeps "x,"
+                out.append({**got[0], "text": text + tail, "end": got[-1]["end"]})
+                del left[: k + 1]
+                i += len(toks)
+                break
         else:
-            out.append(w)
+            out.append(words[i])
             i += 1
     return out
 
@@ -278,10 +314,10 @@ async def _voice(p: BoardPlan, work: Path, voice_id: str | None = None,
 
     async def one(i: int, say: str) -> tuple[float, list[dict]]:
         async with sem:
-            spoken, places = _spoken(say)
+            spoken, reps = _spoken(say)
             audio, words = await speak(spoken, voice_id=voice_id)
         (work / f"s{i}.mp3").write_bytes(audio)
-        ws = _rejoin([w.model_dump() for w in words], places)
+        ws = _rejoin([w.model_dump() for w in words], reps)
         return (ws[-1]["end"] + 0.1 if ws else 1.0), ws
 
     return list(await asyncio.gather(*(one(i, s.say) for i, s in enumerate(p.steps))))

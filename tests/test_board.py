@@ -354,18 +354,23 @@ def test_photo_question_is_read_then_taught(client, monkeypatch, settings):
 def test_decimals_are_voiced_digit_by_digit_and_captioned_as_written():
     from app.board import tutor as tt
 
-    spoken, places = tt._spoken("#1 scores 90.20% vs 94.25, up 3 points.")
+    spoken, reps = tt._spoken("#1 scores 90.20% vs 94.25, up 3 points.")
     assert spoken == "number 1 scores 90 point 2 0 percent vs 94 point 2 5, up 3 points."
-    assert places == [2, 2]
+    assert [r[0] for r in reps] == ["90.20%", "94.25"]
     words = [{"text": t, "t": i, "end": i + 0.5} for i, t in enumerate(spoken.split())]
-    caps = [w["text"] for w in tt._rejoin(words, places)]
+    caps = [w["text"] for w in tt._rejoin(words, reps)]
     assert caps == ["number", "1", "scores", "90.20%", "vs", "94.25,", "up", "3", "points."]
-    assert tt._rejoin(words, places)[3]["end"] == 7.5
+    assert tt._rejoin(words, reps)[3]["end"] == 7.5
 
 
 def test_names_and_symbols_are_voiced_plainly():
     from app.board import tutor as tt
 
-    spoken, places = tt._spoken("DeepSeek-V4.1-Flash gives max_tokens ≥ 256K at 1.5x.")
-    assert spoken == "DeepSeek-V4.1-Flash gives max tokens at least 256K at 1 point 5x."
-    assert places == [1]
+    spoken, reps = tt._spoken("DeepSeek-V4.1-Flash gives max_tokens ≥ 256K at 1.5x, 3,947 likes.")
+    assert spoken == (
+        "DeepSeek-V4.1-Flash gives max tokens at least 256K at 1 point 5x, "
+        "three thousand nine hundred forty-seven likes."
+    )
+    words = [{"text": t, "t": i, "end": i + 0.5} for i, t in enumerate(spoken.split())]
+    assert [w["text"] for w in tt._rejoin(words, reps)][-2:] == ["3,947", "likes."]
+    assert tt._words(1_200_005) == "one million two hundred thousand five"
