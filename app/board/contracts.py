@@ -372,7 +372,7 @@ def _empty_figures(plan: BoardPlan) -> list[str]:
             if op.kind == "figure":
                 if not drawn:
                     out.append(f"{fig}: nothing is drawn on this figure; draw on it or remove it")
-                fig, drawn = f"step {si} op {oi} (figure)", False
+                fig, drawn = f"step {si} op {oi} (figure)", op.axes
             elif op.kind in FIGURE:
                 drawn = True
     if not drawn:

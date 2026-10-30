@@ -204,3 +204,5 @@ def test_an_empty_figure_and_no_diagram_are_rejected():
     p.steps[0].ops = [p.steps[0].ops[0]]
     assert "nothing is drawn on this figure" in " | ".join(problems(p))
     assert concept.undrawn(p) and not concept.undrawn(_plan())
+    p.steps[0].ops[0].axes = True
+    assert "nothing is drawn" not in " | ".join(problems(p))
