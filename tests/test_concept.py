@@ -101,3 +101,20 @@ def test_narration_must_fit_the_requested_length():
     assert "cut it to at most 135 words" in concept.too_long(p, 60)[0]
     p.steps[0].say = "这是一个很长的中文句子" * 40
     assert concept.too_long(p, 30)
+
+
+def test_nodes_without_ids_and_links_by_label_are_normalized():
+    from app.board.contracts import normalize
+
+    p = _plan()
+    ops = p.steps[0].ops
+    ops[1].id, ops[2].id = "", ""
+    ops[3].points = ["Old way", "New way"]
+    assert problems(normalize(p)) == []
+    assert ops[3].points == ["old_way", "new_way"]
+
+
+def test_missing_link_node_asks_for_a_node():
+    p = _plan()
+    p.steps[0].ops[3].points = ["a", "zz"]
+    assert "add a `node` op with id 'zz'" in " | ".join(problems(p))

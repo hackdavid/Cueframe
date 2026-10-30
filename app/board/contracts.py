@@ -134,13 +134,23 @@ def _balanced(s: str) -> bool:
 def normalize(plan: BoardPlan) -> BoardPlan:
     """Fix what has only one sensible reading: a figure that gets a plot needs axes."""
     fig: Op | None = None
+    labels: dict[str, str] = {}
     for step in plan.steps:
         for op in step.ops:
             if op.kind == "figure":
-                fig = op
+                fig, labels = op, {}
             elif fig is not None and op.kind in ("plot", "area", "riemann", "tangent"):
                 fig.axes = True
+            if fig is not None and op.kind == "node":
+                op.id = op.id or _slug(op.text)
+                labels[op.text.strip().lower()] = op.id
+            if fig is not None and op.kind == "link":  # nodes named by their label
+                op.points = [labels.get(q.strip().lower(), q) for q in op.points]
     return plan
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")[:24] or "node"
 
 
 def _crossed(fig: Op, nodes: dict[str, tuple[float, float]], ends: list[str]) -> list[str]:
@@ -243,7 +253,10 @@ def problems(plan: BoardPlan) -> list[str]:
             if need and len(op.points) < need:
                 out.append(f"{at}: needs {need} points")
             for p in op.points:
-                if p not in points:
+                if p not in points and op.kind == "link":
+                    out.append(f"{at}: node {p!r} isn't on this figure yet: add a `node` "
+                               f"op with id {p!r} and a short label before this link")  # fmt: skip
+                elif p not in points:
                     out.append(
                         f"{at}: point {p!r} isn't drawn on this figure yet: add a "
                         f"`point` op with id {p!r} after this figure's `figure` op"
