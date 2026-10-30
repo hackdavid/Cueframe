@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -104,10 +105,10 @@ async def _sympy(plan: BoardPlan, timeout: float = 240) -> tuple[int, list[str]]
     return res["checks"], res["failed"]
 
 
-async def _checked(plan: BoardPlan) -> tuple[int, list[str]]:
+async def _checked(plan: BoardPlan, need: bool = True) -> tuple[int, list[str]]:
     bad = problems(plan)
     n, failed = await _sympy(plan)
-    if not n:
+    if not n and need:
         bad.append("there are no checks: every step that changes an equation or computes a "
                    "value needs one")  # fmt: skip
     return n, bad + failed
@@ -233,7 +234,9 @@ async def _voice(p: BoardPlan, work: Path, voice_id: str | None = None,
 
 
 async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work: Path,
-                 voice_id: str | None = None) -> tuple[BoardPlan, dict, dict, dict]:  # fmt: skip
+                 voice_id: str | None = None, rules: str | None = None,
+                 validate: Callable[[BoardPlan], list[str]] | None = None,
+                 ) -> tuple[BoardPlan, dict, dict, dict]:  # fmt: skip
     """LaTeX check (repairing the plan from the errors), voice, then the render. The
     voice is recorded while the board is typeset; only a repaired plan re-records it."""
     voicing, voiced_for = asyncio.create_task(_voice(p, work, voice_id)), p
@@ -252,13 +255,15 @@ async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work:
             raise JobFailed("Some board lines still couldn't be drawn", {"errors": errs})
         fixed, _ = await ctx.llm.parse(
             BoardPlan, purpose="board.fix", model=ctx.settings.research_model,
-            instructions=skill(), reasoning_effort="low",
+            instructions=rules or skill(), reasoning_effort="low",
             input=f"Plan:\n{p.model_dump_json()}\n\nThese ops failed to render; return the "
             "whole plan with only those ops fixed:\n- " + "\n- ".join(errs),
         )  # fmt: skip
         fixed.level = p.level
         keep_checks(p, fixed)
-        n, issues = await _checked(normalize(fixed))
+        n, issues = await _checked(normalize(fixed), need=any(s.checks for s in p.steps))
+        if validate:
+            issues += validate(fixed)
         if issues:
             raise JobFailed(f"The fixed plan failed its checks: {'; '.join(issues)}",
                             {"issues": issues})  # fmt: skip
@@ -329,16 +334,25 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
         ctx.reply(f"I'll teach this in **{languages.name(language)}**; the board stays in "
                   "maths notation.")  # fmt: skip
     p = await plan(ctx, problem, level, seconds, language)
-    vid = languages.voice_id(language)
     ctx.reply(f"**{p.title}**: here's the board plan ({level}).\n\n" + describe(p))
-    row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, "board", p.title,
+    return await deliver(ctx, conv, p, problem, t0, language)
+
+
+async def deliver(ctx: JobContext, conv: dict, p: BoardPlan, problem: str, t0: float,
+                  language: str | None, recipe: str = "board", rules: str | None = None,
+                  validate: Callable[[BoardPlan], list[str]] | None = None,
+                  ) -> dict[str, Any]:  # fmt: skip
+    """Typeset, voice and render a checked board plan, then post the video in chat."""
+    vid = languages.voice_id(language)
+    extra = {"rules": rules, "validate": validate} if rules or validate else {}
+    row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, recipe, p.title,
                                     {"board": p.model_dump(), "problem": problem})  # fmt: skip
     tid = row["id"]
     ctx.store.update_tutorial(tid, active_job=ctx.id, status="rendering")
     work = ctx.settings.data_dir / "board" / tid
     work.mkdir(parents=True, exist_ok=True)
     if ctx.settings.board_runner == "local":
-        p, tl, chk, res = await _board(ctx, Runner(local=work), p, problem, work, vid)
+        p, tl, chk, res = await _board(ctx, Runner(local=work), p, problem, work, vid, **extra)
     else:
         mgr = ctx._manager.sandboxes
         cfg = dataclasses.replace(ctx.settings, sandbox_image="board",
@@ -347,7 +361,7 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
         ctx.phase("sandbox", "Starting the board renderer")
         async with mgr.session(ctx.id, ctx.conversation_id, settings=cfg) as (sid, box):  # noqa: SIM117
             async with mgr.busy(sid):
-                p, tl, chk, res = await _board(ctx, Runner(box=box), p, problem, work, vid)
+                p, tl, chk, res = await _board(ctx, Runner(box=box), p, problem, work, vid, **extra)
     ctx.phase("mix", "Adding the voice and captions")
     video = await asyncio.to_thread(_mix, work, tl, len(p.steps))
     video = await endcard.brand(ctx, video)
@@ -395,4 +409,4 @@ def describe(p: BoardPlan) -> str:
         figs = sorted({o.kind for o in s.ops if o.kind not in ("write", "text", "section")})
         bits = [f"`{x}`" for x in shown] + ([f"draws {', '.join(figs)}"] if figs else [])
         lines.append(f"{i}. {s.say}" + (f" ({'; '.join(bits)})" if bits else ""))
-    return "\n".join(lines) + f"\n\n**Answer:** `{p.answer}`"
+    return "\n".join(lines) + (f"\n\n**Answer:** `{p.answer}`" if p.answer else "")

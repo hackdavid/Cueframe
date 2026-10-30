@@ -178,6 +178,21 @@ class Builder:
             rule = m.Line([L.LEFT, b.bottom, 0], [L.RIGHT, b.bottom, 0], color=COLORS["blue"],
                           stroke_width=2, stroke_opacity=0.5)  # fmt: skip
             return Item([t, rule], lambda: m.AnimationGroup(m.Write(t), m.Create(rule)), b)
+        if op.kind == "quote":
+            body = text(f"“{op.text}”", self.board.width() - 0.8, 28, INK)
+            fill = c if op.color != "ink" else COLORS["purple"]
+            bar = m.Rectangle(
+                width=0.08,
+                height=body.height + 0.3,
+                fill_color=fill,
+                fill_opacity=1,
+                stroke_width=0,
+            )
+            g = m.VGroup(bar, body).arrange(m.RIGHT, buff=0.3)
+            return Item([g], lambda: m.AnimationGroup(m.GrowFromEdge(bar, m.UP), m.Write(body),
+                                                      lag_ratio=0.3), self._row(g))  # fmt: skip
+        if op.kind == "bars":
+            return self.bars(op, c)
         if op.kind == "formula":
             return self.formula(op, c)
         if op.kind in ("box", "underline", "cross", "arrow"):
@@ -186,6 +201,55 @@ class Builder:
             return self.figure(op)
         assert self.fig is not None, "draw a figure first"
         return self.draw(op, c, self.fig)
+
+    def bars(self, op: Op, c: str) -> Item:
+        """A small bar chart: the source's own numbers, each bar labelled with its value."""
+        top = max(abs(v) for v in op.values) or 1
+        neg = any(v < 0 for v in op.values)
+        palette = [COLORS[k] for k in ("blue", "purple", "green", "orange", "red")]
+        cols = []
+        for i, (lab, v) in enumerate(zip(op.labels, op.values, strict=True)):
+            h = max(0.08, (1.3 if neg else 2.2) * abs(v) / top)
+            bar = m.Rectangle(width=0.9, height=h, fill_color=palette[i % 5], fill_opacity=0.85,
+                              stroke_width=0)  # fmt: skip
+            val = text(f"{v:g}", 1.6, 24, INK, bold=True)
+            name = text(lab, 1.8, 20, MUTED)
+            col = m.VGroup(val, bar, name).arrange(m.DOWN, buff=0.12)
+            col.shift(m.DOWN * (col[1].get_bottom()[1] - col.get_bottom()[1]))
+            cols.append(m.VGroup(val, bar, name))
+        chart = m.VGroup(*cols).arrange(m.RIGHT, buff=0.5, aligned_edge=m.DOWN)
+        base = chart.get_bottom()[1] + max(cl[2].height for cl in cols) + 0.12
+        if neg:  # a zero line with negative bars hanging below it
+            base += 1.3 + 0.4
+        for col, v in zip(cols, op.values, strict=True):
+            bar, val, name = col[1], col[0], col[2]
+            if v < 0:
+                bar.move_to([bar.get_x(), base - bar.height / 2, 0])
+                val.next_to(bar, m.DOWN, buff=0.1)
+                name.move_to([bar.get_x(), base + 0.12 + name.height / 2, 0])
+            else:
+                bar.move_to([bar.get_x(), base + bar.height / 2, 0])
+                val.next_to(bar, m.UP, buff=0.1)
+                if neg:
+                    name.move_to([bar.get_x(), base - 0.12 - name.height / 2, 0])
+                else:
+                    name.next_to(bar, m.DOWN, buff=0.12)
+        if neg:
+            chart.add(
+                m.Line(
+                    [chart.get_left()[0] - 0.2, base, 0],
+                    [chart.get_right()[0] + 0.2, base, 0],
+                    color=MUTED,
+                    stroke_width=2,
+                )
+            )
+        head = text(op.text, self.board.width(), 26, COLORS["blue"], bold=True)
+        g = m.VGroup(head, chart).arrange(m.DOWN, aligned_edge=m.LEFT, buff=0.25)
+        b = self._row(g, max_h=3.6)
+        return Item([g], lambda: m.AnimationGroup(
+            m.Write(head), *(m.AnimationGroup(m.GrowFromEdge(cl[1], m.DOWN), m.FadeIn(cl[0]),
+                                              m.FadeIn(cl[2])) for cl in cols),
+            lag_ratio=0.25), b)  # fmt: skip
 
     def formula(self, op: Op, c: str) -> Item:
         """The rule in use, in a card on the right; the working continues on the left."""
@@ -245,10 +309,16 @@ class Builder:
         (x0, x1), (y0, y1) = op.x_range, op.y_range
         if op.axes:
             w, h = L.FIG_W, L.FIG_H
-        else:
-            unit = min(L.FIG_W / (x1 - x0), L.FIG_H / (y1 - y0))
+        else:  # a wide blank plane (x span 8+) is a full-width diagram
+            fw = L.RIGHT - L.LEFT if x1 - x0 >= 8 else L.FIG_W
+            unit = min(fw / (x1 - x0), L.FIG_H / (y1 - y0))
             w, h = unit * (x1 - x0), unit * (y1 - y0)
-        b = self.board.figure(w, h)
+        if not op.axes and x1 - x0 >= 8:  # a diagram: its own full-width block of rows
+            r = self.board.row(w, h)
+            off = (L.RIGHT - L.LEFT - w) / 2
+            b = L.Box(r.x0 + off, r.top, r.x1 + off, r.bottom)
+        else:
+            b = self.board.figure(w, h)
         dx, dy = _step(x1 - x0), _step(y1 - y0)
         ax = m.Axes(
             x_range=[x0, x1, dx], y_range=[y0, y1, dy], x_length=w, y_length=h, tips=False,
@@ -348,6 +418,29 @@ class Builder:
                           color=col, stroke_width=3)  # fmt: skip
             dot = m.Dot(ax.c2p(op.at, y0), radius=0.06, color=col)
             return Item([line, dot], lambda: m.AnimationGroup(m.Create(line), m.FadeIn(dot)), b)
+        if op.kind == "node":
+            edge = COLORS["blue"] if op.color == "ink" else c
+            lab = text(op.text, 2.6, 22, INK, bold=True)
+            card = m.RoundedRectangle(corner_radius=0.14, width=lab.width + 0.4,
+                                      height=lab.height + 0.32, stroke_color=edge,
+                                      stroke_width=3, fill_color=edge,
+                                      fill_opacity=0.12)  # fmt: skip
+            g = m.VGroup(card, lab.move_to(card)).move_to(fig.ax.c2p(op.x, op.y))
+            fig.pts[op.id] = g.get_center()
+            fig.taken.append(_box(g))
+            return Item([g], lambda: m.AnimationGroup(m.Create(card), m.FadeIn(lab)), _box(g))
+        if op.kind == "link":
+            a, z = (self.objs[n] for n in op.points)
+            edge = COLORS["ink"] if op.color == "ink" else c
+            arr = m.Arrow(a, z, buff=0.08, color=edge, stroke_width=4, tip_length=0.2)
+            mobs: list[m.Mobject] = [arr]
+            if op.text:
+                t = text(op.text, 2.2, 18, MUTED)
+                t.next_to(arr.get_center(), m.UP, buff=0.08)
+                mobs.append(t)
+            return Item(mobs, lambda: m.AnimationGroup(*(m.GrowArrow(x) if x is arr else
+                                                         m.FadeIn(x) for x in mobs)),
+                        _box(m.VGroup(*mobs)))  # fmt: skip
         if op.kind == "point":
             p = ax.c2p(op.x, op.y)
             name = op.latex or op.id
@@ -437,10 +530,13 @@ def _grid(top: float, bottom: float) -> m.VGroup:
     return m.VGroup(*lines).set_stroke(GRID, 1.2)
 
 
+CAPTION_W = 9.4  # leaves the step chip its corner of the caption band
+
+
 def caption_card(s: str) -> m.VGroup:
     t = m.Text(s, font=FONT, font_size=26, color="#ffffff")
-    if t.width > 12:
-        t.scale_to_fit_width(12)
+    if t.width > CAPTION_W:
+        t.scale_to_fit_width(CAPTION_W)
     bg = m.RoundedRectangle(corner_radius=0.14, width=t.width + 0.5, height=t.height + 0.3,
                             fill_color=INK, fill_opacity=0.82, stroke_width=0)  # fmt: skip
     return m.VGroup(bg, t.move_to(bg))
@@ -473,7 +569,8 @@ class BoardScene(m.MovingCameraScene):
         cam_min = min([it.cam for row in items for it in row] or [0])
         self.add(_grid(4.5, min(b.board.bottom(), cam_min - L.FRAME_H / 2) - 1))
 
-        # Captions and the step chip stay fixed in the 16:9 frame while the board scrolls.
+        # Captions and the step chip stay fixed in the 16:9 frame while the board scrolls,
+        # both in the caption band, so the chip never covers what is drawn.
         caps = captions(tl)
         cards = [caption_card(s) for _, _, s in caps]
         chips = [_chip(f"Step {i} of {len(starts)}") for i in range(1, len(starts) + 1)]
@@ -496,7 +593,7 @@ class BoardScene(m.MovingCameraScene):
                 cap.move_to([c[0], c[1] - L.FRAME_H / 2 + 0.62, 0])
             if len(chip):
                 chip.move_to([c[0] + L.FRAME_W / 2 - 0.3 - chip.width / 2,
-                              c[1] + L.FRAME_H / 2 - 0.28, 0])  # fmt: skip
+                              c[1] - L.FRAME_H / 2 + 0.62, 0])  # fmt: skip
 
         cap.add_updater(tick)
         chip.add_updater(lambda mob, dt: None)

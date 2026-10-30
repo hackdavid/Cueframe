@@ -1,20 +1,26 @@
 """Board plan: the model's lesson as a list of board operations in math coordinates.
 The renderer maps them to pixels; the model never writes drawing code."""
 
+import math
 import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.board.layout import FIG_H, FIG_W, LEFT, RIGHT
+
+BOARD_W = RIGHT - LEFT
+
 Color = Literal["ink", "blue", "red", "green", "orange", "purple"]
 Level = Literal["child", "school", "undergrad"]
-ROW = ("write", "text", "section")  # ops that take the next row of the board
+ROW = ("write", "text", "section", "bars", "quote")  # ops that take the next row of the board
 MARKS = ("box", "underline", "cross", "arrow")  # ops that annotate an earlier row
 FIGURE = ("plot", "area", "riemann", "tangent", "point", "segment", "polygon", "circle",
-          "angle", "label")  # fmt: skip
+          "angle", "label", "node", "link")  # fmt: skip
 OpKind = Literal[
     "write", "text", "section", "formula", "box", "underline", "cross", "arrow", "figure",
     "plot", "area", "riemann", "tangent", "point", "segment", "polygon", "circle", "angle", "label",
+    "node", "link", "bars", "quote",
 ]  # fmt: skip
 
 
@@ -27,7 +33,11 @@ class Op(BaseModel):
         "an earlier row; arrow: curved arrow from one row to another; figure: start a "
         "diagram (axes for graphs, a blank plane for geometry) beside the next rows; "
         "plot/area/riemann/tangent: on the current figure's axes; point/segment/polygon/"
-        "circle/angle/label: geometry on the current figure"
+        "circle/angle/label: geometry on the current figure; node: a labelled block of a "
+        "diagram at (x, y) on the current figure (a blank plane, e.g. x_range [0,10], "
+        "y_range [0,5]); link: an arrow from node points[0] to node points[1], text = a "
+        "tiny label; bars: a bar chart row (labels + values, text = what is measured); "
+        "quote: a short sentence quoted from the source, in a card"
     )
     id: str = Field("", description="Handle later ops can refer to, e.g. 'l3'; '' if none")
     cue: str = Field(
@@ -69,6 +79,9 @@ class Op(BaseModel):
     y: float = Field(0, description="point: y coordinate; label: y if no point")
     radius: float = Field(0, description="circle: radius in math units when points is [O]")
     color: Color = "ink"
+    labels: list[str] = Field([], description="bars: one short label per bar")
+    values: list[float] = Field([], description="bars: one number per bar, exactly as in "
+                                "the source")  # fmt: skip
 
 
 class Check(BaseModel):
@@ -109,7 +122,7 @@ class BoardPlan(BaseModel):
     title: str = Field(description="Video title, max 60 characters")
     level: Level
     problem: str = Field(description="The problem in plain words, max 160 characters")
-    answer: str = Field(description="The final answer as LaTeX, e.g. 'x = 2'")
+    answer: str = Field("", description="The final answer as LaTeX, e.g. 'x = 2'")
     steps: list[Step]
     recap: list[str] = Field([], description="2-4 short takeaways")
 
@@ -126,13 +139,129 @@ def _balanced(s: str) -> bool:
 def normalize(plan: BoardPlan) -> BoardPlan:
     """Fix what has only one sensible reading: a figure that gets a plot needs axes."""
     fig: Op | None = None
+    labels: dict[str, str] = {}
+    node_ids: set[str] = set()
     for step in plan.steps:
         for op in step.ops:
             if op.kind == "figure":
-                fig = op
+                fig, labels, node_ids = op, {}, set()
             elif fig is not None and op.kind in ("plot", "area", "riemann", "tangent"):
                 fig.axes = True
+            if fig is not None and op.kind == "node":
+                op.id = op.id or _slug(op.text)
+                node_ids.add(op.id)
+                labels.setdefault(op.text.strip().lower(), op.id)
+            if fig is not None and op.kind == "link":  # a real id wins over a label
+                op.points = [
+                    q if q in node_ids else labels.get(q.strip().lower(), q) for q in op.points
+                ]
+    _spread_rows(plan)
     return plan
+
+
+def _spread_rows(plan: BoardPlan) -> None:
+    """Space out a row of node cards that would almost touch, evenly across the figure."""
+    figs: list[tuple[Op, list[Op]]] = []
+    for step in plan.steps:
+        for op in step.ops:
+            if op.kind == "figure":
+                figs.append((op, []))
+            elif op.kind == "node" and figs:
+                figs[-1][1].append(op)
+    for fig, nodes in figs:
+        units = _units(fig)
+        if units is None:
+            continue
+        rows: dict[float, list[Op]] = {}
+        for n in nodes:
+            rows.setdefault(round(n.y, 1), []).append(n)
+        for row in rows.values():
+            row.sort(key=lambda n: n.x)
+            pos = {n.id: (n.x, n.y) for n in row}
+            txt = {n.id: n.text for n in row}
+            if not any(
+                _cramped(fig, pos, txt, [a.id, b.id]) for a, b in zip(row, row[1:], strict=False)
+            ):
+                continue
+            widths = [_node_size(n.text)[0] / units[0] for n in row]
+            x0, x1 = fig.x_range
+            gap = (x1 - x0 - sum(widths)) / (len(row) + 1)
+            if gap * units[0] < MIN_ARROW + 0.05:  # can't fit: the planner is told to fix it
+                continue
+            x = x0 + gap
+            for n, w in zip(row, widths, strict=True):
+                n.x, x = round(x + w / 2, 2), x + w + gap
+
+
+def _units(fig: Op) -> tuple[float, float] | None:
+    """Board units per figure unit along x and y, as the scene lays the figure out."""
+    if len(fig.x_range) != 2 or len(fig.y_range) != 2:
+        return None
+    xs, ys = fig.x_range[1] - fig.x_range[0], fig.y_range[1] - fig.y_range[0]
+    if xs <= 0 or ys <= 0:
+        return None
+    if fig.axes:
+        return FIG_W / xs, FIG_H / ys
+    u = min(((BOARD_W if xs >= 8 else FIG_W) / xs), FIG_H / ys)
+    return u, u
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")[:24] or "node"
+
+
+MIN_ARROW = 0.6  # board units of visible arrow between two linked cards
+
+
+def _node_size(label: str) -> tuple[float, float]:
+    """A node card's on-screen size in board units (bold 22 pt, wrapped at 2.6 units)."""
+    per_line = 13
+    lines = max(1, -(-len(label) // per_line))
+    return min(len(label), per_line) * 0.2 + 0.4, lines * 0.4 + 0.2
+
+
+def _cramped(fig: Op, nodes: dict[str, tuple[float, float]], labels: dict[str, str],
+             ends: list[str], min_gap: float = MIN_ARROW) -> bool:  # fmt: skip
+    """Two linked node cards so close that the arrow between them is too short to see."""
+    if len(ends) != 2 or not all(e in nodes for e in ends) or ends[0] == ends[1]:
+        return False
+    units = _units(fig)
+    if units is None:
+        return False
+    ux, uy = units
+    (ax, ay), (bx, by) = ((nodes[e][0] * ux, nodes[e][1] * uy) for e in ends)
+    d = math.hypot(bx - ax, by - ay)
+    if d == 0:
+        return True
+    cx, cy = abs(bx - ax) / d, abs(by - ay) / d
+
+    def reach(label: str) -> float:
+        w, h = _node_size(label)
+        return min(w / 2 / cx if cx else math.inf, h / 2 / cy if cy else math.inf)
+
+    return d - reach(labels[ends[0]]) - reach(labels[ends[1]]) < min_gap
+
+
+def _crossed(fig: Op, nodes: dict[str, tuple[float, float]], ends: list[str]) -> list[str]:
+    """Other nodes lying on the straight arrow between two nodes of a figure."""
+    if len(ends) != 2 or not all(e in nodes for e in ends):
+        return []
+    if len(fig.x_range) != 2 or len(fig.y_range) != 2:
+        return []  # the range itself is reported as a problem
+    sx = (fig.x_range[1] - fig.x_range[0]) or 1
+    sy = (fig.y_range[1] - fig.y_range[0]) or 1
+    (ax, ay), (bx, by) = ((nodes[e][0] / sx, nodes[e][1] / sy) for e in ends)
+    dx, dy = bx - ax, by - ay
+    length2 = dx * dx + dy * dy or 1e-9
+    out = []
+    for name, (x, y) in nodes.items():
+        if name in ends:
+            continue
+        px, py = x / sx - ax, y / sy - ay
+        t = (px * dx + py * dy) / length2
+        if 0.05 < t < 0.95 and abs(px * dy - py * dx) / length2**0.5 < 0.08:
+            out.append(name)
+    return out
 
 
 def problems(plan: BoardPlan) -> list[str]:
@@ -146,6 +275,8 @@ def problems(plan: BoardPlan) -> list[str]:
     order: dict[str, int] = {}  # row number of each write/text/section op
     points: set[str] = set()
     figure: Op | None = None
+    nodes: dict[str, tuple[float, float]] = {}
+    labels: dict[str, str] = {}
     for si, step in enumerate(plan.steps, 1):
         if not step.say.strip():
             out.append(f"step {si}: nothing is said")
@@ -160,6 +291,22 @@ def problems(plan: BoardPlan) -> list[str]:
                     out.append(f"{at}: {field} {ref!r} is not an earlier write/text/formula op")
             if op.kind in ("write", "formula") and not op.latex.strip():
                 out.append(f"{at}: no latex")
+            if op.kind in ("node", "quote", "bars") and not op.text.strip():
+                out.append(f"{at}: needs text")
+            if op.kind == "node" and (not op.id or len(op.text) > 28):
+                out.append(f"{at}: a node needs an id and a label of at most 28 characters")
+            if op.kind == "link" and len(op.points) != 2:
+                out.append(f"{at}: a link needs points [from_node, to_node]")
+            elif op.kind == "link" and figure is not None:
+                if _cramped(figure, nodes, labels, op.points):
+                    out.append(f"{at}: nodes {op.points[0]!r} and {op.points[1]!r} almost "
+                               "touch, so the arrow can't be seen; shorten the labels or put "
+                               "fewer nodes in that row")  # fmt: skip
+                for name in _crossed(figure, nodes, op.points):
+                    out.append(f"{at}: the arrow passes through node {name!r}; link neighbours "
+                               "only, or move that node off the line")  # fmt: skip
+            if op.kind == "bars" and not (2 <= len(op.values) == len(op.labels) <= 8):
+                out.append(f"{at}: bars need 2-8 labels and the same number of values")
             if op.kind == "text" and not op.text.strip():
                 out.append(f"{at}: no text")
             if op.latex and not _balanced(op.latex):
@@ -172,11 +319,13 @@ def problems(plan: BoardPlan) -> list[str]:
             if op.kind == "arrow" and far:
                 out.append(f"{at}: an arrow only joins neighbouring lines; {op.target!r} "
                                f"and {op.to!r} are too far apart")  # fmt: skip
+            if op.kind == "node" and op.id:
+                nodes[op.id], labels[op.id] = (op.x, op.y), op.text
             if op.kind == "figure":
                 for name, r in (("x_range", op.x_range), ("y_range", op.y_range)):
                     if len(r) != 2 or not r[0] < r[1]:
                         out.append(f"{at}: {name} must be [min, max] with min < max")
-                figure, points = op, set()
+                figure, points, nodes, labels = op, set(), {}, {}
             elif op.kind in FIGURE and figure is None:
                 out.append(f"{at}: draw a figure first")
             if op.kind in ("plot", "area", "riemann", "tangent"):
@@ -188,6 +337,8 @@ def problems(plan: BoardPlan) -> list[str]:
                 out.append(f"{at}: needs a < b")
             if op.kind == "riemann" and not 2 <= op.n <= 40:
                 out.append(f"{at}: n must be 2-40")
+            if op.kind == "node" and op.id:
+                points.add(op.id)
             if op.kind == "point":
                 if not op.latex and not op.id:
                     out.append(f"{at}: name the point in latex (e.g. 'A')")
@@ -196,7 +347,10 @@ def problems(plan: BoardPlan) -> list[str]:
             if need and len(op.points) < need:
                 out.append(f"{at}: needs {need} points")
             for p in op.points:
-                if p not in points:
+                if p not in points and op.kind == "link":
+                    out.append(f"{at}: node {p!r} isn't on this figure yet: add a `node` "
+                               f"op with id {p!r} and a short label before this link")  # fmt: skip
+                elif p not in points:
                     out.append(
                         f"{at}: point {p!r} isn't drawn on this figure yet: add a "
                         f"`point` op with id {p!r} after this figure's `figure` op"
@@ -207,4 +361,20 @@ def problems(plan: BoardPlan) -> list[str]:
                 ids[op.id] = op.kind
             if op.kind in ROW:
                 order[op.id or f"_{si}.{oi}"] = len(order)
+    return out + _empty_figures(plan)
+
+
+def _empty_figures(plan: BoardPlan) -> list[str]:
+    """A figure with nothing drawn on it is a blank space on the board."""
+    out, fig, drawn = [], "", True
+    for si, step in enumerate(plan.steps, 1):
+        for oi, op in enumerate(step.ops, 1):
+            if op.kind == "figure":
+                if not drawn:
+                    out.append(f"{fig}: nothing is drawn on this figure; draw on it or remove it")
+                fig, drawn = f"step {si} op {oi} (figure)", op.axes
+            elif op.kind in FIGURE:
+                drawn = True
+    if not drawn:
+        out.append(f"{fig}: nothing is drawn on this figure; draw on it or remove it")
     return out

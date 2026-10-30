@@ -15,6 +15,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -446,6 +447,9 @@ async def publish(
     return result
 
 
+_CONCEPT = re.compile(r"arxiv|paper|hugging ?face|\bmodel\b|\bllm\b|research", re.I)
+
+
 async def make(
     ctx: JobContext,
     recipe_id: str | None = None,
@@ -482,6 +486,16 @@ async def make(
             kicker = f"TRENDING · {found.source.upper()}"[:44]
             ctx.reply(f"**Trending pick: {found.name}** ({found.source}, {found.why_trending})"
                       f"\n\n{found.one_liner}\n\n{found.url}")  # fmt: skip
+            if found.kind in ("paper", "model") and mode in ("explainer", "influencer"):
+                from app.board import concept
+
+                if found.kind == "model":
+                    brief += await concept.model_card(found.url)
+                return await concept.make(ctx, brief, found.name, mode, seconds)
+        elif brief and mode in ("explainer", "influencer") and _CONCEPT.search(goal or ""):
+            from app.board import concept
+
+            return await concept.make(ctx, brief, goal or "", mode, seconds)
         language = (ctx.input.get("job_input") or {}).get("language") or languages.detect(
             ctx.input.get("text")
         )
