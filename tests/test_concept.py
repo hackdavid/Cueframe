@@ -60,3 +60,10 @@ def test_trending_paper_and_model_requests_are_trending():
         assert _TRENDING.search(t) and _PAPER_OR_MODEL.search(t)
     t = "Make a tutorial on nginx"
     assert not (_TRENDING.search(t) and _PAPER_OR_MODEL.search(t))
+
+
+def test_numbers_match_in_any_written_form():
+    p = _plan(title="Accuracy 90.2 vs 1000")
+    assert (
+        concept.unsupported(p, "Base 41.2, ours 48.70; it reaches 90.20% on 1,000 prompts.") == []
+    )

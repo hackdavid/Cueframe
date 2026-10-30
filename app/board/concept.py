@@ -29,7 +29,8 @@ def skill(mode: str) -> str:
 
 
 def _nums(s: str) -> set[str]:
-    return {n.replace(",", "").rstrip("%") for n in _NUM.findall(s)}
+    """Numbers in canonical form, so "90.20%", "90.2" and "1,000" match their source."""
+    return {f"{float(n.replace(',', '').rstrip('%')):g}" for n in _NUM.findall(s)}
 
 
 def unsupported(plan: BoardPlan, source: str) -> list[str]:
@@ -53,7 +54,7 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
                language: str | None) -> BoardPlan:  # fmt: skip
     want = f"Aim for about {seconds} s of narration." if seconds else "Aim for 50-80 s."
     base = f"{want}\nSource facts (use only these):\n{source}" + languages.instruction(language)
-    feedback, issues = "", []
+    feedback, issues, best = "", [], None
     for attempt in range(1, TRIES + 1):
         ctx.thinking("Explainer", "Drawing the idea" if attempt == 1 else "Fixing the board")
         p, _ = await ctx.llm.parse(
@@ -74,10 +75,15 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
         )
         if not issues:
             return p
+        if best is None or len(issues) < len(best[1]):
+            best = (p, issues)
+        # Repair from the best plan so far, never from a worse attempt.
         feedback = (
-            f"\n\nYour previous plan:\n{p.model_dump_json()}\n\nFix only these "
-            "problems and return the whole plan:\n- " + "\n- ".join(issues)
+            f"\n\nYour previous plan:\n{best[0].model_dump_json(exclude_defaults=True)}\n\n"
+            "Fix only these problems and return the whole plan. Keep every other op exactly "
+            "as it is, with the same kind, id, text and points:\n- " + "\n- ".join(best[1])
         )
+    issues = best[1] if best else issues
     raise JobFailed(f"The board still had problems: {'; '.join(issues[:5])}", {"issues": issues})
 
 
