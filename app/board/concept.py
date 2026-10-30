@@ -92,13 +92,18 @@ def spoken_words(say: str) -> float:
     return len(_UNSPACED.sub(" ", say).split()) + unspaced / 2
 
 
+def word_limit(seconds: int, steps: int) -> int:
+    """Words of narration that fit `seconds` after the board's intro, outro and pauses."""
+    speech = seconds - timeline.INTRO - timeline.OUTRO - timeline.GAP * steps
+    return max(int(speech * WORDS_PER_SECOND), 20)
+
+
 def too_long(plan: BoardPlan, seconds: int | None) -> list[str]:
     """The narration must fit the length asked for, after the board's intro, outro and pauses."""
     if not seconds:
         return []
     words = sum(spoken_words(st.say) for st in plan.steps)
-    speech = seconds - timeline.INTRO - timeline.OUTRO - timeline.GAP * len(plan.steps)
-    limit = max(int(speech * WORDS_PER_SECOND), 20)
+    limit = word_limit(seconds, len(plan.steps))
     if words <= limit:
         return []
     return [f"the narration is {words:.0f} words, too long for {seconds} s with "
@@ -107,7 +112,12 @@ def too_long(plan: BoardPlan, seconds: int | None) -> list[str]:
 
 async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
                language: str | None) -> BoardPlan:  # fmt: skip
-    want = f"Aim for about {seconds} s of narration." if seconds else "Aim for 50-80 s."
+    want = (
+        f"The video must be about {seconds} s: at most {word_limit(seconds, 8)} words of "
+        "narration in total across 6-8 steps."
+        if seconds
+        else "Aim for 50-80 s."
+    )
     base = f"{want}\nSource facts (use only these):\n{source}" + languages.instruction(language)
     feedback, issues, best = "", [], None
     for attempt in range(1, TRIES + 1):
@@ -128,6 +138,8 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
                 else f"{len(issues)} problem(s):\n" + "\n".join(f"- {i}" for i in issues[:8])
             )
         )
+        if not issues:
+            return p
         if best is None or len(issues) < len(best[1]):
             best = (p, issues)
         # Repair from the best plan so far, never from a worse attempt.

@@ -1,3 +1,5 @@
+import pytest
+
 from app.board import concept
 from app.board.contracts import BoardPlan, problems
 
@@ -174,3 +176,24 @@ def test_a_row_too_wide_to_spread_keeps_its_error():
     normalize(p)
     assert [n.x for n in extra] == before
     assert "fewer nodes in that row" in " | ".join(problems(p))
+
+
+@pytest.mark.anyio
+async def test_a_clean_plan_is_returned_on_the_first_try():
+    from types import SimpleNamespace
+
+    calls = []
+
+    async def parse(*a, **k):
+        calls.append(k["input"])
+        return _plan(), None
+
+    ctx = SimpleNamespace(
+        llm=SimpleNamespace(parse=parse),
+        settings=SimpleNamespace(research_model="m"),
+        thinking=lambda *a: None,
+        reply=lambda *a: None,
+    )
+    p = await concept.plan(ctx, "Baseline 41.2, ours 48.7.", "explainer", 60, None)
+    assert p.title == "T" and len(calls) == 1
+    assert f"at most {concept.word_limit(60, 8)} words" in calls[0]
