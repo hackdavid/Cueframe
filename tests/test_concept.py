@@ -206,3 +206,26 @@ def test_an_empty_figure_and_no_diagram_are_rejected():
     assert concept.undrawn(p) and not concept.undrawn(_plan())
     p.steps[0].ops[0].axes = True
     assert "nothing is drawn" not in " | ".join(problems(p))
+
+
+@pytest.mark.anyio
+async def test_a_plan_without_a_diagram_is_planned_afresh_not_repaired():
+    from types import SimpleNamespace
+
+    calls = []
+    bare = _plan()
+    bare.steps[0].ops = [op for op in bare.steps[0].ops if op.kind not in ("node", "link")]
+
+    async def parse(*a, **k):
+        calls.append(k["input"])
+        return (bare.model_copy(deep=True) if len(calls) == 1 else _plan()), None
+
+    ctx = SimpleNamespace(
+        llm=SimpleNamespace(parse=parse),
+        settings=SimpleNamespace(research_model="m"),
+        thinking=lambda *a: None,
+        reply=lambda *a: None,
+    )
+    p = await concept.plan(ctx, "Baseline 41.2, ours 48.7.", "explainer", 60, None)
+    assert len(calls) == 2 and "previous plan" not in calls[1]
+    assert not concept.undrawn(p)

@@ -152,7 +152,11 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
             return p
         if best is None or len(issues) < len(best[1]):
             best = (p, issues)
-        # Repair from the best plan so far, never from a worse attempt.
+        # Repair from the best plan so far, never from a worse attempt; a plan with no
+        # diagram isn't worth repairing (repairs of it degrade further), so plan afresh.
+        if undrawn(best[0]):
+            feedback = ""
+            continue
         feedback = (
             f"\n\nYour previous plan:\n{best[0].model_dump_json(exclude_defaults=True)}\n\n"
             "Fix only these problems and return the whole plan. Keep every other op exactly "
