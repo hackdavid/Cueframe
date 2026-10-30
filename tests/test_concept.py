@@ -98,4 +98,6 @@ def test_narration_must_fit_the_requested_length():
     p = _plan()
     assert concept.too_long(p, 60) == []
     p.steps[0].say = "word " * 200
-    assert "cut it to at most 165 words for 60 s" in concept.too_long(p, 60)[0]
+    assert "cut it to at most 135 words" in concept.too_long(p, 60)[0]
+    p.steps[0].say = "这是一个很长的中文句子" * 40
+    assert concept.too_long(p, 30)

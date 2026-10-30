@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 
 from app import languages
-from app.board import tutor
+from app.board import timeline, tutor
 from app.board.contracts import BoardPlan, normalize, problems
 from app.jobs import JobContext, JobFailed
 from app.tutorial import formats
@@ -83,18 +83,26 @@ def unsupported(plan: BoardPlan, source: str) -> list[str]:
 
 
 WORDS_PER_SECOND = 2.5
+_UNSPACED = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0e00-\u0e7f]")
+
+
+def spoken_words(say: str) -> float:
+    """Word-equivalents to speak: scripts written without spaces count ~2 characters a word."""
+    unspaced = len(_UNSPACED.findall(say))
+    return len(_UNSPACED.sub(" ", say).split()) + unspaced / 2
 
 
 def too_long(plan: BoardPlan, seconds: int | None) -> list[str]:
-    """The narration must fit the length the viewer asked for (about 2.5 spoken words/s)."""
+    """The narration must fit the length asked for, after the board's intro, outro and pauses."""
     if not seconds:
         return []
-    words = sum(len(st.say.split()) for st in plan.steps)
-    limit = int(seconds * WORDS_PER_SECOND * 1.1)
+    words = sum(spoken_words(st.say) for st in plan.steps)
+    speech = seconds - timeline.INTRO - timeline.OUTRO - timeline.GAP * len(plan.steps)
+    limit = max(int(speech * WORDS_PER_SECOND), 20)
     if words <= limit:
         return []
-    return [f"the narration is {words} words, about {words / WORDS_PER_SECOND:.0f} s; "
-            f"cut it to at most {limit} words for {seconds} s"]  # fmt: skip
+    return [f"the narration is {words:.0f} words, too long for {seconds} s with "
+            f"{len(plan.steps)} steps; cut it to at most {limit} words"]  # fmt: skip
 
 
 async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
