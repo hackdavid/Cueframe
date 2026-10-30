@@ -155,7 +155,51 @@ def normalize(plan: BoardPlan) -> BoardPlan:
                 op.points = [
                     q if q in node_ids else labels.get(q.strip().lower(), q) for q in op.points
                 ]
+    _spread_rows(plan)
     return plan
+
+
+def _spread_rows(plan: BoardPlan) -> None:
+    """Space out a row of node cards that would almost touch, evenly across the figure."""
+    figs: list[tuple[Op, list[Op]]] = []
+    for step in plan.steps:
+        for op in step.ops:
+            if op.kind == "figure":
+                figs.append((op, []))
+            elif op.kind == "node" and figs:
+                figs[-1][1].append(op)
+    for fig, nodes in figs:
+        units = _units(fig)
+        if units is None:
+            continue
+        rows: dict[float, list[Op]] = {}
+        for n in nodes:
+            rows.setdefault(round(n.y, 1), []).append(n)
+        for row in rows.values():
+            row.sort(key=lambda n: n.x)
+            pos = {n.id: (n.x, n.y) for n in row}
+            txt = {n.id: n.text for n in row}
+            if not any(_cramped(fig, pos, txt, [a.id, b.id]) for a, b in zip(row, row[1:])):
+                continue
+            widths = [_node_size(n.text)[0] / units[0] for n in row]
+            x0, x1 = fig.x_range
+            gap = max(0.0, (x1 - x0 - sum(widths)) / (len(row) + 1))
+            x = x0 + gap
+            for n, w in zip(row, widths):
+                n.x, x = round(x + w / 2, 2), x + w + gap
+
+
+def _units(fig: Op) -> tuple[float, float] | None:
+    """Board units per figure unit along x and y, as the scene lays the figure out."""
+    if len(fig.x_range) != 2 or len(fig.y_range) != 2:
+        return None
+    xs, ys = fig.x_range[1] - fig.x_range[0], fig.y_range[1] - fig.y_range[0]
+    if xs <= 0 or ys <= 0:
+        return None
+    if fig.axes:
+        return FIG_W / xs, FIG_H / ys
+    u = min(((BOARD_W if xs >= 8 else FIG_W) / xs), FIG_H / ys)
+    return u, u
 
 
 def _slug(s: str) -> str:
@@ -174,15 +218,10 @@ def _cramped(fig: Op, nodes: dict[str, tuple[float, float]], labels: dict[str, s
     """Two linked node cards so close that the arrow between them is too short to see."""
     if len(ends) != 2 or not all(e in nodes for e in ends) or ends[0] == ends[1]:
         return False
-    if len(fig.x_range) != 2 or len(fig.y_range) != 2:
+    units = _units(fig)
+    if units is None:
         return False
-    xs, ys = fig.x_range[1] - fig.x_range[0], fig.y_range[1] - fig.y_range[0]
-    if xs <= 0 or ys <= 0:
-        return False
-    if fig.axes:
-        ux, uy = FIG_W / xs, FIG_H / ys
-    else:
-        ux = uy = min(((BOARD_W if xs >= 8 else FIG_W) / xs), FIG_H / ys)
+    ux, uy = units
     (ax, ay), (bx, by) = ((nodes[e][0] * ux, nodes[e][1] * uy) for e in ends)
     d = math.hypot(bx - ax, by - ay)
     if d == 0:

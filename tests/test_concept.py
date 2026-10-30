@@ -142,3 +142,17 @@ def test_nodes_that_almost_touch_are_rejected():
     assert "almost touch" in " | ".join(problems(p))
     ops[2].x = 9
     assert "almost touch" not in " | ".join(problems(p))
+
+
+def test_a_cramped_row_of_nodes_is_spread_out():
+    from app.board.contracts import normalize
+
+    p = _plan()
+    ops = p.steps[0].ops
+    ops[0].x_range, ops[0].y_range = [0, 10], [0, 4]
+    ops[1].text, ops[1].x, ops[1].y = "Match means", 5, 2
+    ops[2].text, ops[2].x, ops[2].y = "Steady image", 7.1, 2
+    ops[3].points = [ops[1].id, ops[2].id]
+    normalize(p)
+    assert ops[1].x < 5 and ops[2].x > 7.1
+    assert "almost touch" not in " | ".join(problems(p))
