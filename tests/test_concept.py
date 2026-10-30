@@ -26,7 +26,7 @@ def test_concept_contract_errors():
     p.steps[0].ops[3].points = ["a", "zz"]
     p.steps[1].ops[0].values = [1.0]
     out = " | ".join(problems(p))
-    assert "point 'zz'" in out and "bars need 2-8 labels" in out
+    assert "node 'zz'" in out and "bars need 2-8 labels" in out
 
 
 def test_numbers_must_come_from_source():
