@@ -116,7 +116,7 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
         )
         if r.recipe not in recipes.recipes():
             r.recipe = None
-        r.trending = r.trending or bool(_TRENDING.search(text) and _PAPER_OR_MODEL.search(text))
+        r.trending = r.trending or _unnamed_trend(text, bool(ctx.input.get("attachments")))
         r.format = r.format or _format(text)
         r.seconds = r.seconds or _seconds(text)
         return r
@@ -133,6 +133,13 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
 
 _TRENDING = re.compile(r"\btoday'?s?\b|\btrending\b|\blatest\b|\bhot\b|#1|\btop\b", re.I)
 _PAPER_OR_MODEL = re.compile(r"\bpapers?\b|\bmodels?\b|arxiv|hugging ?face", re.I)
+
+
+def _unnamed_trend(text: str, attached: bool) -> bool:
+    """A request for whatever paper or model is trending, with no source of its own."""
+    if attached or re.search(r"https?://|arxiv\.org|\b\d{4}\.\d{4,5}\b", text):
+        return False
+    return bool(_TRENDING.search(text) and _PAPER_OR_MODEL.search(text))
 
 
 def _format(text: str) -> Literal["tutorial", "reel", "explainer"] | None:
