@@ -242,6 +242,7 @@ def _spoken(say: str) -> tuple[str, list[int]]:
 
     for sym, words in _SYMBOLS.items():
         say = say.replace(sym, words)
+    say = re.sub(r"(\d)%", r"\1 percent", say)  # "0%" runs together when read
     return _DECIMAL.sub(digits, _RANK.sub(r"number \1", " ".join(say.split()))), places
 
 
@@ -259,6 +260,9 @@ def _rejoin(words: list[dict], places: list[int]) -> list[dict]:
                         "end": tail[-1]["end"]})  # fmt: skip
             left.pop(0)
             i += 2 + n
+            if i < len(words) and (pc := re.fullmatch(r"percent(\W*)", words[i]["text"])):
+                out[-1] = {**out[-1], "text": out[-1]["text"] + "%" + pc[1], "end": words[i]["end"]}
+                i += 1
         else:
             out.append(w)
             i += 1

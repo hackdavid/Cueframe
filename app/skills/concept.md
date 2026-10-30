@@ -24,6 +24,9 @@ Rules:
 - Include one `quote` card whenever the source has a sentence worth quoting, and a `bars`
   chart whenever it gives two or more comparable results (benchmarks, scores, speed).
 - A `link` joins neighbouring nodes only; never draw an arrow across another node.
+- Keep training and use apart: a loss, objective or teacher used only in training is drawn
+  as its own training diagram (or a dashed side node), never as a box on the path that
+  runs at inference. Say which stage each diagram shows.
 - At most 4 nodes in one row of a diagram, labels of at most 12 characters; put a 5th node
   on a second row.
 - Node labels are 1-4 words (max 28 characters). Diagram text is short; the voice explains.

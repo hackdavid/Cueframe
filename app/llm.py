@@ -103,6 +103,10 @@ def repair_keys(schema: type[BaseModel], data: Any) -> int:
                 break
     for name, field in schema.model_fields.items():
         v = data.get(name)
+        if v is None and name in data and not field.is_required() and field.default is not None:
+            del data[name]  # "trending": null where the field is a plain bool with a default
+            fixed += 1
+            continue
         if field.annotation is str and _number(v):  # "id": 0 where a handle is a string
             data[name], fixed = str(v), fixed + 1
         elif field.annotation == list[str] and isinstance(v, list) and any(map(_number, v)):
@@ -233,20 +237,23 @@ class MetaClient:
 
     async def parse(self, schema: type[T], **kw: Any) -> tuple[T, LLMResponse]:
         """`respond` with a JSON-schema output contract, validated by Pydantic."""
-        res = await self.respond(schema=schema, **kw)
-        try:
-            data = json.loads(_json_text(res.text))
-            if fixed := repair_keys(schema, data):
-                log.warning(
-                    "llm output had garbled keys",
-                    extra=fields(purpose=kw.get("purpose"), schema=schema.__name__, keys=fixed),
-                )
-            return schema.model_validate(data), res
-        except (json.JSONDecodeError, ValidationError) as exc:
-            log.error(
-                "llm output violated contract",
-                extra=fields(
-                    purpose=kw.get("purpose"), schema=schema.__name__, text=res.text[:300]
-                ),
-            )
-            raise LLMError(f"{schema.__name__} contract violated: {exc}") from exc
+        for attempt in (1, 2):  # a malformed answer is usually a one-off: ask once more
+            res = await self.respond(schema=schema, **kw)
+            try:
+                data = json.loads(_json_text(res.text))
+                if fixed := repair_keys(schema, data):
+                    log.warning(
+                        "llm output had garbled keys",
+                        extra=fields(purpose=kw.get("purpose"), schema=schema.__name__, keys=fixed),
+                    )
+                return schema.model_validate(data), res
+            except (json.JSONDecodeError, ValidationError) as exc:
+                log.error(
+                    "llm output violated contract",
+                    extra=fields(
+                        purpose=kw.get("purpose"), schema=schema.__name__, attempt=attempt,
+                        text=res.text[:300],
+                    ),
+                )  # fmt: skip
+                err = exc
+        raise LLMError(f"{schema.__name__} contract violated: {err}") from err

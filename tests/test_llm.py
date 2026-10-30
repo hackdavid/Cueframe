@@ -47,3 +47,11 @@ def test_numbers_where_strings_belong_are_made_strings():
     assert repair_keys(step, data) == 2
     op = step.model_validate(data).ops[0]
     assert (op.id, op.points) == ("0", ["1", "a"])
+
+
+def test_a_null_for_a_field_with_a_default_takes_the_default():
+    from app.handlers.tutorial import Route
+
+    data = {k: f.default for k, f in Route.model_fields.items() if not f.is_required()}
+    data["trending"] = None
+    assert repair_keys(Route, data) >= 1 and "trending" not in data
