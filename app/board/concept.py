@@ -14,6 +14,7 @@ from app.jobs import JobContext, JobFailed
 from app.tutorial import formats
 
 TRIES = 3
+SMALL = {"0", "1", "2", "3", "4", "5"}  # diagram counts like "3 steps"
 _NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)?%?")
 
 
@@ -34,12 +35,16 @@ def _nums(s: str) -> set[str]:
 def unsupported(plan: BoardPlan, source: str) -> list[str]:
     """Numbers on the board or in the narration that the source never states."""
     have = _nums(source)
-    out = []
+    out = [
+        f"title/problem/recap: the number {n} is not in the source facts"
+        for n in sorted(_nums(" ".join([plan.title, plan.problem, *plan.recap])) - have)
+        if n not in SMALL
+    ]
     for si, st in enumerate(plan.steps, 1):
         seen = " ".join([st.say, *(f"{o.text} {o.latex} {' '.join(o.labels)}" for o in st.ops)])
         vals = {f"{v:g}" for o in st.ops for v in o.values}
         for n in sorted((_nums(seen) | vals) - have):
-            if n not in {"1", "2", "3", "4", "5", "0"}:  # diagram counts like "3 steps"
+            if n not in SMALL:
                 out.append(f"step {si}: the number {n} is not in the source facts")
     return out
 
@@ -91,4 +96,14 @@ async def make(ctx: JobContext, source: str, topic: str, mode: str = "explainer"
     ctx.phase("plan", "Planning the board")
     p = await plan(ctx, source, mode, seconds, language)
     ctx.reply(f"**{p.title}**\n\n" + tutor.describe(p))
-    return await tutor.deliver(ctx, conv, p, topic, t0, language, recipe="concept")
+    return await tutor.deliver(
+        ctx,
+        conv,
+        p,
+        topic,
+        t0,
+        language,
+        recipe="concept",
+        rules=skill(mode),
+        validate=lambda q: unsupported(q, source),
+    )

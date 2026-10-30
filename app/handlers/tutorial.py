@@ -116,6 +116,7 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
         )
         if r.recipe not in recipes.recipes():
             r.recipe = None
+        r.trending = r.trending or bool(_TRENDING.search(text) and _PAPER_OR_MODEL.search(text))
         r.format = r.format or _format(text)
         r.seconds = r.seconds or _seconds(text)
         return r
@@ -128,6 +129,10 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
     if re.search(r"\btutorial\b", text, re.I):
         return Route(intent="make_tutorial", format="tutorial", seconds=_seconds(text))
     return Route(intent="chat")
+
+
+_TRENDING = re.compile(r"\btoday'?s?\b|\btrending\b|\blatest\b|\bhot\b|#1|\btop\b", re.I)
+_PAPER_OR_MODEL = re.compile(r"\bpapers?\b|\bmodels?\b|arxiv|hugging ?face", re.I)
 
 
 def _format(text: str) -> Literal["tutorial", "reel", "explainer"] | None:

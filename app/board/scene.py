@@ -204,11 +204,12 @@ class Builder:
 
     def bars(self, op: Op, c: str) -> Item:
         """A small bar chart: the source's own numbers, each bar labelled with its value."""
-        top = max(op.values) or 1
+        top = max(abs(v) for v in op.values) or 1
+        neg = any(v < 0 for v in op.values)
         palette = [COLORS[k] for k in ("blue", "purple", "green", "orange", "red")]
         cols = []
         for i, (lab, v) in enumerate(zip(op.labels, op.values, strict=True)):
-            h = max(0.08, 2.2 * v / top)
+            h = max(0.08, (1.3 if neg else 2.2) * abs(v) / top)
             bar = m.Rectangle(width=0.9, height=h, fill_color=palette[i % 5], fill_opacity=0.85,
                               stroke_width=0)  # fmt: skip
             val = text(f"{v:g}", 1.6, 24, INK, bold=True)
@@ -217,10 +218,31 @@ class Builder:
             col.shift(m.DOWN * (col[1].get_bottom()[1] - col.get_bottom()[1]))
             cols.append(m.VGroup(val, bar, name))
         chart = m.VGroup(*cols).arrange(m.RIGHT, buff=0.5, aligned_edge=m.DOWN)
-        for col in cols:  # bars share a baseline
-            col[1].align_to(chart, m.DOWN).shift(m.UP * (col[2].height + 0.12))
-            col[0].next_to(col[1], m.UP, buff=0.1)
-            col[2].next_to(col[1], m.DOWN, buff=0.12)
+        base = chart.get_bottom()[1] + max(cl[2].height for cl in cols) + 0.12
+        if neg:  # a zero line with negative bars hanging below it
+            base += 1.3 + 0.4
+        for col, v in zip(cols, op.values, strict=True):
+            bar, val, name = col[1], col[0], col[2]
+            if v < 0:
+                bar.move_to([bar.get_x(), base - bar.height / 2, 0])
+                val.next_to(bar, m.DOWN, buff=0.1)
+                name.move_to([bar.get_x(), base + 0.12 + name.height / 2, 0])
+            else:
+                bar.move_to([bar.get_x(), base + bar.height / 2, 0])
+                val.next_to(bar, m.UP, buff=0.1)
+                if neg:
+                    name.move_to([bar.get_x(), base - 0.12 - name.height / 2, 0])
+                else:
+                    name.next_to(bar, m.DOWN, buff=0.12)
+        if neg:
+            chart.add(
+                m.Line(
+                    [chart.get_left()[0] - 0.2, base, 0],
+                    [chart.get_right()[0] + 0.2, base, 0],
+                    color=MUTED,
+                    stroke_width=2,
+                )
+            )
         head = text(op.text, self.board.width(), 26, COLORS["blue"], bold=True)
         g = m.VGroup(head, chart).arrange(m.DOWN, aligned_edge=m.LEFT, buff=0.25)
         b = self._row(g, max_h=3.6)

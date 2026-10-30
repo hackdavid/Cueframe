@@ -41,3 +41,22 @@ def test_paper_requests_route_to_concept_board():
 
     assert _CONCEPT.search("Make an explainer about this arXiv paper")
     assert not _CONCEPT.search("Make a tutorial on nginx")
+
+
+def test_title_numbers_must_come_from_source():
+    p = _plan(title="90% faster inference")
+    assert concept.unsupported(p, "Baseline 41.2, ours 48.7.") == [
+        "title/problem/recap: the number 90 is not in the source facts"
+    ]
+
+
+def test_trending_paper_and_model_requests_are_trending():
+    from app.handlers.tutorial import _PAPER_OR_MODEL, _TRENDING
+
+    for t in (
+        "Make a 60 second explainer about today's #1 AI paper on Hugging Face",
+        "Make a 45 second reel about today's top trending model on Hugging Face",
+    ):
+        assert _TRENDING.search(t) and _PAPER_OR_MODEL.search(t)
+    t = "Make a tutorial on nginx"
+    assert not (_TRENDING.search(t) and _PAPER_OR_MODEL.search(t))
