@@ -8,13 +8,14 @@ from pydantic import BaseModel, Field
 
 Color = Literal["ink", "blue", "red", "green", "orange", "purple"]
 Level = Literal["child", "school", "undergrad"]
-ROW = ("write", "text", "section")  # ops that take the next row of the board
+ROW = ("write", "text", "section", "bars", "quote")  # ops that take the next row of the board
 MARKS = ("box", "underline", "cross", "arrow")  # ops that annotate an earlier row
 FIGURE = ("plot", "area", "riemann", "tangent", "point", "segment", "polygon", "circle",
-          "angle", "label")  # fmt: skip
+          "angle", "label", "node", "link")  # fmt: skip
 OpKind = Literal[
     "write", "text", "section", "formula", "box", "underline", "cross", "arrow", "figure",
     "plot", "area", "riemann", "tangent", "point", "segment", "polygon", "circle", "angle", "label",
+    "node", "link", "bars", "quote",
 ]  # fmt: skip
 
 
@@ -27,7 +28,11 @@ class Op(BaseModel):
         "an earlier row; arrow: curved arrow from one row to another; figure: start a "
         "diagram (axes for graphs, a blank plane for geometry) beside the next rows; "
         "plot/area/riemann/tangent: on the current figure's axes; point/segment/polygon/"
-        "circle/angle/label: geometry on the current figure"
+        "circle/angle/label: geometry on the current figure; node: a labelled block of a "
+        "diagram at (x, y) on the current figure (a blank plane, e.g. x_range [0,10], "
+        "y_range [0,5]); link: an arrow from node points[0] to node points[1], text = a "
+        "tiny label; bars: a bar chart row (labels + values, text = what is measured); "
+        "quote: a short sentence quoted from the source, in a card"
     )
     id: str = Field("", description="Handle later ops can refer to, e.g. 'l3'; '' if none")
     cue: str = Field(
@@ -69,6 +74,9 @@ class Op(BaseModel):
     y: float = Field(0, description="point: y coordinate; label: y if no point")
     radius: float = Field(0, description="circle: radius in math units when points is [O]")
     color: Color = "ink"
+    labels: list[str] = Field([], description="bars: one short label per bar")
+    values: list[float] = Field([], description="bars: one number per bar, exactly as in "
+                                "the source")  # fmt: skip
 
 
 class Check(BaseModel):
@@ -109,7 +117,7 @@ class BoardPlan(BaseModel):
     title: str = Field(description="Video title, max 60 characters")
     level: Level
     problem: str = Field(description="The problem in plain words, max 160 characters")
-    answer: str = Field(description="The final answer as LaTeX, e.g. 'x = 2'")
+    answer: str = Field("", description="The final answer as LaTeX, e.g. 'x = 2'")
     steps: list[Step]
     recap: list[str] = Field([], description="2-4 short takeaways")
 
@@ -160,6 +168,14 @@ def problems(plan: BoardPlan) -> list[str]:
                     out.append(f"{at}: {field} {ref!r} is not an earlier write/text/formula op")
             if op.kind in ("write", "formula") and not op.latex.strip():
                 out.append(f"{at}: no latex")
+            if op.kind in ("node", "quote", "bars") and not op.text.strip():
+                out.append(f"{at}: needs text")
+            if op.kind == "node" and (not op.id or len(op.text) > 28):
+                out.append(f"{at}: a node needs an id and a label of at most 28 characters")
+            if op.kind == "link" and len(op.points) != 2:
+                out.append(f"{at}: a link needs points [from_node, to_node]")
+            if op.kind == "bars" and not (2 <= len(op.values) == len(op.labels) <= 8):
+                out.append(f"{at}: bars need 2-8 labels and the same number of values")
             if op.kind == "text" and not op.text.strip():
                 out.append(f"{at}: no text")
             if op.latex and not _balanced(op.latex):
@@ -188,6 +204,8 @@ def problems(plan: BoardPlan) -> list[str]:
                 out.append(f"{at}: needs a < b")
             if op.kind == "riemann" and not 2 <= op.n <= 40:
                 out.append(f"{at}: n must be 2-40")
+            if op.kind == "node" and op.id:
+                points.add(op.id)
             if op.kind == "point":
                 if not op.latex and not op.id:
                     out.append(f"{at}: name the point in latex (e.g. 'A')")

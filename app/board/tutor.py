@@ -104,10 +104,10 @@ async def _sympy(plan: BoardPlan, timeout: float = 240) -> tuple[int, list[str]]
     return res["checks"], res["failed"]
 
 
-async def _checked(plan: BoardPlan) -> tuple[int, list[str]]:
+async def _checked(plan: BoardPlan, need: bool = True) -> tuple[int, list[str]]:
     bad = problems(plan)
     n, failed = await _sympy(plan)
-    if not n:
+    if not n and need:
         bad.append("there are no checks: every step that changes an equation or computes a "
                    "value needs one")  # fmt: skip
     return n, bad + failed
@@ -258,7 +258,7 @@ async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work:
         )  # fmt: skip
         fixed.level = p.level
         keep_checks(p, fixed)
-        n, issues = await _checked(normalize(fixed))
+        n, issues = await _checked(normalize(fixed), need=any(s.checks for s in p.steps))
         if issues:
             raise JobFailed(f"The fixed plan failed its checks: {'; '.join(issues)}",
                             {"issues": issues})  # fmt: skip
@@ -329,9 +329,15 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
         ctx.reply(f"I'll teach this in **{languages.name(language)}**; the board stays in "
                   "maths notation.")  # fmt: skip
     p = await plan(ctx, problem, level, seconds, language)
-    vid = languages.voice_id(language)
     ctx.reply(f"**{p.title}**: here's the board plan ({level}).\n\n" + describe(p))
-    row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, "board", p.title,
+    return await deliver(ctx, conv, p, problem, t0, language)
+
+
+async def deliver(ctx: JobContext, conv: dict, p: BoardPlan, problem: str, t0: float,
+                  language: str | None, recipe: str = "board") -> dict[str, Any]:  # fmt: skip
+    """Typeset, voice and render a checked board plan, then post the video in chat."""
+    vid = languages.voice_id(language)
+    row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, recipe, p.title,
                                     {"board": p.model_dump(), "problem": problem})  # fmt: skip
     tid = row["id"]
     ctx.store.update_tutorial(tid, active_job=ctx.id, status="rendering")
@@ -395,4 +401,4 @@ def describe(p: BoardPlan) -> str:
         figs = sorted({o.kind for o in s.ops if o.kind not in ("write", "text", "section")})
         bits = [f"`{x}`" for x in shown] + ([f"draws {', '.join(figs)}"] if figs else [])
         lines.append(f"{i}. {s.say}" + (f" ({'; '.join(bits)})" if bits else ""))
-    return "\n".join(lines) + f"\n\n**Answer:** `{p.answer}`"
+    return "\n".join(lines) + (f"\n\n**Answer:** `{p.answer}`" if p.answer else "")
