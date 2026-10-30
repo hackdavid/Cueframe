@@ -9,14 +9,20 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field
 
 from app import languages
 from app.board import timeline, tutor
 from app.board.contracts import BoardPlan, normalize, problems
 from app.jobs import JobContext, JobFailed
+from app.llm import LLMError
+from app.log import fields, get_logger
 from app.tutorial import formats
 
+log = get_logger("concept")
 TRIES = 3
+CRAMPED = "almost touch, so the arrow can't be seen"  # contracts.problems wording
+PLAN_TIMEOUT = 120  # a plan takes 30-50 s; a call still open at 120 s is stuck, retry it
 SMALL = {"0", "1", "2", "3", "4", "5"}  # diagram counts like "3 steps"
 _NUM = re.compile(r"(?<![\w.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d,]*\d)")
 
@@ -92,6 +98,7 @@ def unsupported(plan: BoardPlan, source: str) -> list[str]:
 
 
 WORDS_PER_SECOND = 1.7  # measured on the board voice, numbers read out in full
+FILL = 0.85  # least share of the asked length, so a 60 s request is not a 45 s video
 _UNSPACED = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0e00-\u0e7f]")
 
 
@@ -113,6 +120,9 @@ def too_long(plan: BoardPlan, seconds: int | None) -> list[str]:
         return []
     words = sum(spoken_words(st.say) for st in plan.steps)
     limit = word_limit(seconds, len(plan.steps))
+    if words < (low := word_limit(int(seconds * FILL), len(plan.steps))):
+        return [f"the narration is {words:.0f} words, too short for {seconds} s with "
+                f"{len(plan.steps)} steps; lengthen it to {low}-{limit} words"]  # fmt: skip
     if words <= limit:
         return []
     return [f"the narration is {words:.0f} words, too long for {seconds} s with "
@@ -122,8 +132,8 @@ def too_long(plan: BoardPlan, seconds: int | None) -> list[str]:
 async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
                language: str | None) -> BoardPlan:  # fmt: skip
     want = (
-        f"The video must be about {seconds} s: at most {word_limit(seconds, 8)} words of "
-        "narration in total across 6-8 steps."
+        f"The video must be about {seconds} s: {word_limit(int(seconds * FILL), 6)}-"
+        f"{word_limit(seconds, 8)} words of narration in total across 6-8 steps."
         if seconds
         else "Aim for 50-80 s."
     )
@@ -131,10 +141,20 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
     feedback, issues, best = "", [], None
     for attempt in range(1, TRIES + 1):
         ctx.thinking("Explainer", "Drawing the idea" if attempt == 1 else "Fixing the board")
-        p, _ = await ctx.llm.parse(
-            BoardPlan, purpose="concept.plan", model=ctx.settings.research_model,
-            instructions=skill(mode), input=base + feedback, reasoning_effort="medium",
-        )  # fmt: skip
+        try:
+            p, _ = await ctx.llm.parse(
+                BoardPlan, purpose="concept.plan", model=ctx.settings.research_model,
+                instructions=skill(mode), input=base + feedback, reasoning_effort="medium",
+                timeout=PLAN_TIMEOUT,
+            )  # fmt: skip
+        except LLMError as exc:  # one malformed answer shouldn't end the job: plan again
+            log.warning(
+                "concept plan unreadable", extra=fields(attempt=attempt, error=str(exc)[:300])
+            )
+            ctx.reply(
+                f"**Board plan {attempt}:** the answer wasn't a readable plan; planning again."
+            )
+            continue
         if not p.feasible:
             raise JobFailed(f"I can't draw that as a board: {p.reason}", {"planned": False})
         p.level = "undergrad"
@@ -152,15 +172,65 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
             return p
         if best is None or len(issues) < len(best[1]):
             best = (p, issues)
-        # Repair from the best plan so far, never from a worse attempt.
+        # Repair from the best plan so far, never from a worse attempt; a plan with no
+        # diagram isn't worth repairing (repairs of it degrade further), so plan afresh.
+        if undrawn(best[0]):
+            feedback = ""
+            continue
         feedback = (
             f"\n\nYour previous plan:\n{best[0].model_dump_json(exclude_defaults=True)}\n\n"
             "Fix only these problems and return the whole plan. Keep every other op exactly "
             "as it is, with the same kind, id, text and points. Never fix a problem by deleting "
             "nodes, links, quotes or bars:\n- " + "\n- ".join(best[1])
         )
+    if best and all(CRAMPED in i for i in best[1]):  # short arrows beat no video
+        log.warning("concept plan with short arrows", extra=fields(issues=best[1][:3]))
+        ctx.reply("Using the best plan; some arrows between close boxes are short.")
+        return best[0]
     issues = best[1] if best else issues
     raise JobFailed(f"The board still had problems: {'; '.join(issues[:5])}", {"issues": issues})
+
+
+class Narration(BaseModel):
+    says: list[str] = Field(description="The new narration of each step, in order")
+
+
+async def stretch(ctx: JobContext, p: BoardPlan, tl: dict, seconds: int | None, source: str,
+                  mode: str, language: str | None) -> BoardPlan | None:  # fmt: skip
+    """The voice's real pace varies (1.7-2.3 words a second), so a plan that fit the word
+    budget can still come out short. Measured on the recorded voice, rewrite only the
+    narration to fill the asked length; None when it already fits or the rewrite won't do."""
+    if not seconds or tl["seconds"] >= seconds * FILL:
+        return None
+    audio = sum(st["audio"] for st in tl["steps"])
+    rate = sum(len(st["words"]) for st in tl["steps"]) / max(audio, 1.0)
+    have = sum(spoken_words(st.say) for st in p.steps)
+    want = int(have * (seconds - (tl["seconds"] - audio)) / max(audio, 1.0))
+    ctx.reply(f"The narration came out at {tl['seconds']:.0f} s for {seconds} s "
+              f"({rate:.1f} words a second); lengthening it to about {want} words.")  # fmt: skip
+    r, _ = await ctx.llm.parse(
+        Narration, purpose="concept.stretch", model=ctx.settings.research_model,
+        instructions=skill(mode), reasoning_effort="low", timeout=PLAN_TIMEOUT,
+        input=f"Rewrite the narration of this {len(p.steps)}-step board to {int(want * 0.9)}-"
+        f"{want} words in total (now {have:.0f}), so it fills {seconds} s; never more. Keep "
+        "each step about what that step draws and its numbers exactly as written. Add only "
+        "facts from the source, each with the source's own conditions (which model, setting, "
+        "hardware or comparison it holds for); never widen a claim, e.g. 'highest of the "
+        "compared methods' must not become 'the highest'. Write it to be spoken: no code "
+        "names, settings or symbols like max_tokens, top_p or ≥."
+        + languages.instruction(language)
+        + "\n\nSteps:\n" + "\n".join(f"{i}. {st.say}" for i, st in enumerate(p.steps, 1))
+        + f"\n\nSource facts (use only these):\n{source}",
+    )  # fmt: skip
+    if len(r.says) != len(p.steps):
+        return None
+    q = p.model_copy(deep=True)
+    for st, say in zip(q.steps, r.says, strict=True):
+        st.say = say
+    if issues := unsupported(q, source):
+        log.warning("stretched narration dropped", extra=fields(issues=issues[:3]))
+        return None
+    return q
 
 
 async def make(ctx: JobContext, source: str, topic: str, mode: str = "explainer",
@@ -188,4 +258,5 @@ async def make(ctx: JobContext, source: str, topic: str, mode: str = "explainer"
         recipe="concept",
         rules=skill(mode),
         validate=lambda q: unsupported(q, source),
+        fit=lambda q, tl: stretch(ctx, q, tl, seconds, source, mode, language),
     )

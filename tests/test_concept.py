@@ -3,11 +3,13 @@ import pytest
 from app.board import concept
 from app.board.contracts import BoardPlan, problems
 
+FILLER = " The old way was slow and the new way is fast." * 8
+
 
 def _plan(**over):
     d = {
         "feasible": True, "title": "T", "level": "undergrad", "problem": "p", "steps": [
-            {"say": "Before and after.", "ops": [
+            {"say": "Before and after." + FILLER, "ops": [
                 {"kind": "figure", "x_range": [0, 10], "y_range": [0, 4]},
                 {"kind": "node", "id": "a", "text": "Old way", "x": 2, "y": 2},
                 {"kind": "node", "id": "b", "text": "New way", "x": 8, "y": 2},
@@ -101,6 +103,8 @@ def test_narration_must_fit_the_requested_length():
     assert concept.too_long(p, 60) == []
     p.steps[0].say = "word " * 200
     assert "cut it to at most 92 words" in concept.too_long(p, 60)[0]
+    p.steps[0].say = "Too short."
+    assert "lengthen it to 77-92 words" in concept.too_long(p, 60)[0]
     p.steps[0].say = "这是一个很长的中文句子" * 40
     assert concept.too_long(p, 30)
 
@@ -196,7 +200,7 @@ async def test_a_clean_plan_is_returned_on_the_first_try():
     )
     p = await concept.plan(ctx, "Baseline 41.2, ours 48.7.", "explainer", 60, None)
     assert p.title == "T" and len(calls) == 1
-    assert f"at most {concept.word_limit(60, 8)} words" in calls[0]
+    assert f"-{concept.word_limit(60, 8)} words" in calls[0]
 
 
 def test_an_empty_figure_and_no_diagram_are_rejected():
@@ -206,3 +210,90 @@ def test_an_empty_figure_and_no_diagram_are_rejected():
     assert concept.undrawn(p) and not concept.undrawn(_plan())
     p.steps[0].ops[0].axes = True
     assert "nothing is drawn" not in " | ".join(problems(p))
+
+
+@pytest.mark.anyio
+async def test_a_plan_without_a_diagram_is_planned_afresh_not_repaired():
+    from types import SimpleNamespace
+
+    calls = []
+    bare = _plan()
+    bare.steps[0].ops = [op for op in bare.steps[0].ops if op.kind not in ("node", "link")]
+
+    async def parse(*a, **k):
+        calls.append(k["input"])
+        return (bare.model_copy(deep=True) if len(calls) == 1 else _plan()), None
+
+    ctx = SimpleNamespace(
+        llm=SimpleNamespace(parse=parse),
+        settings=SimpleNamespace(research_model="m"),
+        thinking=lambda *a: None,
+        reply=lambda *a: None,
+    )
+    p = await concept.plan(ctx, "Baseline 41.2, ours 48.7.", "explainer", 60, None)
+    assert len(calls) == 2 and "previous plan" not in calls[1]
+    assert not concept.undrawn(p)
+
+
+@pytest.mark.anyio
+async def test_a_short_voiced_board_is_renarrated_to_the_asked_length():
+    from types import SimpleNamespace
+
+    p = _plan()
+    n = len(p.steps)
+    words = [{"text": "w", "t": 0, "end": 0.4}] * 10
+    tl = {"seconds": 40.0, "steps": [{"audio": 4.0, "words": words}] * n}
+    asks = []
+
+    async def parse(schema, **k):
+        asks.append(k["input"])
+        return schema(says=[f"Longer step {i}, ours 48.7." for i in range(n)]), None
+
+    ctx = SimpleNamespace(llm=SimpleNamespace(parse=parse), reply=lambda *a: None,
+                          settings=SimpleNamespace(research_model="m"))  # fmt: skip
+    src = "Baseline 41.2, ours 48.7."
+    q = await concept.stretch(ctx, p, tl, 60, src, "explainer", None)
+    assert q is not None and q.steps[0].say == "Longer step 0, ours 48.7."
+    assert p.steps[0].say != q.steps[0].say and "fills 60 s" in asks[0]
+    assert (
+        await concept.stretch(ctx, p, {**tl, "seconds": 55.0}, 60, src, "explainer", None) is None
+    )
+
+    async def bad(schema, **k):
+        return schema(says=["It is 99.9 percent better."] * n), None
+
+    ctx.llm = SimpleNamespace(parse=bad)
+    assert await concept.stretch(ctx, p, tl, 60, src, "explainer", None) is None
+
+
+@pytest.mark.anyio
+async def test_an_unreadable_plan_is_planned_again_and_short_arrows_dont_fail_the_job(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from app.llm import LLMError
+
+    calls = []
+
+    async def parse(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise LLMError("BoardPlan contract violated: id should be a string")
+        return _plan(), None
+
+    ctx = SimpleNamespace(
+        llm=SimpleNamespace(parse=parse),
+        settings=SimpleNamespace(research_model="m"),
+        thinking=lambda *a: None,
+        reply=lambda *a: None,
+    )
+    src = "Baseline 41.2, ours 48.7."
+    assert (await concept.plan(ctx, src, "explainer", 60, None)).title == "T"
+    assert len(calls) == 2
+    cramped = [f"step 1 op 3 (link): nodes 'a' and 'b' {concept.CRAMPED}"]
+    monkeypatch.setattr(concept, "problems", lambda p: cramped)
+    assert (await concept.plan(ctx, src, "explainer", 60, None)).title == "T"
+    monkeypatch.setattr(concept, "problems", lambda p: [*cramped, "link to missing node 'z'"])
+    with pytest.raises(concept.JobFailed):
+        await concept.plan(ctx, src, "explainer", 60, None)

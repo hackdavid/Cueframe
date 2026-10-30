@@ -160,7 +160,7 @@ async def test_falls_back_to_model_knowledge(tmp_path):
 async def test_contract_violation_raises(tmp_path):
     from app.llm import LLMError
 
-    replies = [{"found": "maybe"}]
+    replies = [{"found": "maybe"}, {"found": "maybe"}]  # asked once more, still bad
     with pytest.raises(LLMError, match="StepsDraft contract violated"):
         await run(tmp_path, replies)
 

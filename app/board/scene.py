@@ -428,6 +428,8 @@ class Builder:
             g = m.VGroup(card, lab.move_to(card)).move_to(fig.ax.c2p(op.x, op.y))
             fig.pts[op.id] = g.get_center()
             fig.taken.append(_box(g))
+            if fig.box.x1 - fig.box.x0 > L.FIG_W:  # a full-width diagram: rows go below its cards
+                self.board.y = min(self.board.y, _box(g).bottom - L.GAP)
             return Item([g], lambda: m.AnimationGroup(m.Create(card), m.FadeIn(lab)), _box(g))
         if op.kind == "link":
             a, z = (self.objs[n] for n in op.points)
@@ -436,7 +438,13 @@ class Builder:
             mobs: list[m.Mobject] = [arr]
             if op.text:
                 t = text(op.text, 2.2, 18, MUTED)
-                t.next_to(arr.get_center(), m.UP, buff=0.08)
+                if t.width > (room := max(arr.get_length() - 0.1, 0.8)):
+                    t.scale_to_fit_width(room)  # a short arrow: keep the label off the cards
+                for side in (m.UP, m.DOWN):
+                    t.next_to(arr.get_center(), side, buff=0.08)
+                    if not any(_overlap(_box(t), k) for k in fig.taken):
+                        break
+                fig.taken.append(_box(t))
                 mobs.append(t)
             return Item(mobs, lambda: m.AnimationGroup(*(m.GrowArrow(x) if x is arr else
                                                          m.FadeIn(x) for x in mobs)),

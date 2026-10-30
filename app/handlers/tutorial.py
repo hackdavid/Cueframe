@@ -113,6 +113,7 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
             model=ctx.settings.research_model,
             instructions=ROUTER.format(catalog=recipes.catalog()),
             input=f"Conversation already has a tutorial: {has_tutorial}\n{files}\nMessage: {text}",
+            timeout=ROUTE_TIMEOUT,
         )
         if r.recipe not in recipes.recipes():
             r.recipe = None
@@ -133,6 +134,9 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
 
 _TRENDING = re.compile(r"\btoday'?s?\b|\btrending\b|\blatest\b|\bhot\b|#1|\btop\b", re.I)
 _PAPER_OR_MODEL = re.compile(r"\bpapers?\b|\bmodels?\b|arxiv|hugging ?face", re.I)
+
+
+ROUTE_TIMEOUT = 60  # routing takes ~10 s; a call still open at 60 s is stuck, retry it
 
 
 def _unnamed_trend(text: str, attached: bool) -> bool:

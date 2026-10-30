@@ -6,10 +6,11 @@ import asyncio
 import base64
 import dataclasses
 import json
+import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -219,15 +220,104 @@ class Runner:
         return (self.local / name).read_bytes()  # type: ignore[operator]
 
 
+_RANK = re.compile(r"#(\d+)")  # "#1" is read out as "one j one"
+# A number as written, not one inside a name like "V4.1": "3,947", "90.20", "48.7%".
+_NUM = re.compile(r"(?<![\w.,-])(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?(?!\.?\d|,\d)(%?)")
+_SYMBOLS = {"≥": " at least ", ">=": " at least ", "≤": " at most ", "<=": " at most ", "_": " "}
+_ONES = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+]
+_TENS = ["_", "_", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+
+
+def _words(n: int) -> str:
+    """3947 as "three thousand nine hundred forty-seven"."""
+    for scale, name in (
+        (10**9, "billion"),
+        (10**6, "million"),
+        (1000, "thousand"),
+        (100, "hundred"),
+    ):
+        if n >= scale:
+            rest = n % scale
+            return f"{_words(n // scale)} {name}" + (f" {_words(rest)}" if rest else "")
+    return _ONES[n] if n < 20 else _TENS[n // 10] + (f"-{_ONES[n % 10]}" if n % 10 else "")
+
+
+def _spoken(say: str) -> tuple[str, list[tuple[str, list[str]]]]:
+    """What the voice reads: "#1" as "number 1", "3,947" in words (digits get misread) and
+    "90.20%" digit by digit ("90 point 2 0 percent"). Also each changed number with its
+    spoken words, so captions can show it as written again."""
+    reps: list[tuple[str, list[str]]] = []
+
+    def say_num(m: re.Match) -> str:
+        whole, dec, pct = m[1], m[2], m[3]
+        out = _words(int(whole.replace(",", ""))) if "," in whole else whole
+        if dec:
+            out += " point " + " ".join(dec)
+        if pct:
+            out += " percent"
+        if out != m[0]:
+            reps.append((m[0], out.lower().split()))
+        return out
+
+    for sym, words in _SYMBOLS.items():
+        say = say.replace(sym, words)
+    say = _RANK.sub(r"number \1", " ".join(say.split()))
+    return _NUM.sub(say_num, say), reps
+
+
+def _rejoin(words: list[dict], reps: list[tuple[str, list[str]]]) -> list[dict]:
+    """Caption words for "90 point 2 0 percent" back as one "90.20%", timed over all of them."""
+    out, i, left = [], 0, list(reps)
+    while i < len(words):
+        for k, (text, toks) in enumerate(left):
+            got = words[i : i + len(toks)]
+            said = [w["text"].lower() for w in got]
+            if len(got) == len(toks) and said[:-1] == toks[:-1] and said[-1].startswith(toks[-1]):
+                tail = got[-1]["text"][len(toks[-1]) :]  # "5x," keeps "x,"
+                out.append({**got[0], "text": text + tail, "end": got[-1]["end"]})
+                del left[: k + 1]
+                i += len(toks)
+                break
+        else:
+            out.append(words[i])
+            i += 1
+    return out
+
+
+Fit = Callable[[BoardPlan, dict], Awaitable[BoardPlan | None]]  # re-narrate to the asked length
+
+
 async def _voice(p: BoardPlan, work: Path, voice_id: str | None = None,
                  ) -> list[tuple[float, list[dict]]]:  # fmt: skip
     sem = asyncio.Semaphore(4)
 
     async def one(i: int, say: str) -> tuple[float, list[dict]]:
         async with sem:
-            audio, words = await speak(say, voice_id=voice_id)
+            spoken, reps = _spoken(say)
+            audio, words = await speak(spoken, voice_id=voice_id)
         (work / f"s{i}.mp3").write_bytes(audio)
-        ws = [w.model_dump() for w in words]
+        ws = _rejoin([w.model_dump() for w in words], reps)
         return (ws[-1]["end"] + 0.1 if ws else 1.0), ws
 
     return list(await asyncio.gather(*(one(i, s.say) for i, s in enumerate(p.steps))))
@@ -236,7 +326,7 @@ async def _voice(p: BoardPlan, work: Path, voice_id: str | None = None,
 async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work: Path,
                  voice_id: str | None = None, rules: str | None = None,
                  validate: Callable[[BoardPlan], list[str]] | None = None,
-                 ) -> tuple[BoardPlan, dict, dict, dict]:  # fmt: skip
+                 fit: Fit | None = None) -> tuple[BoardPlan, dict, dict, dict]:  # fmt: skip
     """LaTeX check (repairing the plan from the errors), voice, then the render. The
     voice is recorded while the board is typeset; only a repaired plan re-records it."""
     voicing, voiced_for = asyncio.create_task(_voice(p, work, voice_id)), p
@@ -274,6 +364,11 @@ async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work:
     ctx.phase("voice", "Recording the teacher's voice")
     voiced = await voicing
     tl = timeline.build(p, voiced)
+    if fit and (fitted := await fit(p, tl)):
+        ctx.phase("voice", "Re-recording the longer narration")
+        p = fitted
+        tl = timeline.build(p, await _voice(p, work, voice_id))
+        await run.put("plan.json", p.model_dump_json().encode())
     (work / "timeline.json").write_text(json.dumps(tl))
     await run.put("timeline.json", json.dumps(tl).encode())
     ctx.phase("render", f"Drawing the board ({tl['seconds']:.0f} s of video)")
@@ -341,10 +436,10 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
 async def deliver(ctx: JobContext, conv: dict, p: BoardPlan, problem: str, t0: float,
                   language: str | None, recipe: str = "board", rules: str | None = None,
                   validate: Callable[[BoardPlan], list[str]] | None = None,
-                  ) -> dict[str, Any]:  # fmt: skip
+                  fit: Fit | None = None) -> dict[str, Any]:  # fmt: skip
     """Typeset, voice and render a checked board plan, then post the video in chat."""
     vid = languages.voice_id(language)
-    extra = {"rules": rules, "validate": validate} if rules or validate else {}
+    extra = {k: v for k, v in {"rules": rules, "validate": validate, "fit": fit}.items() if v}
     row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, recipe, p.title,
                                     {"board": p.model_dump(), "problem": problem})  # fmt: skip
     tid = row["id"]

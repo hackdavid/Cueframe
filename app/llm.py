@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import time
-from typing import Any, TypeVar
+from typing import Any, TypeVar, get_args
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError
@@ -70,6 +70,50 @@ def _usage(model: str, raw: dict[str, Any], searches: int) -> Usage:
         web_searches=searches,
         cost_usd=round(cost + searches * WEB_SEARCH_USD, 6),
     )
+
+
+_TAIL = re.compile(r"[^a-z0-9_]")
+
+
+def _models(annotation: Any) -> list[type[BaseModel]]:
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return [annotation]
+    return [m for a in get_args(annotation) for m in _models(a)]
+
+
+def _number(v: Any) -> bool:
+    return isinstance(v, int | float) and not isinstance(v, bool)
+
+
+def repair_keys(schema: type[BaseModel], data: Any) -> int:
+    """Restore keys the model garbled by appending junk, e.g. "x_range phenomena",
+    "axesNormals" or "answer前方", so their values aren't silently dropped. Returns the
+    number of keys restored."""
+    if isinstance(data, list):
+        return sum(repair_keys(schema, d) for d in data)
+    if not isinstance(data, dict):
+        return 0
+    names = sorted(schema.model_fields, key=len, reverse=True)
+    fixed = 0
+    for key in [k for k in data if k not in schema.model_fields]:
+        for name in names:
+            if key.startswith(name) and _TAIL.match(key[len(name)]) and name not in data:
+                data[name] = data.pop(key)
+                fixed += 1
+                break
+    for name, field in schema.model_fields.items():
+        v = data.get(name)
+        if v is None and name in data and not field.is_required() and field.default is not None:
+            del data[name]  # "trending": null where the field is a plain bool with a default
+            fixed += 1
+            continue
+        if field.annotation is str and _number(v):  # "id": 0 where a handle is a string
+            data[name], fixed = str(v), fixed + 1
+        elif field.annotation == list[str] and isinstance(v, list) and any(map(_number, v)):
+            data[name], fixed = [str(x) if _number(x) else x for x in v], fixed + 1
+        for model in _models(field.annotation):
+            fixed += repair_keys(model, data.get(name))
+    return fixed
 
 
 def _json_text(text: str) -> str:
@@ -193,14 +237,23 @@ class MetaClient:
 
     async def parse(self, schema: type[T], **kw: Any) -> tuple[T, LLMResponse]:
         """`respond` with a JSON-schema output contract, validated by Pydantic."""
-        res = await self.respond(schema=schema, **kw)
-        try:
-            return schema.model_validate(json.loads(_json_text(res.text))), res
-        except (json.JSONDecodeError, ValidationError) as exc:
-            log.error(
-                "llm output violated contract",
-                extra=fields(
-                    purpose=kw.get("purpose"), schema=schema.__name__, text=res.text[:300]
-                ),
-            )
-            raise LLMError(f"{schema.__name__} contract violated: {exc}") from exc
+        for attempt in (1, 2):  # a malformed answer is usually a one-off: ask once more
+            res = await self.respond(schema=schema, **kw)
+            try:
+                data = json.loads(_json_text(res.text))
+                if fixed := repair_keys(schema, data):
+                    log.warning(
+                        "llm output had garbled keys",
+                        extra=fields(purpose=kw.get("purpose"), schema=schema.__name__, keys=fixed),
+                    )
+                return schema.model_validate(data), res
+            except (json.JSONDecodeError, ValidationError) as exc:
+                log.error(
+                    "llm output violated contract",
+                    extra=fields(
+                        purpose=kw.get("purpose"), schema=schema.__name__, attempt=attempt,
+                        text=res.text[:300],
+                    ),
+                )  # fmt: skip
+                err = exc
+        raise LLMError(f"{schema.__name__} contract violated: {err}") from err
