@@ -361,3 +361,11 @@ def test_decimals_are_voiced_digit_by_digit_and_captioned_as_written():
     caps = [w["text"] for w in tt._rejoin(words, places)]
     assert caps == ["number", "1", "scores", "90.20%", "vs", "94.25,", "up", "3", "points."]
     assert tt._rejoin(words, places)[3]["end"] == 6.5
+
+
+def test_names_and_symbols_are_voiced_plainly():
+    from app.board import tutor as tt
+
+    spoken, places = tt._spoken("DeepSeek-V4.1-Flash gives max_tokens ≥ 256K at 1.5x.")
+    assert spoken == "DeepSeek-V4.1-Flash gives max tokens at least 256K at 1 point 5x."
+    assert places == [1]

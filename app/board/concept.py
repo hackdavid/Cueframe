@@ -196,9 +196,13 @@ async def stretch(ctx: JobContext, p: BoardPlan, tl: dict, seconds: int | None, 
     r, _ = await ctx.llm.parse(
         Narration, purpose="concept.stretch", model=ctx.settings.research_model,
         instructions=skill(mode), reasoning_effort="low", timeout=PLAN_TIMEOUT,
-        input=f"Rewrite the narration of this {len(p.steps)}-step board to about {want} words "
-        f"in total (now {have:.0f}), so it fills {seconds} s. Keep each step about what that "
-        "step draws, keep its numbers exactly as written, and add only facts from the source."
+        input=f"Rewrite the narration of this {len(p.steps)}-step board to {int(want * 0.9)}-"
+        f"{want} words in total (now {have:.0f}), so it fills {seconds} s; never more. Keep "
+        "each step about what that step draws and its numbers exactly as written. Add only "
+        "facts from the source, each with the source's own conditions (which model, setting, "
+        "hardware or comparison it holds for); never widen a claim, e.g. 'highest of the "
+        "compared methods' must not become 'the highest'. Write it to be spoken: no code "
+        "names, settings or symbols like max_tokens, top_p or ≥."
         + languages.instruction(language)
         + "\n\nSteps:\n" + "\n".join(f"{i}. {st.say}" for i, st in enumerate(p.steps, 1))
         + f"\n\nSource facts (use only these):\n{source}",

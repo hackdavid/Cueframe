@@ -221,7 +221,14 @@ class Runner:
 
 
 _RANK = re.compile(r"#(\d+)")  # "#1" is read out as "one j one"
-_DECIMAL = re.compile(r"(?<![\d.])(\d+)\.(\d+)(?![\d.])")  # "90.20" is read "ninety twenty"
+_DECIMAL = re.compile(r"(?<![\w.-])(\d+)\.(\d+)(?![\d.])")  # not "V4.1" in a name
+_SYMBOLS = {
+    "≥": " at least ",
+    ">=": " at least ",
+    "≤": " at most ",
+    "<=": " at most ",
+    "_": " ",
+}  # "90.20" is read "ninety twenty"
 
 
 def _spoken(say: str) -> tuple[str, list[int]]:
@@ -233,7 +240,9 @@ def _spoken(say: str) -> tuple[str, list[int]]:
         places.append(len(m[2]))
         return f"{m[1]} point {' '.join(m[2])}"
 
-    return _DECIMAL.sub(digits, _RANK.sub(r"number \1", say)), places
+    for sym, words in _SYMBOLS.items():
+        say = say.replace(sym, words)
+    return _DECIMAL.sub(digits, _RANK.sub(r"number \1", " ".join(say.split()))), places
 
 
 def _rejoin(words: list[dict], places: list[int]) -> list[dict]:
