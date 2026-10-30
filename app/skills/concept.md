@@ -24,6 +24,8 @@ Rules:
 - Include one `quote` card whenever the source has a sentence worth quoting, and a `bars`
   chart whenever it gives two or more comparable results (benchmarks, scores, speed).
 - A `link` joins neighbouring nodes only; never draw an arrow across another node.
+- At most 4 nodes in one row of a diagram, labels of at most 12 characters; put a 5th node
+  on a second row.
 - Node labels are 1-4 words (max 28 characters). Diagram text is short; the voice explains.
 - Use `write` only for real formulas from the source (LaTeX); no maths checks are needed.
 - 6-10 steps. Colours: blue for inputs, purple for the new idea, green for outputs and
