@@ -143,6 +143,26 @@ def normalize(plan: BoardPlan) -> BoardPlan:
     return plan
 
 
+def _crossed(fig: Op, nodes: dict[str, tuple[float, float]], ends: list[str]) -> list[str]:
+    """Other nodes lying on the straight arrow between two nodes of a figure."""
+    if len(ends) != 2 or not all(e in nodes for e in ends) or len(fig.x_range) != 2:
+        return []
+    sx = (fig.x_range[1] - fig.x_range[0]) or 1
+    sy = ((fig.y_range or [0, 1])[1] - (fig.y_range or [0, 1])[0]) or 1
+    (ax, ay), (bx, by) = ((nodes[e][0] / sx, nodes[e][1] / sy) for e in ends)
+    dx, dy = bx - ax, by - ay
+    length2 = dx * dx + dy * dy or 1e-9
+    out = []
+    for name, (x, y) in nodes.items():
+        if name in ends:
+            continue
+        px, py = x / sx - ax, y / sy - ay
+        t = (px * dx + py * dy) / length2
+        if 0.05 < t < 0.95 and abs(px * dy - py * dx) / length2**0.5 < 0.08:
+            out.append(name)
+    return out
+
+
 def problems(plan: BoardPlan) -> list[str]:
     """Structural problems that would make the board wrong or unrenderable."""
     out: list[str] = []
@@ -154,6 +174,7 @@ def problems(plan: BoardPlan) -> list[str]:
     order: dict[str, int] = {}  # row number of each write/text/section op
     points: set[str] = set()
     figure: Op | None = None
+    nodes: dict[str, tuple[float, float]] = {}
     for si, step in enumerate(plan.steps, 1):
         if not step.say.strip():
             out.append(f"step {si}: nothing is said")
@@ -174,6 +195,10 @@ def problems(plan: BoardPlan) -> list[str]:
                 out.append(f"{at}: a node needs an id and a label of at most 28 characters")
             if op.kind == "link" and len(op.points) != 2:
                 out.append(f"{at}: a link needs points [from_node, to_node]")
+            elif op.kind == "link" and figure is not None:
+                for name in _crossed(figure, nodes, op.points):
+                    out.append(f"{at}: the arrow passes through node {name!r}; link neighbours "
+                               "only, or move that node off the line")  # fmt: skip
             if op.kind == "bars" and not (2 <= len(op.values) == len(op.labels) <= 8):
                 out.append(f"{at}: bars need 2-8 labels and the same number of values")
             if op.kind == "text" and not op.text.strip():
@@ -188,11 +213,13 @@ def problems(plan: BoardPlan) -> list[str]:
             if op.kind == "arrow" and far:
                 out.append(f"{at}: an arrow only joins neighbouring lines; {op.target!r} "
                                f"and {op.to!r} are too far apart")  # fmt: skip
+            if op.kind == "node" and op.id:
+                nodes[op.id] = (op.x, op.y)
             if op.kind == "figure":
                 for name, r in (("x_range", op.x_range), ("y_range", op.y_range)):
                     if len(r) != 2 or not r[0] < r[1]:
                         out.append(f"{at}: {name} must be [min, max] with min < max")
-                figure, points = op, set()
+                figure, points, nodes = op, set(), {}
             elif op.kind in FIGURE and figure is None:
                 out.append(f"{at}: draw a figure first")
             if op.kind in ("plot", "area", "riemann", "tangent"):

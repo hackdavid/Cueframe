@@ -489,6 +489,8 @@ async def make(
             if found.kind in ("paper", "model") and mode in ("explainer", "influencer"):
                 from app.board import concept
 
+                if found.kind == "model":
+                    brief += await concept.model_card(found.url)
                 return await concept.make(ctx, brief, found.name, mode, seconds)
         elif brief and mode in ("explainer", "influencer") and _CONCEPT.search(goal or ""):
             from app.board import concept

@@ -8,6 +8,8 @@ import time
 from decimal import Decimal
 from typing import Any
 
+import httpx
+
 from app import languages
 from app.board import tutor
 from app.board.contracts import BoardPlan, normalize, problems
@@ -17,6 +19,29 @@ from app.tutorial import formats
 TRIES = 3
 SMALL = {"0", "1", "2", "3", "4", "5"}  # diagram counts like "3 steps"
 _NUM = re.compile(r"(?<![\w.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d,]*\d)")
+
+
+CARD_CHARS = 6000
+
+
+async def model_card(url: str) -> str:
+    """The Hugging Face model card text (benchmarks, architecture) as extra source facts."""
+    m = re.match(r"https://huggingface\.co/([\w.-]+/[\w.-]+)/?$", url or "")
+    if not m:
+        return ""
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as http:
+            r = await http.get(f"https://huggingface.co/{m.group(1)}/raw/main/README.md")
+            r.raise_for_status()
+    except httpx.HTTPError:
+        return ""
+    text = re.sub(r"\A---\n.*?\n---\n", "", r.text, flags=re.S)
+    text = re.sub(r"<[^>]+>|!\[[^\]]*\]\([^)]*\)", "", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()[:CARD_CHARS]
+    return (
+        f"\n\nModel card (its own words; facts may be taken from here too):\n{text}" if text else ""
+    )
 
 
 def skill(mode: str) -> str:

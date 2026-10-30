@@ -79,3 +79,10 @@ def test_close_but_different_numbers_are_rejected():
             f"title/problem/recap: the number {claim.split()[0].replace(',', '')} "
             "is not in the source facts"
         ]
+
+
+def test_arrow_through_a_node_is_rejected():
+    p = _plan()
+    ops = p.steps[0].ops
+    ops.insert(2, ops[1].model_copy(update={"id": "m", "text": "Middle", "x": 5}))
+    assert "passes through node 'm'" in " | ".join(problems(p))

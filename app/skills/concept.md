@@ -19,6 +19,11 @@ Shape of the video (one step = one beat, 1-3 spoken sentences):
 Rules:
 - Every number, name and claim must come from the source facts given; if the source has no
   result numbers, skip the chart.
+- Say every number exactly as the source writes it ("3,911 likes", never "almost four
+  thousand"); a number you can't say exactly, leave out.
+- Include one `quote` card whenever the source has a sentence worth quoting, and a `bars`
+  chart whenever it gives two or more comparable results (benchmarks, scores, speed).
+- A `link` joins neighbouring nodes only; never draw an arrow across another node.
 - Node labels are 1-4 words (max 28 characters). Diagram text is short; the voice explains.
 - Use `write` only for real formulas from the source (LaTeX); no maths checks are needed.
 - 6-10 steps. Colours: blue for inputs, purple for the new idea, green for outputs and
