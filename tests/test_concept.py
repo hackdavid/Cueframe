@@ -86,3 +86,9 @@ def test_arrow_through_a_node_is_rejected():
     ops = p.steps[0].ops
     ops.insert(2, ops[1].model_copy(update={"id": "m", "text": "Middle", "x": 5}))
     assert "passes through node 'm'" in " | ".join(problems(p))
+
+
+def test_bad_figure_range_is_reported_not_raised():
+    p = _plan()
+    p.steps[0].ops[0].y_range = [0]
+    assert "y_range must be [min, max]" in " | ".join(problems(p))

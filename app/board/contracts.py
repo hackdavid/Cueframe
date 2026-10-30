@@ -145,10 +145,12 @@ def normalize(plan: BoardPlan) -> BoardPlan:
 
 def _crossed(fig: Op, nodes: dict[str, tuple[float, float]], ends: list[str]) -> list[str]:
     """Other nodes lying on the straight arrow between two nodes of a figure."""
-    if len(ends) != 2 or not all(e in nodes for e in ends) or len(fig.x_range) != 2:
+    if len(ends) != 2 or not all(e in nodes for e in ends):
         return []
+    if len(fig.x_range) != 2 or len(fig.y_range) != 2:
+        return []  # the range itself is reported as a problem
     sx = (fig.x_range[1] - fig.x_range[0]) or 1
-    sy = ((fig.y_range or [0, 1])[1] - (fig.y_range or [0, 1])[0]) or 1
+    sy = (fig.y_range[1] - fig.y_range[0]) or 1
     (ax, ay), (bx, by) = ((nodes[e][0] / sx, nodes[e][1] / sy) for e in ends)
     dx, dy = bx - ax, by - ay
     length2 = dx * dx + dy * dy or 1e-9
