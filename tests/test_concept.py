@@ -197,3 +197,10 @@ async def test_a_clean_plan_is_returned_on_the_first_try():
     p = await concept.plan(ctx, "Baseline 41.2, ours 48.7.", "explainer", 60, None)
     assert p.title == "T" and len(calls) == 1
     assert f"at most {concept.word_limit(60, 8)} words" in calls[0]
+
+
+def test_an_empty_figure_and_no_diagram_are_rejected():
+    p = _plan()
+    p.steps[0].ops = [p.steps[0].ops[0]]
+    assert "nothing is drawn on this figure" in " | ".join(problems(p))
+    assert concept.undrawn(p) and not concept.undrawn(_plan())

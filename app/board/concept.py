@@ -65,6 +65,15 @@ def _canon(n: str) -> str:
     return format(d.normalize() if d != d.to_integral() else d.to_integral(), "f")
 
 
+def undrawn(plan: BoardPlan) -> list[str]:
+    """An explainer has to draw the idea: at least one block diagram."""
+    kinds = {op.kind for st in plan.steps for op in st.ops}
+    if {"node", "link"} <= kinds:
+        return []
+    return ["no block diagram: draw the key idea as a figure with 2-4 `node` ops joined by "
+            "`link` ops"]  # fmt: skip
+
+
 def unsupported(plan: BoardPlan, source: str) -> list[str]:
     """Numbers on the board or in the narration that the source never states."""
     have = _nums(source)
@@ -129,7 +138,8 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
         if not p.feasible:
             raise JobFailed(f"I can't draw that as a board: {p.reason}", {"planned": False})
         p.level = "undergrad"
-        issues = problems(normalize(p)) + unsupported(p, source) + too_long(p, seconds)
+        issues = (problems(normalize(p)) + undrawn(p) + unsupported(p, source)
+                  + too_long(p, seconds))  # fmt: skip
         ctx.reply(
             f"**Board plan {attempt}:** {len(p.steps)} steps, "
             + (
@@ -146,7 +156,8 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
         feedback = (
             f"\n\nYour previous plan:\n{best[0].model_dump_json(exclude_defaults=True)}\n\n"
             "Fix only these problems and return the whole plan. Keep every other op exactly "
-            "as it is, with the same kind, id, text and points:\n- " + "\n- ".join(best[1])
+            "as it is, with the same kind, id, text and points. Never fix a problem by deleting "
+            "nodes, links, quotes or bars:\n- " + "\n- ".join(best[1])
         )
     issues = best[1] if best else issues
     raise JobFailed(f"The board still had problems: {'; '.join(issues[:5])}", {"issues": issues})

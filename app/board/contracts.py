@@ -361,4 +361,20 @@ def problems(plan: BoardPlan) -> list[str]:
                 ids[op.id] = op.kind
             if op.kind in ROW:
                 order[op.id or f"_{si}.{oi}"] = len(order)
+    return out + _empty_figures(plan)
+
+
+def _empty_figures(plan: BoardPlan) -> list[str]:
+    """A figure with nothing drawn on it is a blank space on the board."""
+    out, fig, drawn = [], "", True
+    for si, step in enumerate(plan.steps, 1):
+        for oi, op in enumerate(step.ops, 1):
+            if op.kind == "figure":
+                if not drawn:
+                    out.append(f"{fig}: nothing is drawn on this figure; draw on it or remove it")
+                fig, drawn = f"step {si} op {oi} (figure)", False
+            elif op.kind in FIGURE:
+                drawn = True
+    if not drawn:
+        out.append(f"{fig}: nothing is drawn on this figure; draw on it or remove it")
     return out
