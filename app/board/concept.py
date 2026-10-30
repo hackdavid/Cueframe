@@ -9,13 +9,16 @@ from decimal import Decimal
 from typing import Any
 
 import httpx
+from pydantic import BaseModel, Field
 
 from app import languages
 from app.board import timeline, tutor
 from app.board.contracts import BoardPlan, normalize, problems
 from app.jobs import JobContext, JobFailed
+from app.log import fields, get_logger
 from app.tutorial import formats
 
+log = get_logger("concept")
 TRIES = 3
 PLAN_TIMEOUT = 120  # a plan takes 30-50 s; a call still open at 120 s is stuck, retry it
 SMALL = {"0", "1", "2", "3", "4", "5"}  # diagram counts like "3 steps"
@@ -173,6 +176,44 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
     raise JobFailed(f"The board still had problems: {'; '.join(issues[:5])}", {"issues": issues})
 
 
+class Narration(BaseModel):
+    says: list[str] = Field(description="The new narration of each step, in order")
+
+
+async def stretch(ctx: JobContext, p: BoardPlan, tl: dict, seconds: int | None, source: str,
+                  mode: str, language: str | None) -> BoardPlan | None:  # fmt: skip
+    """The voice's real pace varies (1.7-2.3 words a second), so a plan that fit the word
+    budget can still come out short. Measured on the recorded voice, rewrite only the
+    narration to fill the asked length; None when it already fits or the rewrite won't do."""
+    if not seconds or tl["seconds"] >= seconds * FILL:
+        return None
+    audio = sum(st["audio"] for st in tl["steps"])
+    rate = sum(len(st["words"]) for st in tl["steps"]) / max(audio, 1.0)
+    have = sum(spoken_words(st.say) for st in p.steps)
+    want = int(have * (seconds - (tl["seconds"] - audio)) / max(audio, 1.0))
+    ctx.reply(f"The narration came out at {tl['seconds']:.0f} s for {seconds} s "
+              f"({rate:.1f} words a second); lengthening it to about {want} words.")  # fmt: skip
+    r, _ = await ctx.llm.parse(
+        Narration, purpose="concept.stretch", model=ctx.settings.research_model,
+        instructions=skill(mode), reasoning_effort="low", timeout=PLAN_TIMEOUT,
+        input=f"Rewrite the narration of this {len(p.steps)}-step board to about {want} words "
+        f"in total (now {have:.0f}), so it fills {seconds} s. Keep each step about what that "
+        "step draws, keep its numbers exactly as written, and add only facts from the source."
+        + languages.instruction(language)
+        + "\n\nSteps:\n" + "\n".join(f"{i}. {st.say}" for i, st in enumerate(p.steps, 1))
+        + f"\n\nSource facts (use only these):\n{source}",
+    )  # fmt: skip
+    if len(r.says) != len(p.steps):
+        return None
+    q = p.model_copy(deep=True)
+    for st, say in zip(q.steps, r.says, strict=True):
+        st.say = say
+    if issues := unsupported(q, source):
+        log.warning("stretched narration dropped", extra=fields(issues=issues[:3]))
+        return None
+    return q
+
+
 async def make(ctx: JobContext, source: str, topic: str, mode: str = "explainer",
                seconds: int | None = None) -> dict[str, Any]:  # fmt: skip
     """A drawn explainer (or reel) about `topic` from `source` facts."""
@@ -198,4 +239,5 @@ async def make(ctx: JobContext, source: str, topic: str, mode: str = "explainer"
         recipe="concept",
         rules=skill(mode),
         validate=lambda q: unsupported(q, source),
+        fit=lambda q, tl: stretch(ctx, q, tl, seconds, source, mode, language),
     )

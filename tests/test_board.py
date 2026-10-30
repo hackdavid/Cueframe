@@ -349,3 +349,15 @@ def test_photo_question_is_read_then_taught(client, monkeypatch, settings):
     cid = res["conversation"]["id"]
     msgs = client.get(f"/api/conversations/{cid}", headers=_auth(client)).json()["messages"]
     assert any("The question in your photo" in m["content"] for m in msgs)
+
+
+def test_decimals_are_voiced_digit_by_digit_and_captioned_as_written():
+    from app.board import tutor as tt
+
+    spoken, places = tt._spoken("#1 scores 90.20% vs 94.25, up 3 points.")
+    assert spoken == "number 1 scores 90 point 2 0% vs 94 point 2 5, up 3 points."
+    assert places == [2, 2]
+    words = [{"text": t, "t": i, "end": i + 0.5} for i, t in enumerate(spoken.split())]
+    caps = [w["text"] for w in tt._rejoin(words, places)]
+    assert caps == ["number", "1", "scores", "90.20%", "vs", "94.25,", "up", "3", "points."]
+    assert tt._rejoin(words, places)[3]["end"] == 6.5

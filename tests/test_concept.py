@@ -233,3 +233,34 @@ async def test_a_plan_without_a_diagram_is_planned_afresh_not_repaired():
     p = await concept.plan(ctx, "Baseline 41.2, ours 48.7.", "explainer", 60, None)
     assert len(calls) == 2 and "previous plan" not in calls[1]
     assert not concept.undrawn(p)
+
+
+@pytest.mark.anyio
+async def test_a_short_voiced_board_is_renarrated_to_the_asked_length():
+    from types import SimpleNamespace
+
+    p = _plan()
+    n = len(p.steps)
+    words = [{"text": "w", "t": 0, "end": 0.4}] * 10
+    tl = {"seconds": 40.0, "steps": [{"audio": 4.0, "words": words}] * n}
+    asks = []
+
+    async def parse(schema, **k):
+        asks.append(k["input"])
+        return schema(says=[f"Longer step {i}, ours 48.7." for i in range(n)]), None
+
+    ctx = SimpleNamespace(llm=SimpleNamespace(parse=parse), reply=lambda *a: None,
+                          settings=SimpleNamespace(research_model="m"))  # fmt: skip
+    src = "Baseline 41.2, ours 48.7."
+    q = await concept.stretch(ctx, p, tl, 60, src, "explainer", None)
+    assert q is not None and q.steps[0].say == "Longer step 0, ours 48.7."
+    assert p.steps[0].say != q.steps[0].say and "fills 60 s" in asks[0]
+    assert (
+        await concept.stretch(ctx, p, {**tl, "seconds": 55.0}, 60, src, "explainer", None) is None
+    )
+
+    async def bad(schema, **k):
+        return schema(says=["It is 99.9 percent better."] * n), None
+
+    ctx.llm = SimpleNamespace(parse=bad)
+    assert await concept.stretch(ctx, p, tl, 60, src, "explainer", None) is None

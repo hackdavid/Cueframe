@@ -438,7 +438,13 @@ class Builder:
             mobs: list[m.Mobject] = [arr]
             if op.text:
                 t = text(op.text, 2.2, 18, MUTED)
-                t.next_to(arr.get_center(), m.UP, buff=0.08)
+                if t.width > (room := max(arr.get_length() - 0.1, 0.8)):
+                    t.scale_to_fit_width(room)  # a short arrow: keep the label off the cards
+                for side in (m.UP, m.DOWN):
+                    t.next_to(arr.get_center(), side, buff=0.08)
+                    if not any(_overlap(_box(t), k) for k in fig.taken):
+                        break
+                fig.taken.append(_box(t))
                 mobs.append(t)
             return Item(mobs, lambda: m.AnimationGroup(*(m.GrowArrow(x) if x is arr else
                                                          m.FadeIn(x) for x in mobs)),

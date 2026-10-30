@@ -10,7 +10,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -221,6 +221,42 @@ class Runner:
 
 
 _RANK = re.compile(r"#(\d+)")  # "#1" is read out as "one j one"
+_DECIMAL = re.compile(r"(?<![\d.])(\d+)\.(\d+)(?![\d.])")  # "90.20" is read "ninety twenty"
+
+
+def _spoken(say: str) -> tuple[str, list[int]]:
+    """What the voice reads: "#1" as "number 1" and "90.20" digit by digit ("90 point 2 0").
+    Also the decimal places of each number, so captions can show "90.20" again."""
+    places: list[int] = []
+
+    def digits(m: re.Match) -> str:
+        places.append(len(m[2]))
+        return f"{m[1]} point {' '.join(m[2])}"
+
+    return _DECIMAL.sub(digits, _RANK.sub(r"number \1", say)), places
+
+
+def _rejoin(words: list[dict], places: list[int]) -> list[dict]:
+    """Caption words for "90 point 2 0%" back as one "90.20%", timed over all of them."""
+    out, i, left = [], 0, list(places)
+    while i < len(words):
+        w = words[i]
+        n = left[0] if left else 0
+        tail = words[i + 2 : i + 2 + n]
+        if (n and re.fullmatch(r"\d+", w["text"]) and i + 1 < len(words)
+                and words[i + 1]["text"].lower() == "point" and len(tail) == n
+                and all(re.match(r"\d", t["text"]) for t in tail)):  # fmt: skip
+            out.append({**w, "text": f"{w['text']}." + "".join(t["text"] for t in tail),
+                        "end": tail[-1]["end"]})  # fmt: skip
+            left.pop(0)
+            i += 2 + n
+        else:
+            out.append(w)
+            i += 1
+    return out
+
+
+Fit = Callable[[BoardPlan, dict], Awaitable[BoardPlan | None]]  # re-narrate to the asked length
 
 
 async def _voice(p: BoardPlan, work: Path, voice_id: str | None = None,
@@ -229,9 +265,10 @@ async def _voice(p: BoardPlan, work: Path, voice_id: str | None = None,
 
     async def one(i: int, say: str) -> tuple[float, list[dict]]:
         async with sem:
-            audio, words = await speak(_RANK.sub(r"number \1", say), voice_id=voice_id)
+            spoken, places = _spoken(say)
+            audio, words = await speak(spoken, voice_id=voice_id)
         (work / f"s{i}.mp3").write_bytes(audio)
-        ws = [w.model_dump() for w in words]
+        ws = _rejoin([w.model_dump() for w in words], places)
         return (ws[-1]["end"] + 0.1 if ws else 1.0), ws
 
     return list(await asyncio.gather(*(one(i, s.say) for i, s in enumerate(p.steps))))
@@ -240,7 +277,7 @@ async def _voice(p: BoardPlan, work: Path, voice_id: str | None = None,
 async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work: Path,
                  voice_id: str | None = None, rules: str | None = None,
                  validate: Callable[[BoardPlan], list[str]] | None = None,
-                 ) -> tuple[BoardPlan, dict, dict, dict]:  # fmt: skip
+                 fit: Fit | None = None) -> tuple[BoardPlan, dict, dict, dict]:  # fmt: skip
     """LaTeX check (repairing the plan from the errors), voice, then the render. The
     voice is recorded while the board is typeset; only a repaired plan re-records it."""
     voicing, voiced_for = asyncio.create_task(_voice(p, work, voice_id)), p
@@ -278,6 +315,11 @@ async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work:
     ctx.phase("voice", "Recording the teacher's voice")
     voiced = await voicing
     tl = timeline.build(p, voiced)
+    if fit and (fitted := await fit(p, tl)):
+        ctx.phase("voice", "Re-recording the longer narration")
+        p = fitted
+        tl = timeline.build(p, await _voice(p, work, voice_id))
+        await run.put("plan.json", p.model_dump_json().encode())
     (work / "timeline.json").write_text(json.dumps(tl))
     await run.put("timeline.json", json.dumps(tl).encode())
     ctx.phase("render", f"Drawing the board ({tl['seconds']:.0f} s of video)")
@@ -345,10 +387,10 @@ async def _make(ctx: JobContext, problem: str, level: Level | None = None,
 async def deliver(ctx: JobContext, conv: dict, p: BoardPlan, problem: str, t0: float,
                   language: str | None, recipe: str = "board", rules: str | None = None,
                   validate: Callable[[BoardPlan], list[str]] | None = None,
-                  ) -> dict[str, Any]:  # fmt: skip
+                  fit: Fit | None = None) -> dict[str, Any]:  # fmt: skip
     """Typeset, voice and render a checked board plan, then post the video in chat."""
     vid = languages.voice_id(language)
-    extra = {"rules": rules, "validate": validate} if rules or validate else {}
+    extra = {k: v for k, v in {"rules": rules, "validate": validate, "fit": fit}.items() if v}
     row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, recipe, p.title,
                                     {"board": p.model_dump(), "problem": problem})  # fmt: skip
     tid = row["id"]
