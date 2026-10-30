@@ -1,10 +1,15 @@
 """Board plan: the model's lesson as a list of board operations in math coordinates.
 The renderer maps them to pixels; the model never writes drawing code."""
 
+import math
 import re
 from typing import Literal
 
 from pydantic import BaseModel, Field
+
+from app.board.layout import FIG_H, FIG_W, LEFT, RIGHT
+
+BOARD_W = RIGHT - LEFT
 
 Color = Literal["ink", "blue", "red", "green", "orange", "purple"]
 Level = Literal["child", "school", "undergrad"]
@@ -157,6 +162,40 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")[:24] or "node"
 
 
+def _node_size(label: str) -> tuple[float, float]:
+    """A node card's on-screen size in board units (bold 22 pt, wrapped at 2.6 units)."""
+    per_line = 13
+    lines = max(1, -(-len(label) // per_line))
+    return min(len(label), per_line) * 0.2 + 0.4, lines * 0.4 + 0.2
+
+
+def _cramped(fig: Op, nodes: dict[str, tuple[float, float]], labels: dict[str, str],
+             ends: list[str], min_gap: float = 0.6) -> bool:  # fmt: skip
+    """Two linked node cards so close that the arrow between them is too short to see."""
+    if len(ends) != 2 or not all(e in nodes for e in ends) or ends[0] == ends[1]:
+        return False
+    if len(fig.x_range) != 2 or len(fig.y_range) != 2:
+        return False
+    xs, ys = fig.x_range[1] - fig.x_range[0], fig.y_range[1] - fig.y_range[0]
+    if xs <= 0 or ys <= 0:
+        return False
+    if fig.axes:
+        ux, uy = FIG_W / xs, FIG_H / ys
+    else:
+        ux = uy = min(((BOARD_W if xs >= 8 else FIG_W) / xs), FIG_H / ys)
+    (ax, ay), (bx, by) = ((nodes[e][0] * ux, nodes[e][1] * uy) for e in ends)
+    d = math.hypot(bx - ax, by - ay)
+    if d == 0:
+        return True
+    cx, cy = abs(bx - ax) / d, abs(by - ay) / d
+
+    def reach(label: str) -> float:
+        w, h = _node_size(label)
+        return min(w / 2 / cx if cx else math.inf, h / 2 / cy if cy else math.inf)
+
+    return d - reach(labels[ends[0]]) - reach(labels[ends[1]]) < min_gap
+
+
 def _crossed(fig: Op, nodes: dict[str, tuple[float, float]], ends: list[str]) -> list[str]:
     """Other nodes lying on the straight arrow between two nodes of a figure."""
     if len(ends) != 2 or not all(e in nodes for e in ends):
@@ -191,6 +230,7 @@ def problems(plan: BoardPlan) -> list[str]:
     points: set[str] = set()
     figure: Op | None = None
     nodes: dict[str, tuple[float, float]] = {}
+    labels: dict[str, str] = {}
     for si, step in enumerate(plan.steps, 1):
         if not step.say.strip():
             out.append(f"step {si}: nothing is said")
@@ -212,6 +252,9 @@ def problems(plan: BoardPlan) -> list[str]:
             if op.kind == "link" and len(op.points) != 2:
                 out.append(f"{at}: a link needs points [from_node, to_node]")
             elif op.kind == "link" and figure is not None:
+                if _cramped(figure, nodes, labels, op.points):
+                    out.append(f"{at}: nodes {op.points[0]!r} and {op.points[1]!r} almost touch, "
+                               "so the arrow can't be seen; move them further apart")  # fmt: skip
                 for name in _crossed(figure, nodes, op.points):
                     out.append(f"{at}: the arrow passes through node {name!r}; link neighbours "
                                "only, or move that node off the line")  # fmt: skip
@@ -230,12 +273,12 @@ def problems(plan: BoardPlan) -> list[str]:
                 out.append(f"{at}: an arrow only joins neighbouring lines; {op.target!r} "
                                f"and {op.to!r} are too far apart")  # fmt: skip
             if op.kind == "node" and op.id:
-                nodes[op.id] = (op.x, op.y)
+                nodes[op.id], labels[op.id] = (op.x, op.y), op.text
             if op.kind == "figure":
                 for name, r in (("x_range", op.x_range), ("y_range", op.y_range)):
                     if len(r) != 2 or not r[0] < r[1]:
                         out.append(f"{at}: {name} must be [min, max] with min < max")
-                figure, points, nodes = op, set(), {}
+                figure, points, nodes, labels = op, set(), {}, {}
             elif op.kind in FIGURE and figure is None:
                 out.append(f"{at}: draw a figure first")
             if op.kind in ("plot", "area", "riemann", "tangent"):

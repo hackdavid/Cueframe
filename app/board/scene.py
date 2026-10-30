@@ -179,7 +179,7 @@ class Builder:
                           stroke_width=2, stroke_opacity=0.5)  # fmt: skip
             return Item([t, rule], lambda: m.AnimationGroup(m.Write(t), m.Create(rule)), b)
         if op.kind == "quote":
-            body = text(f"“{op.text}”", self.board.width() - 0.8, 28, INK)
+            body = text(f"“{op.text}”", self.board.width() - 2.6, 28, INK)  # clear of the step chip
             fill = c if op.color != "ink" else COLORS["purple"]
             bar = m.Rectangle(
                 width=0.08,
