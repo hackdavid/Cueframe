@@ -82,7 +82,7 @@ def unsupported(plan: BoardPlan, source: str) -> list[str]:
     return out
 
 
-WORDS_PER_SECOND = 2.5
+WORDS_PER_SECOND = 1.7  # measured on the board voice, numbers read out in full
 _UNSPACED = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\u0e00-\u0e7f]")
 
 
