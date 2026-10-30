@@ -17,6 +17,7 @@ from app.jobs import JobContext, JobFailed
 from app.tutorial import formats
 
 TRIES = 3
+PLAN_TIMEOUT = 120  # a plan takes 30-50 s; a call still open at 120 s is stuck, retry it
 SMALL = {"0", "1", "2", "3", "4", "5"}  # diagram counts like "3 steps"
 _NUM = re.compile(r"(?<![\w.,])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?![\d,]*\d)")
 
@@ -138,6 +139,7 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
         p, _ = await ctx.llm.parse(
             BoardPlan, purpose="concept.plan", model=ctx.settings.research_model,
             instructions=skill(mode), input=base + feedback, reasoning_effort="medium",
+            timeout=PLAN_TIMEOUT,
         )  # fmt: skip
         if not p.feasible:
             raise JobFailed(f"I can't draw that as a board: {p.reason}", {"planned": False})
