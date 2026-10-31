@@ -9,9 +9,8 @@ from urllib.parse import urldefrag, urljoin, urlparse
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from app.agents import UA
 from app.agents.contracts import DocImage, PageCandidate, PageContent, Section
-
-UA = "Mozilla/5.0 (compatible; CueframeDocsBot/0.1)"
 MAX_PAGE_BYTES = 3_000_000
 MAX_IMAGE_BYTES = 1_500_000
 DROP = ["script", "style", "noscript", "nav", "header", "footer", "aside", "form", "svg", "iframe"]

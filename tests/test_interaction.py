@@ -298,8 +298,8 @@ def test_busy_sandbox_keeps_the_provider_idle_timer_alive():
     calls = []
 
     class Box:
-        async def exec(self, script, timeout=60):
-            calls.append(script)
+        async def beat(self):
+            calls.append("beat")
 
     async def run():
         mgr = SandboxManager.__new__(SandboxManager)
@@ -309,7 +309,7 @@ def test_busy_sandbox_keeps_the_provider_idle_timer_alive():
         task.cancel()
 
     asyncio.run(run())
-    assert calls and set(calls) == {"true"}
+    assert calls and set(calls) == {"beat"}
 
 
 def test_a_repair_can_drop_a_step_that_isnt_needed(client, monkeypatch):

@@ -174,3 +174,51 @@ def test_release_retried_when_held_off(client, monkeypatch):
 
     asyncio.run(go())
     assert calls == [1, 1]
+
+
+def test_session_heartbeat_keeps_provider_alive(client):
+    """The session starts one heartbeat task; it beats via box.beat() and is cancelled
+    when the sandbox stops."""
+    import asyncio
+
+    mgr = client.app.state.sandboxes
+
+    async def go():
+        async with mgr.session("job-x", None) as (sid, box):
+            beat = mgr._beats[sid]
+            assert not beat.done()
+            before = len(box.scripts)
+            await box.beat()  # what the heartbeat task calls every 45 s
+            assert box.scripts[-1] == "true" and len(box.scripts) == before + 1
+        await asyncio.sleep(0.01)
+        assert beat.done()
+
+    asyncio.run(go())
+
+
+def test_real_execs_count_as_activity_but_beats_do_not(client):
+    """The idle watchdog watches last_active: put_files-style box traffic (which never
+    touches the manager) must reset it; provider keepalives must not."""
+    import asyncio
+
+    from app.sandbox.fake import FakeSandbox
+
+    box = FakeSandbox()
+    assert box.last_active == 0.0
+    asyncio.run(box.exec("echo hi"))
+    active = box.last_active
+    assert active > 0.0
+    asyncio.run(box.beat())
+    assert box.last_active == active  # unchanged by the keepalive
+
+
+def test_watchdog_idle_uses_box_activity(client):
+    """A sandbox with recent box execs but no manager touch is not idle."""
+    import time
+
+    from app.sandbox.fake import FakeSandbox
+
+    box = FakeSandbox()
+    box._note_active()
+    idle = time.monotonic() - max(0, box.last_active)
+    assert idle < 1

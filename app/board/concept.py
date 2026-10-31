@@ -17,7 +17,7 @@ from app.board.contracts import BoardPlan, normalize, problems
 from app.jobs import JobContext, JobFailed
 from app.llm import LLMError
 from app.log import fields, get_logger
-from app.tutorial import formats
+from app.tutorial import dedup, formats
 
 log = get_logger("concept")
 TRIES = 3
@@ -160,6 +160,11 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
         p.level = "undergrad"
         issues = (problems(normalize(p)) + undrawn(p) + unsupported(p, source)
                   + too_long(p, seconds))  # fmt: skip
+        if dups := dedup.duplicates(dedup.say_lines(p)):
+            if dedup.enforce():
+                issues += dups
+            else:
+                log.info("narration repeat (shadow)", extra=fields(pairs=dups[:3]))
         ctx.reply(
             f"**Board plan {attempt}:** {len(p.steps)} steps, "
             + (
@@ -193,6 +198,37 @@ async def plan(ctx: JobContext, source: str, mode: str, seconds: int | None,
 
 class Narration(BaseModel):
     says: list[str] = Field(description="The new narration of each step, in order")
+
+
+SCENE = (
+    "\n\nThis plan is ONE scene inside a bigger video, not a whole explainer: 1-2 "
+    "steps, one diagram (a node/link block diagram, a bars chart or a quote card), 1-3 "
+    "spoken sentences in total, about 8 seconds. No recap. The scene explains exactly "
+    "this: "
+)
+
+
+async def scene(ctx: JobContext, topic: str, source: str, mode: str = "explainer",
+                language: str | None = None) -> BoardPlan:  # fmt: skip
+    """A one-diagram board plan embedded as a scene in a tutorial video. Validated like
+    a full concept board (structure + every number traced to the source)."""
+    base = (f"Draw the scene.\n\nSource facts (use only these):\n{source}"
+            + languages.instruction(language))  # fmt: skip
+    feedback, issues = "", ["unset"]
+    for _ in range(2):
+        p, _ = await ctx.llm.parse(
+            BoardPlan, purpose="concept.scene", model=ctx.settings.research_model,
+            instructions=skill(mode) + SCENE + topic, input=base + feedback,
+            reasoning_effort="low", timeout=PLAN_TIMEOUT,
+        )  # fmt: skip
+        p.level = "undergrad"
+        issues = problems(normalize(p)) + unsupported(p, source)
+        if not issues:
+            return p
+        feedback = ("\n\nYour previous plan had problems; fix them and return the whole "
+                    "plan:\n- " + "\n- ".join(issues))  # fmt: skip
+    raise JobFailed(f"The board scene still had problems: {'; '.join(issues[:3])}",
+                    {"issues": issues})  # fmt: skip
 
 
 async def stretch(ctx: JobContext, p: BoardPlan, tl: dict, seconds: int | None, source: str,
@@ -229,6 +265,9 @@ async def stretch(ctx: JobContext, p: BoardPlan, tl: dict, seconds: int | None, 
         st.say = say
     if issues := unsupported(q, source):
         log.warning("stretched narration dropped", extra=fields(issues=issues[:3]))
+        return None
+    if dups := dedup.duplicates(dedup.say_lines(q)):
+        log.warning("stretched narration repeated a line", extra=fields(dups=dups[:3]))
         return None
     return q
 

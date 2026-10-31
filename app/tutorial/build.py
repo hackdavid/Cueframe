@@ -7,7 +7,11 @@ import re
 from collections.abc import Collection
 from typing import Any
 
-from app.tutorial.contracts import Camera, Highlight, Narration, Sfx, Source, State, Tutorial, Word
+from app.tutorial import components
+from app.tutorial.contracts import (
+    Camera, Highlight, Narration, OverlaySpec, Sfx, Source, State, Tutorial, Word,
+)
+from app.tutorial.facts import Facts
 
 W, H = 1920, 1080
 # Terminal font metrics at CUEFRAME_SANDBOX_TERM_FONT=22 on a 1920x1080 screen.
@@ -59,6 +63,56 @@ def narration(
 
 
 BOXED = ("click", "type", "double_click", "scroll", "menu", "drag")
+
+
+def plan_overlay_step(step: dict[str, Any], narr: list[Narration], facts: Facts) -> State:
+    """A motion-graphics state: no footage, overlays resolved against the job's facts."""
+    t = 0.35
+    for n in narr:
+        n.at = t
+        t = n.at + n.duration + 0.35
+    c = components.REGISTRY.get(step["overlay"]["component"])
+    want = c.default_seconds if c else 3.0
+    end = max([n.at + n.duration for n in narr], default=0)
+    spec = OverlaySpec(
+        id=step["id"],
+        component=step["overlay"]["component"],
+        props=components.resolve(
+            step["overlay"]["component"], step["overlay"].get("props") or {}, facts),
+    )
+    return State(
+        id=step["id"],
+        label=step["label"],
+        narration=narr,
+        overlays=[spec],
+        badge=step.get("badge"),
+        duration=round(max(end + 0.8, want + 0.8), 2),
+        sfx=[Sfx(t=0.1, kind="pop")],
+    )
+
+
+def plan_board_step(step: dict[str, Any], board: dict[str, Any], base: str) -> State:
+    """A board segment as a state: the Manim-rendered mp4 plays, narrated by the board
+    plan's own voice lines (staged by the pipeline as audio/board_<step>_<i>.mp3)."""
+    tl = board["tl"]
+    narr = []
+    for i, st in enumerate(tl["steps"]):
+        words = [Word(**w) for w in st["words"]]
+        narr.append(Narration(
+            text=" ".join(w.text for w in words),
+            at=st["start"],
+            audio_url=f"{base}/audio/board_{step['id']}_{i}.mp3",
+            duration=st["audio"],
+            words=words,
+        ))
+    return State(
+        id=step["id"],
+        label=step["label"],
+        narration=narr,
+        media_url=f"{base}/board_{step['id']}.mp4",
+        badge=step.get("badge"),
+        duration=round(tl["seconds"] + 0.5, 2),
+    )
 
 
 def _cmd_box(cmd: str) -> tuple[int, int]:
@@ -172,9 +226,12 @@ def plan_step(
             Camera(t=done + 1.2, zoom=z, cx=cx, cy=cy),
             Camera(t=min(dur, done + 2.2), zoom=1.0, cx=W / 2, cy=H / 2),
         ]
+        acts = a["kind"] in ("click", "type", "double_click", "menu", "drag")
         st.highlights.append(
             Highlight(t_in=lead, t_out=min(dur, done + 1.4), x=max(0, x - 6), y=max(0, y - 6),
-                      w=w + 12, h=h + 12, label=hl.get("command"))
+                      w=w + 12, h=h + 12, label=hl.get("command"),
+                      kind="callout" if acts else "box", dim=0.45 if acts else 0.0,
+                      cursor=acts)  # a real action: dim the rest, show the pointer
         )  # fmt: skip
         if a["kind"] == "type":
             typed = len(a.get("text") or "") * 0.045 + 0.2
@@ -213,7 +270,7 @@ def plan_step(
 
 def teaser(steps: list[dict[str, Any]], width: int = 40) -> str:
     """Short command for the title card: the first install, else the first terminal step."""
-    cmds = [s for s in steps if s["action"]["kind"] == "terminal"]
+    cmds = [s for s in steps if (s.get("action") or {}).get("kind") == "terminal"]
     pick = next((s for s in cmds if s.get("installs")), cmds[0] if cmds else None)
     if not pick:
         return ""
@@ -248,6 +305,7 @@ def build(
         done=spec.get("done") or "You did it",
         recap=spec.get("recap") or [s["label"] for s in shown][:4],
     )
+    facts = Facts.model_validate(spec["facts"]) if spec.get("facts") else Facts()
     intro = narration(voice, "intro", 0.7, base, say)
     tut.states.append(
         State(
@@ -261,12 +319,22 @@ def build(
     )
     prev, ok = None, True
     for step in spec["steps"]:
+        if step.get("scene") == "board":
+            # the board plan's own voice narrates it; the spec's line is not used
+            board = (capture.get("boards") or {}).get(step["id"])
+            if board and step["id"] not in hidden:
+                tut.states.append(plan_board_step(step, board, base))
+            continue  # not rendered (older capture): skip the scene, don't break the video
+        narr = [narration(voice, k, 0, base, say) for k in step["narration"]]
+        if step.get("scene") == "overlay":
+            if step["id"] not in hidden:
+                tut.states.append(plan_overlay_step(step, narr, facts))
+            continue  # scenes don't change which app the next clip switches from
         rec = recs.get(step["id"])
         if rec is None:
             break
         if step["id"] in hidden and rec["ok"]:
             continue
-        narr = [narration(voice, k, 0, base, say) for k in step["narration"]]
         st = plan_step(step, rec, narr, prev)
         tut.states.append(st)
         prev = st.app

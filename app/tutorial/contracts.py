@@ -1,7 +1,7 @@
 """Tutorial state graph: each step is an editable state. The DB/JSON keeps only
 metadata and URLs; clips, audio and screenshots live in the bucket."""
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -38,6 +38,10 @@ class Highlight(BaseModel):
     w: int
     h: int
     label: str | None = None
+    kind: Literal["box", "spotlight", "callout"] = "box"
+    dim: float = 0.0  # spotlight/callout: opacity of the dimmed surround (0-0.75)
+    cursor: bool = False  # a pointer glides to the box centre, click ripple on arrival
+    label_at: Literal["auto", "top", "bottom", "left", "right"] = "auto"
 
 
 class Sfx(BaseModel):
@@ -54,6 +58,17 @@ class Source(BaseModel):
     rate: float = 1
 
 
+class OverlaySpec(BaseModel):
+    """A motion component placed on a state (over the footage or standalone); props are
+    already resolved against the job's facts, so the renderer never invents numbers."""
+
+    id: str
+    component: str  # a key of app.tutorial.components.REGISTRY
+    t_in: float = 0.0  # seconds into the state
+    t_out: float = -1.0  # -1 = until the state's end minus a beat
+    props: dict[str, Any] = {}
+
+
 class State(BaseModel):
     id: str
     kind: Literal["title", "action", "wait", "outro"] = "action"
@@ -64,6 +79,8 @@ class State(BaseModel):
     camera: list[Camera] = []
     highlights: list[Highlight] = []
     sfx: list[Sfx] = []
+    overlays: list[OverlaySpec] = []
+    media_url: str | None = None  # a fully rendered clip (a board segment) instead of `source`
     verified: bool = True
     badge: str | None = None
     duration: float = 0  # filled by the planner: max(clip, narration) + padding

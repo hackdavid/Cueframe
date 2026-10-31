@@ -157,3 +157,44 @@ def test_editing_cuts_a_step_and_brings_it_back_without_a_sandbox(client, monkey
     assert "install" in [s["id"] for s in tut["graph"]["states"]]
     assert len(client.get("/api/sandboxes", headers=_auth(client)).json()) == boxes  # re-cut only
     assert len(rendered) == 4
+
+
+def _click_step(kind="click"):
+    return {"id": "s1", "label": "Do it",
+            "action": {"kind": kind, "target": "Star", "app": "browser"}}
+
+
+def _rec(box=(100, 100, 200, 50)):
+    return {"ok": True, "started": 1.0, "ended": 3.0, "t_in": 1.0, "t_out": 3.0,
+            "box": box, "returncode": 0}
+
+
+def _narr():
+    from app.tutorial.contracts import Narration, Word
+    return [Narration(text="Click it.", audio_url="b/audio/x.mp3", duration=1.0,
+                      words=[Word(text="Click", t=0, end=0.5), Word(text="it.", t=0.5, end=1.0)])]
+
+
+def test_action_steps_get_callout_cursor_and_dim():
+    from app.tutorial.build import plan_step
+    st = plan_step(_click_step(), _rec(), _narr(), None)
+    h = st.highlights[0]
+    assert (h.kind, h.cursor, h.dim) == ("callout", True, 0.45)
+    assert (h.x, h.y, h.w, h.h) == (94, 94, 212, 62)  # padded real DOM box
+
+
+def test_scroll_steps_keep_a_plain_box():
+    from app.tutorial.build import plan_step
+    st = plan_step(_click_step("scroll"), _rec(), _narr(), None)
+    h = st.highlights[0]
+    assert (h.kind, h.cursor, h.dim) == ("box", False, 0.0)
+
+
+def test_old_graph_json_parses_with_highlight_defaults():
+    from app.tutorial.contracts import State
+    st = State.model_validate({
+        "id": "s1", "label": "x", "duration": 2.0,
+        "highlights": [{"t_in": 0, "t_out": 1, "x": 1, "y": 2, "w": 3, "h": 4}],
+    })  # no overlays, no highlight kind/dim/cursor: an old stored graph
+    assert st.overlays == []
+    assert st.highlights[0].kind == "box" and st.highlights[0].dim == 0.0

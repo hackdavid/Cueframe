@@ -84,16 +84,17 @@ def _no_build_junk(p: Path) -> bool:
 
 
 def render_image(modal: Any) -> Any:
-    """Headless tutorial renderer: the app source and the Remotion project baked in,
-    Node deps installed and the headless browser downloaded at build time."""
+    """Headless tutorial renderer: the Remotion project baked in, Node deps installed
+    and the headless browser downloaded at build time. The app source is MOUNTED at
+    sandbox start (like the board image), so app code changes never rebuild the image."""
     return (
         modal.Image.debian_slim(python_version="3.12")
         .apt_install(*RENDER_APT)
         .pip_install(*RENDER_PIP)
-        .add_local_dir(REPO / "app", "/opt/cueframe/app", copy=True, ignore=_no_build_junk)
+        .add_local_dir(REPO / "app", "/opt/cueframe/app", ignore=_no_build_junk)
         .add_local_dir(REPO / "renderer", "/opt/cueframe/renderer", copy=True,
                        ignore=_no_build_junk)
-        .run_commands("mkdir -p /work && touch /opt/cueframe/app/__init__.py")
+        .run_commands("mkdir -p /work /opt/cueframe/app")
         .run_commands("cd /opt/cueframe/renderer && npm ci && npx remotion browser ensure")
     )
 
@@ -198,6 +199,7 @@ class ModalSandbox(Sandbox):
 
     async def exec(self, script: str, timeout: float = 60) -> ExecResult:
         t = time.monotonic()
+        self._note_active()
         # Bytes mode: `tail -c` can cut a multi-byte character (e.g. tree's box drawing).
         p = await self._sb.exec.aio("bash", "-c", script, timeout=int(timeout), text=False)
         out = (await p.stdout.read.aio()).decode(errors="replace")
@@ -206,6 +208,12 @@ class ModalSandbox(Sandbox):
         return ExecResult(
             returncode=rc, stdout=out, stderr=err, seconds=round(time.monotonic() - t, 3)
         )
+
+    async def beat(self) -> None:
+        """Keepalive without touching last_active: Modal's own idle timer sees the
+        exec, the manager's idle watchdog does not."""
+        p = await self._sb.exec.aio("true", timeout=15, text=False)
+        await p.wait.aio()
 
     async def read_file(self, path: str) -> bytes:
         size = int((await self._must(f"stat -c %s {path}")).stdout.strip())

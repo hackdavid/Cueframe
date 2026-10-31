@@ -41,10 +41,15 @@ def test_numbers_must_come_from_source():
 
 
 def test_paper_requests_route_to_concept_board():
-    from app.tutorial.pipeline import _CONCEPT
+    # Papers and models no longer divert to a pure concept-board video: they go through
+    # the unified recorded pipeline, which can embed board scenes. concept.make stays
+    # importable for direct board requests.
+    import inspect
 
-    assert _CONCEPT.search("Make an explainer about this arXiv paper")
-    assert not _CONCEPT.search("Make a tutorial on nginx")
+    from app.tutorial import pipeline
+
+    assert "concept.make" not in inspect.getsource(pipeline.make)
+    assert callable(concept.make)
 
 
 def test_title_numbers_must_come_from_source():
@@ -297,3 +302,51 @@ async def test_an_unreadable_plan_is_planned_again_and_short_arrows_dont_fail_th
     monkeypatch.setattr(concept, "problems", lambda p: [*cramped, "link to missing node 'z'"])
     with pytest.raises(concept.JobFailed):
         await concept.plan(ctx, src, "explainer", 60, None)
+
+
+@pytest.mark.anyio
+async def test_scene_plan_is_validated_against_the_source():
+    from types import SimpleNamespace
+
+    calls = []
+
+    async def parse(schema, **kw):
+        calls.append(kw)
+        return _plan(), None
+
+    ctx = SimpleNamespace(llm=SimpleNamespace(parse=parse),
+                          settings=SimpleNamespace(research_model="m"))  # fmt: skip
+    p = await concept.scene(ctx, "how the new way beats the old", "Baseline 41.2, ours 48.7.")
+    assert p.steps
+    assert "ONE scene" in calls[0]["instructions"]
+
+
+@pytest.mark.anyio
+async def test_scene_rejects_numbers_the_source_never_states():
+    from types import SimpleNamespace
+
+    from app.jobs import JobFailed
+
+    async def parse(schema, **kw):
+        return _plan(), None  # bars say 41.2/48.7, the source doesn't
+
+    ctx = SimpleNamespace(llm=SimpleNamespace(parse=parse),
+                          settings=SimpleNamespace(research_model="m"))  # fmt: skip
+    with pytest.raises(JobFailed):
+        await concept.scene(ctx, "results", "Baseline 41.2 only.")
+
+
+def test_plan_board_step_builds_narration_from_the_board_timeline():
+    from app.tutorial.build import plan_board_step
+
+    board = {"tl": {"seconds": 9.0, "steps": [
+        {"start": 2.0, "audio": 3.0, "end": 5.6,
+         "words": [{"text": "See", "t": 0, "end": 0.4}, {"text": "this.", "t": 0.4, "end": 0.9}]},
+    ]}}
+    st = plan_board_step({"id": "how", "label": "How it works", "badge": None}, board, "tid1")
+    assert st.media_url == "tid1/board_how.mp4"
+    assert st.source is None
+    assert st.narration[0].audio_url == "tid1/audio/board_how_0.mp3"
+    assert st.narration[0].at == 2.0
+    assert st.narration[0].words[1].text == "this."
+    assert st.duration == 9.5

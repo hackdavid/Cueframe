@@ -57,6 +57,30 @@ def segment_hashes(tut: Tutorial) -> list[str]:
     ]
 
 
+async def _bundle(work: Path, fetch: Fetch, save: Save) -> Path:
+    """The Remotion bundle of the renderer, cached by code hash so a job only pays for
+    bundling when renderer/src changed. Built with an empty public dir (a cached bundle
+    must never carry another job's assets); the job's assets are copied in after."""
+    h = code_hash()
+    bundle, tgz = work / "bundle", work / "bundle.tgz"
+    shutil.rmtree(bundle, ignore_errors=True)
+    if data := await fetch(f"bundle-{h}.tar.gz"):
+        tgz.write_bytes(data)
+        await _run("tar", "-xzf", str(tgz), "-C", str(work))
+        tgz.unlink(missing_ok=True)
+        log.info("bundle cache hit", extra=fields(hash=h))
+    else:
+        empty = work / "empty-public"
+        empty.mkdir(exist_ok=True)
+        await _run(NPX, "remotion", "bundle", "src/index.ts", f"--out-dir={bundle}",
+                   f"--public-dir={empty}", "--log=error", cwd=RENDERER)  # fmt: skip
+        await _run("tar", "-czf", str(tgz), "-C", str(work), "bundle")
+        await save(f"bundle-{h}.tar.gz", tgz)
+        tgz.unlink(missing_ok=True)
+    shutil.copytree(work / "public", bundle / "public", dirs_exist_ok=True)
+    return bundle
+
+
 async def _segment(bundle: Path, props: Path, a: int, b: int, out: Path, fps: int = 30) -> None:
     tmp = out.with_suffix(".part.mp4")
     await _run(
@@ -130,10 +154,7 @@ async def render(
     out.mkdir(parents=True, exist_ok=True)
     props = out / "props.json"
     props.write_text(json.dumps({"tutorial": tut.model_dump()}))
-    bundle = work / "bundle"
-    shutil.rmtree(bundle, ignore_errors=True)
-    await _run(NPX, "remotion", "bundle", "src/index.ts", f"--out-dir={bundle}",
-               f"--public-dir={work / 'public'}", "--log=error", cwd=RENDERER)  # fmt: skip
+    bundle = await _bundle(work, fetch, save)
     hashes = segment_hashes(tut)
     segs, todo, a = [], [], 0
     for st, h in zip(tut.states, hashes, strict=True):

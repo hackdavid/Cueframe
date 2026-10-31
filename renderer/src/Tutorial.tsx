@@ -3,24 +3,13 @@ import {
   AbsoluteFill, Audio, Easing, Freeze, interpolate, OffthreadVideo, Sequence, spring,
   staticFile, useCurrentFrame, useVideoConfig,
 } from "remotion";
-import { loadFont as loadInter } from "@remotion/google-fonts/Inter";
-import { loadFont as loadMono } from "@remotion/google-fonts/JetBrainsMono";
-import type { Camera, Highlight, State, Tutorial } from "./types";
-
-const { fontFamily: SANS } = loadInter("normal", { weights: ["400", "600", "800"], subsets: ["latin"] });
-const { fontFamily: MONO } = loadMono("normal", { weights: ["500"], subsets: ["latin"] });
-
-const SRC_W = 1920;
-const SRC_H = 1080;
-// The recording is shown in a card; the card never changes size (no rescaling of the frame).
-const CARD = { x: 150, y: 96, w: 1620, h: 911 };
-const K = CARD.w / SRC_W;
-const ACCENT = "#7c5cff";
-const GREEN = "#3fb950";
+import type { Camera, Highlight, OverlaySpec, State, Tutorial } from "./types";
+import { componentFor } from "./components/registry";
+import { ACCENT, CARD, GREEN, K, MONO, SANS, SRC_H, SRC_W } from "./theme";
 
 export const framesOf = (s: State, fps: number) => Math.round(s.duration * fps);
 
-const src = (u: string | null) => (u && /^https?:/.test(u) ? u : staticFile(u ?? ""));
+const src = (u: string | null | undefined) => (u && /^https?:/.test(u) ? u : staticFile(u ?? ""));
 
 export const TutorialVideo: React.FC<{ tutorial: Tutorial }> = ({ tutorial: t }) => {
   let from = 0;
@@ -66,12 +55,18 @@ const Backdrop: React.FC = () => {
 
 const StateView: React.FC<{ t: Tutorial; s: State; index: number }> = ({ t, s, index }) => {
   const steps = t.steps;
+  const overlays = s.overlays ?? [];
   return (
     <AbsoluteFill>
       {s.kind === "title" && <TitleCard t={t} />}
       {s.kind === "outro" && <Outro t={t} />}
       {s.source && <Screen t={t} s={s} />}
-      {s.source && <TopBar s={s} steps={steps} />}
+      {s.media_url && <BoardClip s={s} />}
+      {!s.source && !s.media_url && overlays.length > 0 && <OverlayStageBackdrop />}
+      {(s.source || s.media_url || overlays.length > 0) && s.kind === "action" && <TopBar s={s} steps={steps} />}
+      {overlays.map((o) => (
+        <OverlayStage key={o.id} o={o} s={s} tid={t.id} />
+      ))}
       <Captions s={s} />
       {s.narration.map((n, i) =>
         n.audio_url ? (
@@ -97,6 +92,80 @@ const Flash: React.FC = () => {
   const f = useCurrentFrame();
   const o = interpolate(f, [0, 8], [0.35, 0], { extrapolateRight: "clamp" });
   return <AbsoluteFill style={{ background: "#fff", opacity: o, pointerEvents: "none" }} />;
+};
+
+// A drawn board segment: a finished 1080p clip in the same card chrome as the screen
+// recording (no camera — the board frames itself). Muted: the mix lays its narration.
+const BoardClip: React.FC<{ s: State }> = ({ s }) => {
+  const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const enter = spring({ frame: f, fps, config: { damping: 18, stiffness: 120 } });
+  return (
+    <div
+      style={{
+        position: "absolute", left: CARD.x, top: CARD.y, width: CARD.w, height: CARD.h,
+        borderRadius: 22, overflow: "hidden",
+        transform: `translateY(${(1 - enter) * 24}px) scale(${0.96 + 0.04 * enter})`,
+        opacity: enter, boxShadow: "0 40px 120px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.08)",
+        background: "#000",
+      }}
+    >
+      <OffthreadVideo src={src(s.media_url)} muted style={{ width: CARD.w, height: CARD.h }} />
+      <div
+        style={{
+          position: "absolute", left: 24, bottom: 24, padding: "8px 18px", borderRadius: 999,
+          background: "rgba(10,12,20,.72)", fontSize: 22, fontWeight: 600, letterSpacing: 1,
+          boxShadow: "0 0 0 1px rgba(255,255,255,.18)",
+        }}
+      >
+        Drawn on the Cueframe board
+      </div>
+    </div>
+  );
+};
+
+// A soft panel in place of the screen card for states with no footage (pure motion).
+const OverlayStageBackdrop: React.FC = () => {
+  const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const enter = spring({ frame: f, fps, config: { damping: 18, stiffness: 120 } });
+  return (
+    <div
+      style={{
+        position: "absolute", left: CARD.x, top: CARD.y, width: CARD.w, height: CARD.h,
+        borderRadius: 22, opacity: enter, transform: `scale(${0.97 + 0.03 * enter})`,
+        background: "rgba(255,255,255,.045)",
+        boxShadow: "0 40px 120px rgba(0,0,0,.45), inset 0 0 0 1px rgba(255,255,255,.08)",
+      }}
+    />
+  );
+};
+
+// One motion component, alive between its t_in and t_out, centred on the card area.
+const OverlayStage: React.FC<{ o: OverlaySpec; s: State; tid: string }> = ({ o, s, tid }) => {
+  const f = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const out = o.t_out >= 0 ? o.t_out : s.duration - 0.4;
+  const tt = f / fps;
+  const C = componentFor(o);
+  if (!C || tt < o.t_in || tt > out + 0.3) return null;
+  const p = interpolate(
+    tt, [o.t_in, o.t_in + 0.3, out, out + 0.3], [0, 1, 1, 0],
+    { extrapolateLeft: "clamp", extrapolateRight: "clamp" },
+  );
+  return (
+    <Sequence from={Math.round(o.t_in * fps)} layout="none">
+      <div
+        style={{
+          position: "absolute", left: CARD.x, top: CARD.y, width: CARD.w, height: CARD.h,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          opacity: p, pointerEvents: "none",
+        }}
+      >
+        <C props={o.props} tid={tid} />
+      </div>
+    </Sequence>
+  );
 };
 
 const camAt = (cam: Camera[], tt: number): Camera => {
@@ -157,7 +226,11 @@ const Screen: React.FC<{ t: Tutorial; s: State }> = ({ t, s }) => {
           );
           return f > last ? <Freeze frame={last}>{video}</Freeze> : video;
         })()}
+        {s.highlights.map((h, i) =>
+          (h.dim ?? 0) > 0 ? <Spotlight key={`dim${i}`} h={h} tt={tt} zoom={c.zoom} /> : null)}
         {s.highlights.map((h, i) => <HighlightBox key={i} h={h} tt={tt} zoom={c.zoom} />)}
+        {s.highlights.map((h, i) =>
+          h.cursor ? <Cursor key={`cur${i}`} h={h} tt={tt} zoom={c.zoom} /> : null)}
       </div>
       {s.badge && <Badge text={s.badge} s={s} />}
       {src0.rate > 1 && f <= last && <FastForward rate={src0.rate} />}
@@ -166,16 +239,28 @@ const Screen: React.FC<{ t: Tutorial; s: State }> = ({ t, s }) => {
 };
 
 // Labels sit beside the box (never over the text below it); wide boxes take the label inside, at their right end.
-const labelAt = (h: Highlight, zoom: number): React.CSSProperties =>
-  h.x + h.w < SRC_W * 0.6
+const labelAt = (h: Highlight, zoom: number): React.CSSProperties => {
+  switch (h.label_at && h.label_at !== "auto" ? h.label_at : undefined) {
+    case "top":
+      return { left: "50%", bottom: "100%", marginBottom: 12 / zoom, transform: "translateX(-50%)" };
+    case "bottom":
+      return { left: "50%", top: "100%", marginTop: 12 / zoom, transform: "translateX(-50%)" };
+    case "left":
+      return { right: "100%", top: "50%", marginRight: 14 / zoom, transform: "translateY(-50%)" };
+    case "right":
+      return { left: "100%", top: "50%", marginLeft: 14 / zoom, transform: "translateY(-50%)" };
+  }
+  return h.x + h.w < SRC_W * 0.6
     ? { left: "100%", top: "50%", marginLeft: 14 / zoom, transform: "translateY(-50%)" }
     : { right: 10 / zoom, top: "50%", transform: "translateY(-50%)" };
+};
 
 const HighlightBox: React.FC<{ h: Highlight; tt: number; zoom: number }> = ({ h, tt, zoom }) => {
   if (tt < h.t_in || tt > h.t_out + 0.3) return null;
   const p = interpolate(tt, [h.t_in, h.t_in + 0.35, h.t_out, h.t_out + 0.3], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   const pulse = 0.5 + 0.5 * Math.sin((tt - h.t_in) * 5);
   const pad = 8 / zoom;
+  const callout = (h.kind ?? "box") !== "box";
   return (
     <div style={{ position: "absolute", left: h.x * K - pad, top: h.y * K - pad, width: h.w * K + 2 * pad, height: h.h * K + 2 * pad, opacity: p,
       border: `${3 / zoom}px solid ${ACCENT}`, borderRadius: 10 / zoom,
@@ -183,11 +268,60 @@ const HighlightBox: React.FC<{ h: Highlight; tt: number; zoom: number }> = ({ h,
       transform: `scale(${0.92 + 0.08 * p})` }}>
       {h.label && (
         <div style={{ position: "absolute", ...labelAt(h, zoom), padding: `${5 / zoom}px ${12 / zoom}px`, background: ACCENT,
-          borderRadius: 8 / zoom, fontSize: 30 / zoom, fontWeight: 700, whiteSpace: "nowrap", boxShadow: `0 ${6 / zoom}px ${20 / zoom}px rgba(0,0,0,.4)` }}>
+          borderRadius: 8 / zoom, fontSize: 30 / zoom, fontWeight: 700, whiteSpace: "nowrap", boxShadow: `0 ${6 / zoom}px ${20 / zoom}px rgba(0,0,0,.4)`,
+          ...(callout ? { border: `${2 / zoom}px solid rgba(255,255,255,.35)` } : {}) }}>
           {h.label}
         </div>
       )}
     </div>
+  );
+};
+
+// Dims everything except the highlighted box (a giant box-shadow punched around it).
+const Spotlight: React.FC<{ h: Highlight; tt: number; zoom: number }> = ({ h, tt, zoom }) => {
+  if (tt < h.t_in || tt > h.t_out + 0.3) return null;
+  const p = interpolate(tt, [h.t_in, h.t_in + 0.4, h.t_out, h.t_out + 0.3], [0, 1, 1, 0], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const dim = Math.min(0.75, Math.max(0, h.dim ?? 0));
+  return (
+    <div style={{ position: "absolute", left: h.x * K, top: h.y * K, width: h.w * K, height: h.h * K,
+      borderRadius: 12 / zoom, boxShadow: `0 0 0 9999px rgba(5,6,12,${(dim * p).toFixed(3)})`,
+      pointerEvents: "none" }} />
+  );
+};
+
+// A pointer glides to the box centre and clicks (scale dip + expanding ring).
+const Cursor: React.FC<{ h: Highlight; tt: number; zoom: number }> = ({ h, tt, zoom }) => {
+  const t0 = h.t_in - 0.55;
+  if (tt < t0 || tt > h.t_in + 1.3) return null;
+  const cx = (h.x + h.w / 2) * K;
+  const cy = (h.y + h.h / 2) * K;
+  const glide = Easing.inOut(Easing.cubic)(Math.min(1, Math.max(0, (tt - t0) / 0.55)));
+  const click = Math.min(1, Math.max(0, (tt - h.t_in) / 0.12));
+  const ripple = Math.min(1, Math.max(0, (tt - h.t_in - 0.1) / 0.5));
+  const startX = cx - 260 / zoom;
+  const startY = cy + 200 / zoom;
+  return (
+    <>
+      <svg
+        width={44 / zoom}
+        height={44 / zoom}
+        viewBox="0 0 24 24"
+        style={{
+          position: "absolute",
+          left: startX + (cx - startX) * glide,
+          top: startY + (cy - startY) * glide,
+          transform: `scale(${1 - 0.18 * Math.sin(click * Math.PI)})`,
+          filter: "drop-shadow(0 4px 10px rgba(0,0,0,.5))",
+        }}
+      >
+        <path d="M4 2 L20 12 L13 13.5 L10 21 Z" fill="#fff" stroke="#0a0b14" strokeWidth="1.4" />
+      </svg>
+      {ripple > 0 && ripple < 1 && (
+        <div style={{ position: "absolute", left: cx, top: cy, width: 10 / zoom, height: 10 / zoom,
+          borderRadius: 99, border: `${3 / zoom}px solid ${ACCENT}`,
+          transform: `translate(-50%, -50%) scale(${1 + ripple * 7})`, opacity: 1 - ripple }} />
+      )}
+    </>
   );
 };
 

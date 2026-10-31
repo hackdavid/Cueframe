@@ -48,6 +48,29 @@ async def _poll(box: Any, tid: str,
             pass  # a partial write; the next poll gets it
 
 
+def asset_list(storage: Any, voice: dict[str, Any], cap: dict[str, Any],
+               tut: Tutorial) -> list[tuple[str, str]]:  # fmt: skip
+    """(R2 key, path under public/<tid>) for everything the graph references: the
+    recording, every narration line, SFX, board-scene clips and their narration, and
+    logo-wall avatars. Derived from the graph so a new asset type can't be forgotten."""
+    assets = [(cap["recording"]["key"], "recording.mp4")]
+    assets += [(v["stored"]["key"], f"audio/{v['file']}") for v in voice.values()]
+    assets += [(storage.ref(f"assets/sfx_{k}.mp3")["key"], f"audio/sfx_{k}.mp3") for k in SFX]
+    for sid, b in (cap.get("boards") or {}).items():  # board scenes: clip + narration
+        if not b:
+            continue
+        assets.append((b["video"]["key"], f"board_{sid}.mp4"))
+        assets += [(r["key"], f"audio/board_{sid}_{i}.mp3") for i, r in enumerate(b["audio"])]
+    assets += [(r["key"], f"logos/{org}.png")
+               for org, r in (cap.get("logos") or {}).items()]  # fmt: skip
+    referenced = {Path(n.audio_url).name for st in tut.states for n in st.narration
+                  if n.audio_url} | {f"board_{s.id}.mp4" for s in tut.states if s.media_url}
+    missing = {r for r in referenced if not any(rel.endswith(r) for _, rel in assets)}
+    if missing:
+        raise RuntimeError(f"render assets missing from the manifest: {sorted(missing)}")
+    return assets
+
+
 async def render_modal(
     ctx: JobContext,
     row: dict[str, Any],
@@ -65,9 +88,7 @@ async def render_modal(
                            "or configure R2_*)")  # noqa: E501
     await ensure_sfx(ctx, _audio(ctx, tid))  # SFX live in R2; this fills any gaps
     voice, cap = row["voice"], row["capture"]
-    assets = [(cap["recording"]["key"], "recording.mp4")]
-    assets += [(v["stored"]["key"], f"audio/{v['file']}") for v in voice.values()]
-    assets += [(storage.ref(f"assets/sfx_{k}.mp3")["key"], f"audio/sfx_{k}.mp3") for k in SFX]
+    assets = asset_list(storage, voice, cap, tut)
     manifest = {
         "tid": tid,
         "tutorial": tut.model_dump(),

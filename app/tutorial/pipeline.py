@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Literal
 
@@ -28,7 +29,7 @@ from app.jobs import JobContext, JobFailed
 from app.log import get_logger
 from app.sandbox.contracts import Action, live_path
 from app.sandbox.manager import SandboxLimit
-from app.tutorial import formats, planner, qa, recipes, shown, sources
+from app.tutorial import components, dedup, facts, formats, planner, qa, recipes, shown, sources
 from app.tutorial.build import build
 from app.tutorial.contracts import Tutorial
 from app.tutorial.render import render
@@ -219,10 +220,21 @@ async def capture(
         await box.run(-1, Action(kind="terminal", command="clear", ask=False))
         t0 = await box.start_recording()
         await asyncio.sleep(LEAD * PACE)
+        last_t = 0.0
         i = 0
         while i < len(steps):
             step = steps[i]
             ctx.phase("act", f"Step {i + 1}/{len(steps)}: {step['label']}")
+            if "action" not in step:
+                # a motion/board scene: nothing runs; one synthetic record keeps the
+                # one-record-per-step contract build() relies on
+                records.append({"step": step["id"], "ok": True, "synthetic": True,
+                                "in_video": False, "returncode": 0, "started": last_t,
+                                "settled": last_t, "ended": last_t, "t_in": last_t,
+                                "t_out": last_t})  # fmt: skip
+                ctx.emit("sandbox.action", {"sandbox_id": sid, "record": records[-1]})
+                i += 1
+                continue
             action = Action.model_validate(step["action"])
             need = 0.0
             if step["id"] not in hidden:
@@ -256,6 +268,7 @@ async def capture(
             rec.t_in, rec.t_out = rec.started - t0, rec.settled - t0 + hold
             rec.in_video = step["id"] not in hidden
             records.append({"step": step["id"], **rec.model_dump(mode="json")})
+            last_t = rec.t_out
             ctx.emit("sandbox.action", {"sandbox_id": sid, "record": records[-1]})
             ctx.progress(0.15 + 0.45 * (i + 1) / len(steps))
             if not rec.ok:
@@ -352,8 +365,9 @@ def youtube_md(spec: dict[str, Any], tut: Tutorial) -> str:
             chapters.append(f"{_ts(t)} {name}")
             last = t
         t += round(st.duration * tut.fps) / tut.fps
-    cmds = [s["action"]["command"] for s in spec["steps"]
-            if s["action"]["kind"] == "terminal" and s["id"] in {x.id for x in tut.states}]  # fmt: skip  # noqa: E501
+    cmds = [a["command"] for s in spec["steps"]
+            if (a := s.get("action")) and a["kind"] == "terminal"
+            and s["id"] in {x.id for x in tut.states}]  # fmt: skip  # noqa: E501
     software = spec.get("software", "")
     return "\n".join([
         f"# {spec['title']}{f' ({software} tutorial)' if software else ''}", "",
@@ -385,6 +399,14 @@ async def publish(
         for v in voice.values():
             await _ensure(ctx, audio / v["file"], v["stored"])
         await ensure_sfx(ctx, audio)
+        for sid, b in (cap.get("boards") or {}).items():
+            if not b:
+                continue  # a scene that couldn't be drawn
+            await _ensure(ctx, work / "public" / tid / f"board_{sid}.mp4", b["video"])
+            for i, ref in enumerate(b["audio"]):
+                await _ensure(ctx, audio / f"board_{sid}_{i}.mp3", ref)
+        for org, ref in (cap.get("logos") or {}).items():
+            await _ensure(ctx, work / "public" / tid / "logos" / f"{org}.png", ref)
     tut = build(spec, voice, cap, tid, hidden=set(spec.get("hidden", [])))
     row = store.update_tutorial(tid, status="rendering", graph=tut.model_dump(), active_job=ctx.id)
     ctx.emit("tutorial.graph", {
@@ -400,10 +422,14 @@ async def publish(
                                        "done": done, "total": total})  # fmt: skip
 
     async def fetch(name: str) -> bytes | None:
-        return await storage.get(storage.ref(f"tutorials/{tid}/{name}"))
+        key = f"assets/{name}" if name.startswith("bundle-") else f"tutorials/{tid}/{name}"
+        return await storage.get(storage.ref(key))
 
     async def save(name: str, path: Path) -> None:
-        await storage.put(f"tutorials/{tid}/{name}", path.read_bytes(), "video/mp4")
+        if name.startswith("bundle-"):  # the renderer bundle is shared across jobs
+            await storage.put(f"assets/{name}", path.read_bytes(), "application/gzip")
+        else:
+            await storage.put(f"tutorials/{tid}/{name}", path.read_bytes(), "video/mp4")
 
     async def _render(force: set[str] = ()) -> dict[str, Any]:
         if remote_ok:
@@ -482,7 +508,10 @@ async def publish(
     return result
 
 
-_CONCEPT = re.compile(r"arxiv|paper|hugging ?face|\bmodel\b|\bllm\b|research", re.I)
+# Papers and models no longer divert to a pure board video: every source goes through
+# the unified recorded pipeline, where board scenes are one scene type among clips and
+# overlays. The concept board still renders board segments and is kept for direct board
+# requests.
 
 
 async def make(
@@ -521,27 +550,29 @@ async def make(
             kicker = f"TRENDING · {found.source.upper()}"[:44]
             ctx.reply(f"**Trending pick: {found.name}** ({found.source}, {found.why_trending})"
                       f"\n\n{found.one_liner}\n\n{found.url}")  # fmt: skip
-            if found.kind in ("paper", "model") and mode in ("explainer", "influencer"):
+            if found.kind == "model":
                 from app.board import concept
 
-                if found.kind == "model":
-                    brief += await concept.model_card(found.url)
-                return await concept.make(ctx, brief, found.name, mode, seconds)
-        elif brief and mode in ("explainer", "influencer") and _CONCEPT.search(goal or ""):
-            from app.board import concept
-
-            return await concept.make(ctx, brief, goal or "", mode, seconds)
+                brief += await concept.model_card(found.url)
         language = (ctx.input.get("job_input") or {}).get("language") or languages.detect(
             ctx.input.get("text")
         )
+        found_facts = await facts.collect(goal or "", brief, ctx.settings.data_dir)
+        if found_facts.items:
+            ctx.thinking("Facts", "; ".join(f"{f.key}={f.value}"
+                                            for f in found_facts.items.values()))  # fmt: skip
+            brief += ("\n\nFACTS (verified today; overlay scenes may only show these, by "
+                      f"key):\n{facts.brief_block(found_facts)}")  # fmt: skip
         planned = await planner.plan(ctx, goal, mode=mode, brief=brief, seconds=seconds,
-                                     language=language)  # fmt: skip
+                                     language=language, facts=found_facts)  # fmt: skip
         if isinstance(planned, str):
             ctx.reply(f"I can't make that tutorial: {planned}")
             return {"routed": "make_tutorial", "planned": False, "reason": planned}
         spec, recipe_id = planned, "planned"
         spec["files"] = files
         spec["brief"] = brief
+        if found_facts.items:
+            spec["facts"] = found_facts.model_dump()
         if brief:
             spec["kicker"] = kicker
         ctx.reply(
@@ -589,7 +620,8 @@ async def make(
 
 
 def _hidden(spec: dict[str, Any], answers: dict[str, bool]) -> list[str]:
-    return sorted(s["id"] for s in spec["steps"] if answers.get(s["action"].get("command", "")))
+    return sorted(s["id"] for s in spec["steps"]
+                  if answers.get((s.get("action") or {}).get("command", "")))  # fmt: skip
 
 
 async def first_take(
@@ -637,8 +669,8 @@ async def intake(ctx: JobContext, spec: dict[str, Any], answers: dict[str, bool]
     """Ask about every install step not asked before; True if anything was asked."""
     asked = False
     for step in spec["steps"]:
-        a = step["action"]
-        if a["kind"] == "terminal" and a.get("ask", True) and a["command"] not in answers:
+        a = step.get("action") or {}
+        if a.get("kind") == "terminal" and a.get("ask", True) and a["command"] not in answers:
             ans = await ctx.ask(
                 f"This {kind(spec)} runs `{a['command']}` in a terminal. "
                 f"Is {spec.get('software') or 'it'} already installed on your machine?",
@@ -685,6 +717,86 @@ async def replanned(
     return again
 
 
+async def _board_scenes(ctx: JobContext, row: dict[str, Any], heal: Healer) -> bool:
+    """Render each board scene of the spec once (clip + its own narration), staged into
+    the job's public dir and persisted in the capture so resumes/edits reuse them. A
+    scene that can't be drawn is left out with a note, not a failed video."""
+    from app.board import concept, tutor
+
+    tid, spec, cap = row["id"], row["spec"], row["capture"]
+    boards = cap.setdefault("boards", {})
+    want = [s for s in spec["steps"] if s.get("scene") == "board" and s["id"] not in boards]
+    if not want:
+        return False
+    storage, work = ctx._manager.storage, work_dir(ctx, tid)
+    language = ((ctx.input.get("job_input") or {}).get("language")
+                or languages.detect(spec.get("goal") or spec["title"]))  # fmt: skip
+    vid = conversation_voice(ctx) or languages.voice_id(language)
+    for step in want:
+        ctx.phase("board", f"Drawing the diagram for {step['label']!r}")
+        try:
+            p = await concept.scene(ctx, step["board_topic"], spec.get("brief", ""),
+                                    spec.get("mode") or "explainer", language)
+            p, tl = await tutor.render_segment(ctx, p, work / "board" / step["id"], voice_id=vid)
+        except Exception as exc:
+            heal(f"Board scene **{step['label']}** couldn't be drawn ({short(str(exc))}); "
+                 "the video goes on without it")  # fmt: skip
+            boards[step["id"]] = {}
+            continue
+        pub = work / "public" / tid
+        (pub / "audio").mkdir(parents=True, exist_ok=True)
+        clip = pub / f"board_{step['id']}.mp4"
+        shutil.copy2(work / "board" / step["id"] / "board.mp4", clip)
+        audio_refs = []
+        for i in range(len(p.steps)):
+            name = f"board_{step['id']}_{i}.mp3"
+            shutil.copy2(work / "board" / step["id"] / f"s{i}.mp3", pub / "audio" / name)
+            audio_refs.append(await storage.put(f"tutorials/{tid}/{name}",
+                                                (pub / "audio" / name).read_bytes(),
+                                                "audio/mpeg"))  # fmt: skip
+        boards[step["id"]] = {
+            "plan": p.model_dump(), "tl": tl,
+            "video": await storage.put(f"tutorials/{tid}/board_{step['id']}.mp4",
+                                       clip.read_bytes(), "video/mp4"),
+            "audio": audio_refs,
+        }
+        heal(f"Board scene **{step['label']}** drawn ({tl['seconds']:.0f} s)")
+        ctx.store.update_tutorial(tid, capture=cap)
+    return True
+
+
+async def _logos(ctx: JobContext, row: dict[str, Any], heal: Healer) -> None:
+    """Stage the logo_wall avatars into the job's public dir (cached on disk, persisted
+    in the capture for remote renders); orgs without an avatar are dropped."""
+    tid, spec, cap = row["id"], row["spec"], row["capture"]
+    orgs = sorted({o for s in spec["steps"]
+                   if (s.get("overlay") or {}).get("component") == "logo_wall"
+                   for o in (s["overlay"].get("props") or {}).get("orgs", [])})  # fmt: skip
+    logos = cap.setdefault("logos", {})
+    missing_refs = [o for o in orgs if o.lower() not in logos]
+    if not missing_refs:
+        return
+    dest = work_dir(ctx, tid) / "public" / tid / "logos"
+    cache = ctx.settings.data_dir / "tutorial-assets" / "logos"
+    missing = await components.fetch_logos(missing_refs, dest, cache)
+    if missing:
+        heal(f"No avatar found for {', '.join(missing)}; left out of the logo wall")
+        for s in spec["steps"]:
+            props = (s.get("overlay") or {}).get("props") or {}
+            if props.get("orgs"):
+                props["orgs"] = [o for o in props["orgs"] if o not in missing]
+                if len(props["orgs"]) < 2:  # a wall of one isn't a wall
+                    spec.setdefault("hidden", []).append(s["id"])
+        ctx.store.update_tutorial(tid, spec=spec)
+    storage = ctx._manager.storage
+    for org in orgs:
+        path = dest / f"{org.lower()}.png"
+        if path.exists() and org.lower() not in logos:
+            logos[org.lower()] = await storage.put(
+                f"tutorials/{tid}/logos/{org.lower()}.png", path.read_bytes(), "image/png")
+    ctx.store.update_tutorial(tid, capture=cap)
+
+
 async def produce(ctx: JobContext, row: dict[str, Any], heal: Healer) -> dict[str, Any]:
     """Narrate, record (healing failed takes) and publish a stored tutorial. Each stage
     is saved, so a resumed job skips what is already done."""
@@ -704,14 +816,22 @@ async def produce(ctx: JobContext, row: dict[str, Any], heal: Healer) -> dict[st
             tid, spec=spec, voice=voice, capture=cap, assets={"recording": cap["recording"]}
         )
     cap = row["capture"]
-    if not cap.get("narration_checked"):
+
+    async def narration_check() -> None:
+        if cap.get("narration_checked"):
+            return
         ctx.phase("qa", "Checking each narration line against the recording")
         path = work_dir(ctx, tid) / "public" / tid / "recording.mp4"
         await _ensure(ctx, path, cap["recording"])
         if await shown.check(ctx, spec, cap["records"], path, heal):
             await voice_lines(ctx, tid, spec["lines"], voice, heal, lively=_lively(spec))
         cap["narration_checked"] = True
-        row = ctx.store.update_tutorial(tid, spec=spec, voice=voice, capture=cap)
+        ctx.store.update_tutorial(tid, spec=spec, voice=voice, capture=cap)
+
+    # Independent of each other: the vision check fixes lines/voice; board scenes draw
+    # from the brief; logos stage avatars. Run them together.
+    await asyncio.gather(narration_check(), _logos(ctx, row, heal), _board_scenes(ctx, row, heal))
+    row = ctx.store.get_tutorial(tid)
     return await publish(ctx, row, heal=heal)
 
 
@@ -787,9 +907,13 @@ smallest set of state edits. Only change what they asked for. What you can do:
   2.5 words a second.
 - cut a part ("cut the install part"): `cut` 'yes' on those steps; 'no' brings one back.
   Then fix narration of the next shown step if it refers to the cut one.
+- states without recorded footage (motion-graphic or drawn-diagram scenes) take only
+  label, narration and cut edits: no zoom, pace or highlight. Their narration can't be
+  re-voiced for drawn-diagram scenes; say so in `reply` if asked.
 Narration is read by a text-to-speech voice: write tool names the way they are said
 (e.g. 'engine-x' for nginx, 'package manager' for apt) and keep each line short and
-natural. Never claim anything the recorded run did not show. You cannot re-record
+natural. Never claim anything the recorded run did not show. Never make a state's
+narration repeat another state's line; reword it instead. You cannot re-record
 actions, add footage or change what happened on screen; if asked to, set `reply` and
 explain that it needs a new video.
 Every edit must carry the new value itself: the full rewritten narration lines, the new
@@ -842,7 +966,8 @@ def apply(row: dict[str, Any], edits: list[StateEdit]) -> list[str]:
             elif step:
                 step["label"] = e.label
         if e.zoom and step:
-            if step["action"]["kind"] == "terminal":
+            a = step.get("action") or {}
+            if a.get("kind") == "terminal":
                 step["zoom"] = e.zoom
             elif step.get("focus"):
                 step["focus"]["zoom"] = e.zoom
@@ -863,6 +988,8 @@ def apply(row: dict[str, Any], edits: list[StateEdit]) -> list[str]:
             else:
                 hl["command"] = e.highlight
         changed.append(e.state)
+    if dedup.enforce() and (dups := dedup.duplicates(spec["lines"])):
+        raise ValueError(dups[0])
     return changed
 
 

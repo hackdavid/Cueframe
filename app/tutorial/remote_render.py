@@ -63,14 +63,22 @@ async def _main(work: Path) -> None:
     )
 
     async def fetch(name: str) -> bytes | None:
+        # The renderer bundle is cached globally (assets/), segments per tutorial.
+        key = f"{os.environ.get('CUEFRAME_R2_PREFIX', 'cueframe').strip('/')}/assets/{name}" \
+            if name.startswith("bundle-") else cache + name  # fmt: skip
         try:
             return await asyncio.to_thread(
-                lambda: s3.get_object(Bucket=bucket, Key=cache + name)["Body"].read()
+                lambda: s3.get_object(Bucket=bucket, Key=key)["Body"].read()
             )
         except Exception:
             return None
 
     async def save(name: str, path: Path) -> None:
+        if name.startswith("bundle-"):
+            key = f"{os.environ.get('CUEFRAME_R2_PREFIX', 'cueframe').strip('/')}/assets/{name}"
+            await asyncio.to_thread(s3.put_object, Bucket=bucket, Key=key,
+                                    Body=path.read_bytes(), ContentType="application/gzip")  # fmt: skip
+            return
         await asyncio.to_thread(
             s3.put_object, Bucket=bucket, Key=cache + name, Body=path.read_bytes(),
             ContentType="video/mp4",

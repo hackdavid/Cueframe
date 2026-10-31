@@ -21,11 +21,16 @@ from app.agents.docs_research import DocsResearchAgent
 from app.agents.trending import TrendBrief, TrendingAgent
 from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
+from app.log import fields, get_logger
 from app.sandbox.base import ANSI, FOCUS, Sandbox, menu_path
 from app.sandbox.contracts import Action, ActionRecord, live_path
 from app.sandbox.manager import SandboxLimit
-from app.tutorial import formats
+from app.tutorial import components, dedup, formats
 from app.tutorial.build import COLS, PROMPT
+from app.tutorial.contracts import OverlaySpec
+from app.tutorial.facts import Facts
+
+log = get_logger("tutorial.planner")
 
 MAX_REPAIRS = 3  # per step
 MAX_TOTAL_REPAIRS = 10  # per rehearsal
@@ -43,7 +48,8 @@ class PlannedStep(BaseModel):
     id: str = Field(description="Short lowercase slug, unique, e.g. 'install'")
     label: str = Field(description="2-4 word step title shown on screen")
     kind: Literal[
-        "terminal", "open_url", "key", "click", "type", "scroll", "launch", "drag", "menu"
+        "terminal", "open_url", "key", "click", "type", "scroll", "launch", "drag", "menu",
+        "overlay", "board",
     ]
     command: str = Field(
         description="terminal: ONE non-interactive bash line; launch: the desktop app's "
@@ -85,6 +91,16 @@ class PlannedStep(BaseModel):
         description="How the edit shows this step: 'real' time for the moment that matters; "
         "'fast' (sped up 2-8x) for typing, scrolling, installs and other waits; 'cut' to "
         "jump straight past a page load or long wait to its result",
+    )
+    overlay_component: str = Field(
+        "", description="overlay: one component from the OVERLAY SCENES list; else ''"
+    )
+    overlay_props: dict[str, Any] = Field(
+        {}, description="overlay: the component's props; numbers only via fact_key from "
+        "FACTS, never written out"  # fmt: skip
+    )
+    board_topic: str = Field(
+        "", description="board: the concept to draw as a diagram, in 1-2 sentences; else ''"
     )
 
 
@@ -269,7 +285,8 @@ def words(mode: Mode, seconds: int | None = None) -> tuple[int, int]:
     return round(seconds * 1.35), round(seconds * 2.25)
 
 
-def instructions(mode: Mode, seconds: int | None = None, skill: str = "") -> str:
+def instructions(mode: Mode, seconds: int | None = None, skill: str = "",
+                 facts: Facts | None = None) -> str:  # fmt: skip
     """The planner's system prompt for `mode`, sized to `seconds`, with the format skill."""
     lo, hi = words(mode, seconds)
     if mode == "tutorial":
@@ -283,6 +300,17 @@ def instructions(mode: Mode, seconds: int | None = None, skill: str = "") -> str
             text += EXPLAINER
     if skill:
         text += f"\n\nCONTENT SKILL (how this kind of video is delivered):\n{skill}"
+    if facts and facts.items:
+        text += f"""
+
+OVERLAY SCENES: you may add up to 3 scenes that don't run in the sandbox (kind 'overlay'
+or 'board'). An overlay is a motion graphic over the video; pick one component:
+{components.prompt_doc()}
+Numbers only via fact_key from the FACTS list; never write a number into props yourself.
+kind 'board': a hand-drawn diagram scene explaining one concept (board_topic, 1-2
+sentences). A storyboard beat whose fact is in FACTS makes a good overlay scene right
+after the real page showing it; a concept that can't be shown on screen makes a good
+board scene. Overlay and board scenes still need narration, a label and a badge."""
     return text
 
 
@@ -386,10 +414,31 @@ def viewer_voice(line: str) -> str:
     return rest[:1].upper() + rest[1:] if rest else line
 
 
-def problems(plan: TutorialPlan, mode: Mode = "tutorial", seconds: int | None = None) -> list[str]:
+SCENE = ("overlay", "board")  # kinds that don't run in the sandbox
+
+
+def problems(plan: TutorialPlan, mode: Mode = "tutorial", seconds: int | None = None,
+             facts: Facts | None = None, brief: str = "") -> list[str]:  # fmt: skip
     out = []
     if not 2 <= len(plan.steps) <= MAX_STEPS:
         out.append(f"use 3-{MAX_STEPS} steps, not {len(plan.steps)}")
+    scenes = [s for s in plan.steps if s.kind in SCENE]
+    if len(plan.steps) == len(scenes):
+        out.append("at least one step must run in the sandbox and show the real thing")
+    if len(scenes) > 3:
+        out.append("at most 3 overlay or board scenes; the real run is the video")
+    for a, b in zip(plan.steps, plan.steps[1:], strict=False):
+        if a.kind == "board" and b.kind == "board":
+            out.append("two board scenes in a row stall the pace; separate them")
+    ctx_overlay = components.Context(facts=facts or Facts(), brief=brief)
+    for s in scenes:
+        if s.expect.strip():
+            out.append(f"step {s.id}: a {s.kind} scene runs no command; expect stays ''")
+        if s.kind == "overlay":
+            o = OverlaySpec(id=s.id, component=s.overlay_component, props=s.overlay_props)
+            out += components.validate_overlay(o, ctx_overlay)
+        elif not 5 <= len(s.board_topic) <= 200:
+            out.append(f"step {s.id}: a board scene needs a topic of 5-200 characters")
     ids = [s.id for s in plan.steps]
     if len(set(ids)) != len(ids) or {"title", "outro", "intro"} & set(ids):
         out.append("step ids must be unique and not 'title', 'intro' or 'outro'")
@@ -439,6 +488,11 @@ def problems(plan: TutorialPlan, mode: Mode = "tutorial", seconds: int | None = 
         elif FIRST_PERSON.search(s.narration):
             out.append(f"step {s.id}: {FIRST_PERSON_ISSUE} ({s.narration.split('.')[0]!r}); "
                        "talk to the viewer about what the screen shows")  # fmt: skip
+    if dups := dedup.duplicates(dedup.spoken_lines(plan)):
+        if dedup.enforce():
+            out += dups
+        else:  # shadow mode: observe only, until the threshold proves itself on real plans
+            log.info("narration repeat (shadow)", extra=fields(pairs=dups[:3]))
     spoken = " ".join([plan.intro, plan.outro, *(f"{s.narration} {s.after}" for s in plan.steps)])
     n = len(spoken.split())
     lo, hi = words(mode, seconds)
@@ -517,9 +571,17 @@ def to_spec(plan: TutorialPlan, goal: str, mode: Mode = "tutorial") -> dict[str,
             lines[f"{s.id}_done"] = s.after.strip()
         hl: dict[str, Any] = {"command": written(s.highlight, say) or None}
         step = {"id": s.id, "label": written(s.label, say), "narration": keys,
-                "action": action(s), "badge": written(s.badge, say) or None,
+                "badge": written(s.badge, say) or None,
                 "success": s.success, "highlight": hl, "expect": s.expect.strip(),
                 "output_label": written(s.output_label, say)}  # fmt: skip
+        if s.kind == "overlay":  # scenes run no sandbox action: nothing to rehearse
+            step["scene"] = "overlay"
+            step["overlay"] = {"component": s.overlay_component, "props": s.overlay_props}
+        elif s.kind == "board":
+            step["scene"] = "board"
+            step["board_topic"] = s.board_topic.strip()
+        else:
+            step["action"] = action(s)
         if s.pace != "real":
             step["pace"] = s.pace
         if s.kind == "terminal":
@@ -546,6 +608,11 @@ def to_spec(plan: TutorialPlan, goal: str, mode: Mode = "tutorial") -> dict[str,
 def describe_plan(spec: dict[str, Any]) -> str:
     out = []
     for i, s in enumerate(spec["steps"], 1):
+        if "action" not in s:  # a scene: motion graphic or board diagram, nothing runs
+            what = (f"motion graphic: {s['overlay']['component']}" if s.get("scene") == "overlay"
+                    else f"drawn diagram: {s.get('board_topic', '')[:60]}")  # fmt: skip
+            out.append(f"{i}. **{s['label']}**: {what}")
+            continue
         a = s["action"]
         on = f" in {a.get('app')}" if a.get("app") not in (None, "browser") else ""
         what = {"terminal": f"`{a.get('command')}`", "open_url": f"open `{a.get('url')}`",
@@ -610,6 +677,7 @@ async def plan(
     seconds: int | None = None,
     board: dict[str, Any] | None = None,
     language: str | None = None,
+    facts: Facts | None = None,
 ) -> dict[str, Any] | str:
     """A validated spec, or a str explaining why the task can't be shown. `avoid` is
     a failure from a previous plan's rehearsal; the new plan must work around it. A
@@ -632,7 +700,7 @@ async def plan(
     prompt = f"Task: {goal}\n\n{ref}".strip()
     if sb:
         prompt += f"\n\n{formats.board_text(sb)}"
-    system = instructions(mode, seconds, formats.skill(mode) if seconds else "")
+    system = instructions(mode, seconds, formats.skill(mode) if seconds else "", facts)
     system += languages.instruction(language)
     if avoid:
         prompt += (f"\n\nA previous plan for this task failed when run for real: {avoid}. "
@@ -645,14 +713,14 @@ async def plan(
         )  # fmt: skip
         if not p.feasible:
             return p.reason or "That task can't be shown in a Linux terminal and browser."
-        issues = await _checked(ctx, p, mode, brief, seconds)
+        issues = await _checked(ctx, p, mode, brief, seconds, facts)
         for _ in range(RETELLS):  # wording only: a quick narration rewrite, not a new plan
             if not issues or not all(SPOKEN_ISSUE.search(x) for x in issues):
                 break
             ctx.thinking("Plan", f"{'; '.join(issues)}; rewriting just the narration")
             if not await retell(ctx, p, issues, mode, brief, seconds):
                 break
-            issues = await _checked(ctx, p, mode, brief, seconds)
+            issues = await _checked(ctx, p, mode, brief, seconds, facts)
         ctx.thinking("Plan", "; ".join(issues) or f"{len(p.steps)} steps: {p.title}")
         if not issues:
             return _sized(to_spec(p, goal, mode), seconds, sb)
@@ -678,7 +746,8 @@ def _sized(
 
 
 SPOKEN_ISSUE = re.compile(
-    rf"^(narration (is \d+ words|not backed by the source)|step \S+: {FIRST_PERSON_ISSUE})"
+    rf"^(narration (is \d+ words|not backed by the source)|step \S+: {FIRST_PERSON_ISSUE}"
+    r"|lines \S+ and \S+ say the same thing)"
 )
 
 RETELL = """You rewrite only the spoken narration of a tutorial video plan; the steps, their
@@ -704,9 +773,10 @@ class Retold(BaseModel):
 
 
 async def _checked(
-    ctx: JobContext, p: TutorialPlan, mode: Mode, brief: str, seconds: int | None = None
+    ctx: JobContext, p: TutorialPlan, mode: Mode, brief: str, seconds: int | None = None,
+    facts: Facts | None = None,
 ) -> list[str]:
-    issues = problems(p, mode, seconds)
+    issues = problems(p, mode, seconds, facts, brief)
     if brief and not issues:
         issues = await ungrounded(ctx, p, brief)
     return issues
@@ -816,6 +886,8 @@ def fixed(spec: dict[str, Any], i: int, n_before: int) -> str:
 
 
 def what(step: dict[str, Any]) -> str:
+    if "action" not in step:
+        return step.get("board_topic") or (step.get("overlay") or {}).get("component", "scene")
     a = step["action"]
     return (a.get("command") or a.get("url") or a.get("keys") or a.get("text")
             or a.get("target") or a["kind"])  # fmt: skip
@@ -849,7 +921,7 @@ async def repair(
     goal = spec.get("goal") or spec["title"]
     ask = (f"Task: {goal}\nPlan:\n{describe_plan(spec)}\n\nFailed step {i + 1} "
            f"({step['id']}): {step}\nFailure: {why}\nOutput:\n{out[-1500:]}")  # fmt: skip
-    prev = spec["steps"][i - 1]["action"] if i else None
+    prev = spec["steps"][i - 1].get("action") if i else None
     if "No element matching" in why and CONFIRM.match(step["action"].get("target") or ""):
         ask += (
             f"\n\nThe step before it ({prev}) ran and passed its check, and no "
@@ -874,6 +946,9 @@ async def repair(
                 "lines, talking to the viewer (never 'I will' or 'let me'), e.g.:\n"
                 + "\n".join(f"- {x}" for x in said))  # fmt: skip
     visible = [v.strip().lower() for v in why.partition("Visible: ")[2].split(";") if v.strip()]
+    existing_lines = {  # the replaced step's own lines don't count as repeats
+        k: v for k, v in spec["lines"].items() if k not in (step["id"], f"{step['id']}_done")
+    }
     for _ in range(3):
         fix, _ = await ctx.llm.parse(
             StepFix, purpose="tutorial.repair", model=ctx.settings.research_model,
@@ -894,6 +969,20 @@ async def repair(
             ask += (
                 "\n\nYour narration speaks as the operator ('I will ...'). Rewrite it to "
                 "talk to the viewer about what the screen shows, like the plan's other lines."
+            )
+        elif repeated := next(
+            (
+                (k, b.narration)
+                for b in (*fix.before, fix.step)
+                for line in (b.narration, b.after)
+                if (k := dedup.repeats(line, existing_lines))
+            ),
+            None,
+        ):
+            ask += (
+                f"\n\nYour narration {repeated[1][:60]!r} repeats the line already spoken "
+                f"at {repeated[0]!r} ({spec['lines'][repeated[0]][:60]!r}); the viewer would "
+                "hear it twice. Say it differently, keeping the facts."
             )
         elif fix.before or fix.drop or not fix.fixable:
             break
@@ -1010,6 +1099,9 @@ async def _run_from(
     mgr = ctx._manager.sandboxes
     while i < len(spec["steps"]):
         step = spec["steps"][i]
+        if "action" not in step:  # a scene: nothing to rehearse, it can't fail
+            i += 1
+            continue
         ctx.phase("rehearse", f"Rehearsing step {i + 1}/{len(spec['steps'])}: {step['label']}")
         mgr.touch(sid)
         async with mgr.busy(sid):
@@ -1063,8 +1155,9 @@ async def review(
     if ctx.llm is None or not ctx.llm.configured:
         return None
     goal = spec.get("goal") or spec["title"]
-    if spec["steps"] and spec["steps"][-1]["action"]["kind"] == "terminal":
-        gui = [s["action"] for s in spec["steps"] if s["action"]["kind"] != "terminal"]
+    last = (spec["steps"][-1].get("action") or {}) if spec["steps"] else {}
+    if last.get("kind") == "terminal":
+        gui = [a for s in spec["steps"] if (a := s.get("action")) and a["kind"] != "terminal"]
         if gui:  # a closing terminal check covers the result; look at the app instead
             a = gui[-1]
             app = (a.get("command") or "").split(" ")[0] if a["kind"] == "launch" else (
@@ -1106,6 +1199,11 @@ async def review(
     new = to_spec(_stub(add), goal)
     spec["steps"][at:at] = new["steps"]
     spec["lines"].update({k: v for k, v in new["lines"].items() if k not in ("intro", "outro")})
+    new_keys = {k for k in new["lines"] if k not in ("intro", "outro")}
+    if dups := [d for d in dedup.duplicates(spec["lines"])
+                if any(f"'{k}'" in d for k in new_keys)]:  # fmt: skip
+        log.warning("review inserted a repeated line", extra=fields(dups=dups[:3]))
+        ctx.thinking("Review", dups[0])
     return at, missing, len(add)
 
 

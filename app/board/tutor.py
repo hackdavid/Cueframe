@@ -524,3 +524,23 @@ def describe(p: BoardPlan) -> str:
         bits = [f"`{x}`" for x in shown] + ([f"draws {', '.join(figs)}"] if figs else [])
         lines.append(f"{i}. {s.say}" + (f" ({'; '.join(bits)})" if bits else ""))
     return "\n".join(lines) + (f"\n\n**Answer:** `{p.answer}`" if p.answer else "")
+
+
+async def render_segment(ctx: JobContext, p: BoardPlan, work: Path,
+                         voice_id: str | None = None) -> tuple[BoardPlan, dict]:  # fmt: skip
+    """Typeset, voice and render a board plan to `work` (board.mp4 + per-step s{i}.mp3),
+    without delivering anything: the clip is embedded as a scene in a bigger video.
+    Returns the (possibly repaired) plan and its timeline."""
+    work.mkdir(parents=True, exist_ok=True)
+    if ctx.settings.board_runner == "local":
+        p, tl, _chk, _res = await _board(ctx, Runner(local=work), p, p.problem, work, voice_id)
+    else:
+        mgr = ctx._manager.sandboxes
+        cfg = dataclasses.replace(ctx.settings, sandbox_image="board",
+                                  sandbox_cpu=ctx.settings.board_cpu, sandbox_memory_mb=8192,
+                                  sandbox_max_seconds=2400)  # fmt: skip
+        ctx.phase("sandbox", "Starting the board renderer")
+        async with mgr.session(ctx.id, ctx.conversation_id, settings=cfg) as (sid, box):  # noqa: SIM117
+            async with mgr.busy(sid):
+                p, tl, _chk, _res = await _board(ctx, Runner(box=box), p, p.problem, work, voice_id)
+    return p, tl

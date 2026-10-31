@@ -35,6 +35,7 @@ class SandboxManager:
         self._started: dict[str, float] = {}
         self._touched: dict[str, float] = {}
         self._watchdogs: dict[str, asyncio.Task[None]] = {}
+        self._beats: dict[str, asyncio.Task[None]] = {}
         self._busy: dict[str, int] = {}
         self._starting = 0
         self._app_lock = asyncio.Lock()
@@ -60,22 +61,22 @@ class SandboxManager:
         self._touched[sid] = time.monotonic()
 
     async def _heartbeat(self, sid: str, every: float = 45) -> None:
-        """Keep the provider's own idle timer (Modal's backstop) from firing while we wait."""
+        """Keep the provider's own idle timer (Modal's backstop) from firing while a job
+        holds the sandbox — including long waits between actions (an LLM repair, a slow
+        upload, user think time). Beats don't count as activity for the idle watchdog."""
         while True:
             await asyncio.sleep(every)
             if box := self._live.get(sid):
                 with contextlib.suppress(Exception):
-                    await box.exec("true", 15)
+                    await box.beat()
 
     @contextlib.asynccontextmanager
     async def busy(self, sid: str) -> AsyncIterator[None]:
         """Mark an action in flight: idle shutdown is suspended (max lifetime still applies)."""
         self._busy[sid] = self._busy.get(sid, 0) + 1
-        beat = asyncio.create_task(self._heartbeat(sid))
         try:
             yield
         finally:
-            beat.cancel()
             if sid in self._busy:
                 self._busy[sid] -= 1
             if sid in self._live:
@@ -113,6 +114,7 @@ class SandboxManager:
             sid, status="running", provider_id=box.provider_id, live_url=box.live_url
         )
         self._watchdogs[sid] = asyncio.create_task(self._watch(sid))
+        self._beats[sid] = asyncio.create_task(self._heartbeat(sid))
         reason = "job finished"
         try:
             yield sid, box
@@ -150,6 +152,9 @@ class SandboxManager:
         dog = self._watchdogs.pop(sid, None)
         if dog and dog is not asyncio.current_task():
             dog.cancel()
+        beat = self._beats.pop(sid, None)
+        if beat and beat is not asyncio.current_task():
+            beat.cancel()
         for job, s in list(self._by_job.items()):
             if s == sid:
                 del self._by_job[job]
@@ -203,7 +208,12 @@ class SandboxManager:
     async def _watch(self, sid: str) -> None:
         while sid in self._live:
             await asyncio.sleep(5)
-            idle = time.monotonic() - self._touched.get(sid, 0)
+            box = self._live[sid]
+            # Real activity only: manager touches and box execs; provider keepalive
+            # beats don't count, so an abandoned sandbox still times out.
+            idle = time.monotonic() - max(
+                self._touched.get(sid, 0), getattr(box, "last_active", 0) or 0
+            )
             age = time.monotonic() - self._started.get(sid, 0)
             if self._busy.get(sid):
                 self.touch(sid)

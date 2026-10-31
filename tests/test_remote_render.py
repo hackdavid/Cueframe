@@ -157,3 +157,52 @@ async def test_remote_render_surfaces_a_crash(settings, tmp_path, monkeypatch):
     ctx = _ctx(settings, CrashingBox())
     with pytest.raises(RuntimeError, match="boom"):
         await remote.render_modal(ctx, _row(), _tut(), tmp_path, lambda d, t, s=None: None)
+
+
+def _tut_with_scenes():
+    return Tutorial(
+        id="t1", title="T",
+        states=[
+            State(id="title", kind="title", duration=2,
+                  narration=[{"text": "hi", "at": 0, "audio_url": "t1/audio/intro.mp3",
+                              "duration": 1, "words": []}]),
+            State(id="how", duration=6, media_url="t1/board_how.mp4",
+                  narration=[{"text": "see", "at": 2, "audio_url": "t1/audio/board_how_0.mp3",
+                              "duration": 1, "words": []}]),
+        ],
+    )
+
+
+def test_asset_list_covers_every_url_the_graph_references():
+    voice = {"intro": {"file": "intro.mp3", "stored": {"key": "k/intro.mp3"}}}
+    cap = {
+        "recording": {"key": "k/recording.mp4"},
+        "boards": {"how": {"plan": {}, "tl": {}, "video": {"key": "k/board_how.mp4"},
+                           "audio": [{"key": "k/board_how_0.mp3"}]}},
+        "logos": {"acme": {"key": "k/acme.png"}},
+    }
+    assets = remote.asset_list(FakeStorage(), voice, cap, _tut_with_scenes())
+    rels = {rel for _, rel in assets}
+    assert {"recording.mp4", "audio/intro.mp3", "board_how.mp4",
+            "audio/board_how_0.mp3", "logos/acme.png"} <= rels
+
+
+def test_asset_list_raises_when_the_graph_references_an_unstaged_file():
+    cap = {"recording": {"key": "k/recording.mp4"}, "boards": {}}  # the board wasn't staged
+    with pytest.raises(RuntimeError, match="board_how.mp4"):
+        remote.asset_list(FakeStorage(), {}, cap, _tut_with_scenes())
+
+
+def test_render_sandbox_import_chain_needs_no_bs4():
+    """The render image installs no bs4; remote_render must import without it."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    r = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.modules['bs4'] = None; import app.tutorial.remote_render"],
+        capture_output=True, text=True, cwd=root,
+    )
+    assert r.returncode == 0, r.stderr[-400:]

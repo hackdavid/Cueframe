@@ -32,7 +32,7 @@ Priority order. Each item is one focused PR unless noted.
 ## P2: product depth
 | # | Item | What |
 |---|---|---|
-| 16 | Notebook tutorials | JupyterLab in the sandbox, CPU first, GPU fine-tunes as a paid add-on |
+| 16 | Notebook tutorials | JupyterLab in the sandbox, CPU first, GPU fine-tunes as a paid add-on (designed: `docs/motion-scenes.md` § Notebook format) |
 | 17 | Faster planning | Cache common question types, smaller model for routing, stream the plan |
 | 18 | Edit lessons from chat | "slower", "explain step 3 again", "for a child", re-voice only changed steps |
 | 19 | Public API + keys | Per-video billing, webhooks when a video is ready |

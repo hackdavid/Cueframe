@@ -32,10 +32,19 @@ class FakeSandbox(Sandbox):
     async def create(cls, settings: object, start_url: str = "about:blank") -> "FakeSandbox":
         return cls()
 
+    async def beat(self) -> None:
+        """Keepalive without activity, mirroring ModalSandbox.beat."""
+        if self.terminated:
+            raise RuntimeError("sandbox terminated")
+        self.scripts.append("true")
+
     async def exec(self, script: str, timeout: float = 60) -> ExecResult:
         if self.terminated:
             raise RuntimeError("sandbox terminated")
+        self._note_active()
         self.scripts.append(script)
+        if script == "true":
+            return ExecResult(returncode=0, stdout="")
         if "http_code" in script:
             return ExecResult(returncode=0, stdout="200")
         if "/opt/cf/ui.py text" in script:

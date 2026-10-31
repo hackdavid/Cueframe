@@ -29,6 +29,17 @@ class Sandbox(ABC):
     live_url: str | None = None
     width: int = 1280
     height: int = 720
+    last_active: float = 0.0  # monotonic time of the last real exec (heartbeats excluded)
+
+    def _note_active(self) -> None:
+        import time
+
+        self.last_active = time.monotonic()
+
+    async def beat(self) -> None:
+        """Provider keepalive: an exec that does NOT count as activity (the idle
+        watchdog must still see a genuinely idle sandbox)."""
+        await self.exec("true", 15)
 
     @abstractmethod
     async def exec(self, script: str, timeout: float = 60) -> ExecResult: ...

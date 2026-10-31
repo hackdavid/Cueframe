@@ -290,3 +290,85 @@ def test_rehearsal_fails_when_the_result_never_shows_what_was_asked(client, monk
     job = _wait(client, jid, {"succeeded", "failed"})
     assert job["status"] == "failed" and "no shadow" in job["error"]
     assert all(b["status"] == "terminated" for b in _sandboxes(client))
+
+
+# --- scene steps (overlay / board) ------------------------------------------
+
+
+def _facts():
+    from app.tutorial.facts import Fact, Facts
+    return Facts(subject="o/r", items={
+        "github.stars": Fact(key="github.stars", label="GitHub stars", value="12,345",
+                             number=12345)})  # fmt: skip
+
+
+def _overlay(id_, component="star_counter", props=None):
+    return _step(id_, "overlay", overlay_component=component, overlay_props=props or {})
+
+
+def test_mixed_plan_with_scenes_is_accepted():
+    p = _plan([*GOOD, _overlay("stars")])
+    assert planner.problems(p, facts=_facts()) == []
+
+
+def test_scene_steps_need_registered_components_and_facts():
+    assert any("unknown component" in x
+               for x in planner.problems(_plan([*GOOD, _overlay("s", "pie_chart")]), facts=_facts()))
+    assert any("not in the FACTS" in x for x in planner.problems(_plan([*GOOD, _overlay("s")])))
+    assert any("not in the FACTS"  # the default fact_key needs the facts blob
+               for x in planner.problems(_plan([*GOOD, _overlay("s")]), facts=None))
+
+
+def test_scene_limits():
+    assert any("at least one step" in x
+               for x in planner.problems(_plan([_overlay("a"), _overlay("b")]), facts=_facts()))
+    many = [*_overlay_steps(4)]
+    assert any("at most 3" in x for x in planner.problems(_plan([*GOOD, *many]), facts=_facts()))
+    boards = _step("b1", "board", board_topic="how the request flows"), _step(
+        "b2", "board", board_topic="how the response flows")
+    assert any("in a row" in x
+               for x in planner.problems(_plan([*GOOD, *boards]), facts=_facts()))
+    assert planner.problems(_plan([*GOOD, _step("b1", "board", board_topic="how it works")]),
+                    facts=_facts()) == []
+
+
+def _overlay_steps(n):
+    return [_overlay(f"s{i}") for i in range(n)]
+
+
+def test_to_spec_emits_scene_steps_without_action():
+    spec = planner.to_spec(_plan([*GOOD, _overlay("stars")]), "goal")
+    scene = next(s for s in spec["steps"] if s["id"] == "stars")
+    assert "action" not in scene
+    assert scene["scene"] == "overlay"
+    assert scene["overlay"] == {"component": "star_counter", "props": {}}
+    assert scene["narration"] == ["stars"] and spec["lines"]["stars"]
+    assert "motion graphic: star_counter" in planner.describe_plan(spec)
+
+
+def test_overlay_step_runs_end_to_end(client, monkeypatch):
+    from app.tutorial.facts import Fact, Facts
+
+    async def fake_collect(goal, brief, data_dir=None):
+        return Facts(subject="o/r", items={
+            "github.stars": Fact(key="github.stars", label="GitHub stars",
+                                 value="12,345", number=12345)})  # fmt: skip
+
+    monkeypatch.setattr(pipeline.facts, "collect", fake_collect)
+    llm = StubLLM([_plan([*GOOD, _overlay("stars")])])
+    _setup(client, monkeypatch, llm, fail=())
+    cid, jid = _send(client)
+    _answer(client, jid, pipeline.SHOW)
+    job = _wait(client, jid, {"succeeded", "failed"})
+    assert job["status"] == "succeeded", job["error"]
+    tut = client.get(f"/api/tutorials/{job['result']['tutorial_id']}",
+                     headers=_auth(client)).json()  # fmt: skip
+    spec, cap = tut["spec"], tut["capture"]
+    scene = next(s for s in spec["steps"] if s["id"] == "stars")
+    assert scene["scene"] == "overlay" and "action" not in scene
+    rec = next(r for r in cap["records"] if r["step"] == "stars")
+    assert rec.get("synthetic") and not rec["in_video"]
+    state = next(s for s in tut["graph"]["states"] if s["id"] == "stars")
+    assert state["source"] is None
+    assert state["overlays"][0]["component"] == "star_counter"
+    assert state["overlays"][0]["props"]["number"] == 12345

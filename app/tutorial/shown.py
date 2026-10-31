@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app import proc
 from app.heal import Healer, short
 from app.jobs import JobContext
+from app.tutorial import dedup
 
 FRAMES_AT = (0.35, 0.9)  # where in each step's footage to look
 TIMEOUT = 150
@@ -118,6 +119,12 @@ async def check(
     changed = []
     for fix in out.fixes:
         if not valid(fix, lines, keys) or fix.key in changed:
+            continue
+        if k := dedup.repeats(
+            fix.narration, {k: v for k, v in lines.items() if k != fix.key}
+        ):  # a rewrite must not repeat a line the viewer already hears elsewhere
+            heal(f"Narration check, **{fix.key}**: the rewrite repeated {k}'s line; "
+                 "kept the original")  # fmt: skip
             continue
         heal(f"Narration check, **{fix.key}**: {fix.problem.rstrip('.')}. "
              f"Now says \"{fix.narration.strip()}\"")  # fmt: skip
