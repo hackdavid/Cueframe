@@ -150,20 +150,24 @@ def _alarm(*_: object) -> None:
 
 def run(plan: BoardPlan, per_check: int = 0) -> tuple[int, list[str]]:
     """(number of checks, failures as 'step N check K (why): what is wrong').
-    `per_check` seconds bounds each check (main thread of a process only)."""
+    `per_check` seconds bounds each check where SIGALRM exists (Unix); elsewhere the
+    calling process's own timeout is the bound."""
     n, bad = 0, []
-    if per_check:
+    alarm = bool(per_check) and hasattr(signal, "SIGALRM")
+    if alarm:
         signal.signal(signal.SIGALRM, _alarm)
     for si, step in enumerate(plan.steps, 1):
         for c in step.checks:
             n += 1
-            signal.alarm(per_check)
+            if alarm:
+                signal.alarm(per_check)
             try:
                 err = check(c, plan)
             except _Slow:
                 err = f"took longer than {per_check} s to verify; state it more simply"
             finally:
-                signal.alarm(0)
+                if alarm:
+                    signal.alarm(0)
             if err:
                 bad.append(f"step {si} check {c.kind} ({c.why or c.a}): {err}")
     return n, bad

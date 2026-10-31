@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,10 @@ from app.log import attach_store, bind, detach, fields, get_logger, setup_loggin
 from app.plans import plan_limits
 from app.sandbox.manager import SandboxManager
 from app.storage import Storage
+
+# Local dev: always load .env, even over machine-level env vars. On deploy hosts
+# the file is gitignored/absent, so this is a no-op and host env vars win.
+load_dotenv(override=True)
 
 BASE = Path(__file__).parent
 rlog = get_logger("http")

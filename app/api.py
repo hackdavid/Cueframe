@@ -41,7 +41,8 @@ class ConversationIn(BaseModel):
 
 
 class ConversationPatch(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    voice_id: str | None = None  # narrator for this conversation; "" clears the pick
 
 
 class MessageIn(BaseModel):
@@ -163,10 +164,31 @@ def rename_conversation(
 ) -> dict[str, Any]:
     s = _s(request)
     services.conversation_or_404(s, cid, user)
-    s.store.update_conversation(cid, title=body.title)
+    if body.title is None and body.voice_id is None:
+        raise HTTPException(422, "Nothing to update")
+    s.store.update_conversation(
+        cid,
+        **({"title": body.title} if body.title is not None else {}),
+        **({"voice_id": body.voice_id or None} if body.voice_id is not None else {}),
+    )
     conv = s.store.get_conversation(cid)
     s.bus.publish("conversation.updated", {"conversation": conv}, conversation_id=cid)
     return conv
+
+
+@router.get("/voices", tags=["conversations"])
+async def list_voices(user: User, language: str = "") -> list[dict[str, Any]]:
+    """Voices for the picker: the account's library by default, or the ElevenLabs
+    community library for a language (`?language=hi`). Cached server-side. Shared
+    voice ids work for TTS directly — nothing needs adding to the account."""
+    from app import voices
+
+    try:
+        if language:
+            return await voices.search_shared(language)
+        return await voices.list_voices()
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @router.delete("/conversations/{cid}", status_code=204, tags=["conversations"])
@@ -316,6 +338,8 @@ async def sandbox_action(request: Request, jid: str, body: Action, user: User) -
 
 
 def _upstream(app: Any, jid: str) -> str:
+    if not app.state.settings.live_view:
+        raise HTTPException(409, "The live sandbox view is disabled")
     live = app.state.sandboxes.for_job(jid)
     if live is None or not live[1].live_url:
         raise HTTPException(409, "This job has no running sandbox")
@@ -358,8 +382,11 @@ async def live_socket(ws: WebSocket, jid: str) -> None:
     async with websockets.connect(url, subprotocols=["binary"], max_size=None) as up:
 
         async def down() -> None:
-            async for msg in up:
-                await (ws.send_bytes(msg) if isinstance(msg, bytes) else ws.send_text(msg))
+            try:
+                async for msg in up:
+                    await (ws.send_bytes(msg) if isinstance(msg, bytes) else ws.send_text(msg))
+            except websockets.ConnectionClosed:
+                pass  # sandbox ended or browser left: upstream dropped without a close frame
 
         async def upward() -> None:
             while True:
@@ -369,7 +396,9 @@ async def live_socket(ws: WebSocket, jid: str) -> None:
                 await up.send(m.get("bytes") or m.get("text") or b"")
 
         tasks = [asyncio.create_task(down()), asyncio.create_task(upward())]
-        _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in done:
+            t.exception()  # retrieve so asyncio doesn't log "exception was never retrieved"
         for t in pending:
             t.cancel()
 

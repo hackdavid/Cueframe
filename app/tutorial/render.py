@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable, Collection
 from pathlib import Path
 from typing import Any
 
+from app import proc
 from app.heal import anything, retry
 from app.log import fields, get_logger
 from app.tutorial import qa
@@ -27,6 +28,7 @@ from app.tutorial.contracts import Tutorial
 
 log = get_logger("render")
 RENDERER = Path(__file__).resolve().parents[2] / "renderer"
+NPX = "npx.cmd" if os.name == "nt" else "npx"  # Windows can't resolve the .cmd shim
 PARALLEL = 4  # segments at once; together they use every core (measured: CPU-bound)
 THREADS = max(2, (os.cpu_count() or 8) // PARALLEL)
 AF = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
@@ -34,16 +36,11 @@ SFX_VOL = {"click": 0.45, "keys": 0.22, "whoosh": 0.35, "success": 0.4, "pop": 0
 
 Fetch = Callable[[str], Awaitable[bytes | None]]
 Save = Callable[[str, Path], Awaitable[None]]
-Progress = Callable[[int, int], None]
+Progress = Callable[[int, int, str | None], None]  # done, total, state just rendered
 
 
 async def _run(*cmd: str, cwd: Path | None = None) -> None:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-    )
-    out, _ = await proc.communicate()
-    if proc.returncode:
-        raise RuntimeError(f"{cmd[0]} {cmd[1]} failed: {out.decode(errors='replace')[-800:]}")
+    await proc.checked(*cmd, cwd=cwd)
 
 
 def code_hash() -> str:
@@ -63,7 +60,7 @@ def segment_hashes(tut: Tutorial) -> list[str]:
 async def _segment(bundle: Path, props: Path, a: int, b: int, out: Path, fps: int = 30) -> None:
     tmp = out.with_suffix(".part.mp4")
     await _run(
-        "npx", "remotion", "render", str(bundle), "Tutorial", str(tmp), f"--props={props}",
+        NPX, "remotion", "render", str(bundle), "Tutorial", str(tmp), f"--props={props}",
         f"--frames={a}-{b}", "--muted", f"--concurrency={THREADS}", "--codec=h264", "--crf=16",
         "--pixel-format=yuv420p", "--log=error",
         cwd=RENDERER,
@@ -135,7 +132,7 @@ async def render(
     props.write_text(json.dumps({"tutorial": tut.model_dump()}))
     bundle = work / "bundle"
     shutil.rmtree(bundle, ignore_errors=True)
-    await _run("npx", "remotion", "bundle", "src/index.ts", f"--out-dir={bundle}",
+    await _run(NPX, "remotion", "bundle", "src/index.ts", f"--out-dir={bundle}",
                f"--public-dir={work / 'public'}", "--log=error", cwd=RENDERER)  # fmt: skip
     hashes = segment_hashes(tut)
     segs, todo, a = [], [], 0
@@ -152,7 +149,7 @@ async def render(
         a += n
     total = a / tut.fps
     done, times = 0, {}
-    progress(0, len(todo))
+    progress(0, len(todo), None)
     sem = asyncio.Semaphore(PARALLEL)
 
     async def one(sid: str, f0: int, f1: int, seg: Path) -> None:
@@ -165,7 +162,7 @@ async def render(
             times[sid] = round(time.monotonic() - t, 1)
         await save(f"seg-{seg.stem}.mp4", seg)
         done += 1
-        progress(done, len(todo))
+        progress(done, len(todo), sid)
 
     t_seg = time.monotonic()
     await asyncio.gather(*(one(*j) for j in todo))

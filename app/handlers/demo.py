@@ -6,6 +6,7 @@ import asyncio
 import shutil
 from typing import Any
 
+from app import proc
 from app.jobs import JobContext, job_handler
 
 PHASES = [
@@ -23,7 +24,7 @@ async def _render_clip(ctx: JobContext, text: str) -> dict[str, str] | None:
     video, poster = out / "preview.mp4", out / "poster.png"
     caption = "".join(c for c in text[:40] if c.isalnum() or c in " -_.,!?") or "Cueframe"
     caption = caption.replace(":", " ").replace("'", " ")
-    proc = await asyncio.create_subprocess_exec(
+    rc, _ = await proc.raw(
         "ffmpeg", "-y", "-loglevel", "error",
         "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30:duration=5",
         "-f", "lavfi", "-i", "sine=frequency=440:duration=5",
@@ -32,13 +33,12 @@ async def _render_clip(ctx: JobContext, text: str) -> dict[str, str] | None:
         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
         "-movflags", "+faststart", str(video),
     )  # fmt: skip
-    if await proc.wait() != 0:
+    if rc != 0:
         return None
-    proc = await asyncio.create_subprocess_exec(
+    await proc.raw(
         "ffmpeg", "-y", "-loglevel", "error", "-ss", "2", "-i", str(video),
         "-frames:v", "1", "-vf", "scale=640:-1", str(poster),
     )  # fmt: skip
-    await proc.wait()
     return {"video": ctx.artifact_url(video), "poster": ctx.artifact_url(poster)}
 
 

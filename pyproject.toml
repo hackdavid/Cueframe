@@ -12,6 +12,7 @@ dependencies = [
     "modal>=1.6.2",
     "pillow>=10",
     "pypdf>=5",
+    "python-dotenv>=1.2.4",
     "python-multipart>=0.0.32",
     "qrcode>=7.4",
     "sentry-sdk>=2.0",

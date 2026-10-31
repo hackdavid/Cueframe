@@ -85,6 +85,8 @@
     state.currentId = id;
     state.messageIds.clear();
     state.jobs.clear();
+    state.board = null;
+    renderBoard();
     $("#thread").innerHTML = "";
     if (push) history.pushState({}, "", id ? `/dashboard/c/${id}` : "/dashboard");
     const conv = state.conversations.find((c) => c.id === id);
@@ -92,6 +94,8 @@
     renderSidebar();
     if (!id) {
       $("#chat-title").textContent = "New chat";
+      state.voiceId = state.pendingVoice;
+      renderVoiceBtn();
       wsRequest({ type: "open", conversation_id: null }).catch(() => {});
       renderThreadVisibility();
       renderRuns();
@@ -105,6 +109,8 @@
       .catch(() => api(`/api/conversations/${id}`));
     if (state.currentId !== id) return;
     $("#chat-title").textContent = data.title;
+    state.voiceId = data.voice_id || null;
+    renderVoiceBtn();
     data.jobs.forEach((j) => state.jobs.set(j.id, j));
     data.messages.forEach(appendMessage);
     renderWorking();
@@ -378,16 +384,43 @@
         }
         return;
       case "conversation.created":
+        if (state.pendingVoice && p.conversation && !state.currentId) {
+          api(`/api/conversations/${p.conversation.id}`, {
+            method: "PATCH",
+            body: { voice_id: state.pendingVoice },
+          }).catch(() => {});
+          state.pendingVoice = null;
+        }
+        loadConversations();
+        return;
       case "conversation.deleted":
         loadConversations();
         return;
       case "conversation.updated": {
         const c = state.conversations.find((x) => x.id === p.conversation.id);
         if (c) c.title = p.conversation.title;
-        if (isCurrent) $("#chat-title").textContent = p.conversation.title;
+        if (isCurrent) {
+          $("#chat-title").textContent = p.conversation.title;
+          state.voiceId = p.conversation.voice_id || null;
+          renderVoiceBtn();
+        }
         renderSidebar();
         return;
       }
+      case "tutorial.graph":
+        state.board = { title: p.title, states: p.states || [], done: new Set() };
+        renderBoard();
+        return;
+      case "tutorial.step":
+        if (state.board && p.state_id) {
+          state.board.done.add(p.state_id);
+          renderBoard();
+        }
+        return;
+      case "tutorial.ready":
+        state.board = null;
+        renderBoard();
+        return;
       case "sandbox.started":
       case "sandbox.output": {
         const j = state.jobs.get(p.job_id);
@@ -750,6 +783,182 @@
   window.addEventListener("popstate", () => {
     const m = location.pathname.match(/^\/dashboard\/c\/([\w-]+)/);
     openConversation(m ? m[1] : null, { push: false });
+  });
+
+  // ---------- Storyboard (per-step progress) ----------
+  // state.board = { title, states: [{id, label}], done: Set, active: id|null }
+  function renderBoard() {
+    const el = $("#storyboard");
+    const b = state.board;
+    if (!b || !b.states.length) {
+      el.classList.add("hidden");
+      el.innerHTML = "";
+      return;
+    }
+    el.classList.remove("hidden");
+    const cards = b.states
+      .map((s) => {
+        const done = b.done.has(s.id);
+        const cls = done
+          ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-200"
+          : "board-live border-white/10 bg-white/5 text-zinc-400";
+        return `<div class="rounded-lg border px-2 py-1.5 text-[11px] transition-colors ${cls}">
+          ${done ? `<span class="mr-1 inline-block font-semibold text-emerald-400">✓</span>` : ""}${esc(s.label || s.id)}
+        </div>`;
+      })
+      .join("");
+    el.innerHTML = `<p class="mb-2 truncate text-[11px] font-medium text-zinc-400">🎬 ${esc(b.title || "Your video")} — building step by step</p>
+      <div class="grid grid-cols-1 gap-1.5 sm:grid-cols-2">${cards}</div>`;
+  }
+
+  // ---------- Voice picker ----------
+  state.voiceId = null;
+  state.pendingVoice = null; // picked before the chat exists; applied on conversation.created
+  state.voices = null; // the account's library
+  state.sharedVoices = {}; // language code -> community voices
+  state.voiceLang = ""; // "" = my library
+  state.voiceFilter = { gender: "", accent: "" };
+  const VOICE_LANGS = [["hi", "Hindi"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["ar", "Arabic"], ["ja", "Japanese"]];
+  let previewAudio = null;
+  let previewBtn = null; // the button currently playing
+
+  function stopPreview() {
+    if (previewAudio) previewAudio.pause();
+    previewAudio = null;
+    if (previewBtn) {
+      previewBtn.textContent = "▶";
+      previewBtn.classList.remove("text-sky-400", "border-sky-500/60");
+    }
+    previewBtn = null;
+  }
+
+  function togglePreview(btn) {
+    if (previewBtn === btn && previewAudio && !previewAudio.paused) {
+      stopPreview();
+      return;
+    }
+    stopPreview();
+    previewAudio = new Audio(btn.dataset.url);
+    previewAudio.onended = stopPreview;
+    previewAudio.play();
+    previewBtn = btn;
+    btn.textContent = "■";
+    btn.classList.add("text-sky-400", "border-sky-500/60");
+  }
+
+  function renderVoiceBtn() {
+    const all = [...(state.voices || []), ...Object.values(state.sharedVoices).flat()];
+    const v = all.find((x) => x.id === state.voiceId);
+    $("#voice-name").textContent = state.voiceId ? (v ? v.name : "Custom") : "Default";
+  }
+
+  function voiceSource() {
+    return state.voiceLang ? state.sharedVoices[state.voiceLang] || [] : state.voices || [];
+  }
+
+  function renderVoiceFilters() {
+    const chip = (group, value, label) => {
+      const on = group === "lang" ? state.voiceLang === value : state.voiceFilter[group] === value;
+      return `<button type="button" data-vf-group="${group}" data-vf-value="${value}"
+        class="rounded-full border px-3 py-1 ${on ? "border-sky-500/60 bg-sky-500/10 text-sky-300" : "border-white/10 text-zinc-400 hover:bg-white/5"}">${label}</button>`;
+    };
+    const accents = [...new Set(voiceSource().map((v) => v.accent).filter(Boolean))].sort();
+    $("#voice-filters").innerHTML =
+      `<div class="mb-1.5 flex flex-wrap gap-1.5">${chip("lang", "", "My voices")}${VOICE_LANGS.map(([c, n]) => chip("lang", c, n)).join("")}</div>` +
+      ["", "female", "male", "neutral"].map((g) => chip("gender", g, g || "All genders")).join("") +
+      `<span class="mx-1 self-center text-zinc-700">·</span>` +
+      chip("accent", "", "All accents") +
+      accents.map((a) => chip("accent", a, a)).join("");
+  }
+
+  function renderVoiceList() {
+    const f = state.voiceFilter;
+    const shown = voiceSource().filter(
+      (v) => (!f.gender || v.gender === f.gender) && (!f.accent || v.accent === f.accent)
+    );
+    const card = (v) => {
+      const on = state.voiceId === v.id;
+      const shared = v.category === "shared";
+      const meta = [v.gender, v.accent, v.age].filter(Boolean).join(" · ");
+      const sub = shared && v.uses ? `${meta} · ${v.uses} videos made` : meta;
+      return `<div class="flex items-center gap-3 rounded-xl border p-3 ${on ? "border-sky-500/60 bg-sky-500/10" : "border-white/10 bg-zinc-950/60"}">
+        <button type="button" data-voice-play="${v.id}" data-url="${esc(v.preview_url || "")}"
+          class="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-white/10 text-xs text-zinc-300 hover:bg-white/10 ${v.preview_url ? "" : "opacity-30"}"
+          title="Preview">▶</button>
+        <div class="min-w-0 flex-1">
+          <p class="truncate text-sm font-medium text-zinc-200">${esc(v.name)}${shared ? ' <span class="text-[10px] text-fuchsia-400">community</span>' : ""}</p>
+          <p class="truncate text-[11px] text-zinc-500">${esc(sub)}${v.use_case ? ` · ${esc(v.use_case)}` : ""}</p>
+        </div>
+        <button type="button" data-voice-pick="${v.id}"
+          class="shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium ${on ? "bg-sky-600 text-white" : "border border-white/10 text-zinc-300 hover:bg-white/10"}">${on ? "Picked" : "Pick"}</button>
+      </div>`;
+    };
+    const def = state.voiceLang ? "" :
+      card({ id: "", name: "Default voice", gender: "", accent: "", age: "", use_case: "server default", preview_url: "" });
+    $("#voice-list").innerHTML =
+      def + (shown.map(card).join("") || `<p class="text-xs text-zinc-500">No voices match these filters.</p>`);
+  }
+
+  async function pickVoice(id) {
+    state.voiceId = id || null;
+    renderVoiceBtn();
+    renderVoiceList();
+    if (state.currentId) {
+      await api(`/api/conversations/${state.currentId}`, { method: "PATCH", body: { voice_id: id } });
+    } else {
+      state.pendingVoice = id || null; // applied when the first message creates the chat
+    }
+  }
+
+  async function loadVoiceList() {
+    $("#voice-list").innerHTML = `<p class="text-xs text-zinc-500">Loading voices…</p>`;
+    try {
+      if (state.voiceLang) {
+        state.sharedVoices[state.voiceLang] = await api(`/api/voices?language=${state.voiceLang}`);
+      } else {
+        state.voices = await api("/api/voices");
+      }
+      renderVoiceBtn();
+      renderVoiceFilters();
+      renderVoiceList();
+    } catch (e) {
+      $("#voice-list").innerHTML = `<p class="text-xs text-red-400">Couldn't load voices: ${esc(e.message)}</p>`;
+    }
+  }
+
+  $("#voice-btn").onclick = () => {
+    $("#voice-modal").classList.replace("hidden", "grid");
+    renderVoiceFilters();
+    if (!state.voiceLang && state.voices) { renderVoiceList(); return; }
+    if (state.voiceLang && state.sharedVoices[state.voiceLang]) { renderVoiceList(); return; }
+    loadVoiceList();
+  };
+  $("#voice-close").onclick = () => {
+    $("#voice-modal").classList.replace("grid", "hidden");
+    stopPreview();
+  };
+  $("#voice-filters").addEventListener("click", (e) => {
+    const chip = e.target.closest("[data-vf-group]");
+    if (!chip) return;
+    if (chip.dataset.vfGroup === "lang") {
+      state.voiceLang = chip.dataset.vfValue;
+      renderVoiceFilters();
+      if (state.sharedVoices[state.voiceLang] || !state.voiceLang) renderVoiceList();
+      else loadVoiceList();
+      return;
+    }
+    state.voiceFilter[chip.dataset.vfGroup] = chip.dataset.vfValue;
+    renderVoiceFilters();
+    renderVoiceList();
+  });
+  $("#voice-list").addEventListener("click", (e) => {
+    const play = e.target.closest("[data-voice-play]");
+    if (play && play.dataset.url) {
+      togglePreview(play);
+      return;
+    }
+    const pick = e.target.closest("[data-voice-pick]");
+    if (pick) pickVoice(pick.dataset.voicePick);
   });
 
   // ---------- Boot ----------

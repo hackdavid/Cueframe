@@ -25,13 +25,16 @@ from app import endcard, languages
 from app.agents.trending import brief_text
 from app.heal import Healer, short
 from app.jobs import JobContext, JobFailed
+from app.log import get_logger
 from app.sandbox.contracts import Action, live_path
 from app.sandbox.manager import SandboxLimit
 from app.tutorial import formats, planner, qa, recipes, shown, sources
 from app.tutorial.build import build
 from app.tutorial.contracts import Tutorial
 from app.tutorial.render import render
-from app.tutorial.voice import sound, speak
+from app.tutorial.voice import conversation_voice, sound, speak
+
+log = get_logger("pipeline")
 
 SKIP = "Already installed - leave the install out of the video"
 SHOW = "Not installed - show me how to install it"
@@ -124,10 +127,15 @@ async def voice_lines(
     heal: Healer | None = None,
     lively: bool = False,
 ) -> list[str]:
-    """Synthesize every line whose text changed; returns the keys that were re-voiced.
-    `lively` is the more energetic delivery of influencer videos."""
-    vid = os.environ.get("ELEVENLABS_VOICE_ID", "") + ("|lively" if lively else "")
-    todo = [k for k, text in lines.items() if voice.get(k, {}).get("text") != text]
+    """Synthesize every line whose text (or voice) changed; returns the keys that were
+    re-voiced. `lively` is the more energetic delivery of influencer videos."""
+    base = conversation_voice(ctx) or os.environ.get("ELEVENLABS_VOICE_ID", "")
+    vid = base + ("|lively" if lively else "")
+    todo = [
+        k
+        for k, text in lines.items()
+        if voice.get(k, {}).get("text") != text or voice.get(k, {}).get("vid") != vid
+    ]
     sem = asyncio.Semaphore(3)
     audio = _audio(ctx, tid)
     heal = heal or Healer(ctx)
@@ -137,7 +145,8 @@ async def voice_lines(
         h = hashlib.sha256(f"{vid}|{text}".encode()).hexdigest()[:10]
         async with sem:
             mp3, words = await heal.retry(
-                lambda: speak(text, lively=lively), f"ElevenLabs narration {key!r}"
+                lambda: speak(text, voice_id=base or None, lively=lively),
+                f"ElevenLabs narration {key!r}",
             )
         if not words:
             raise RuntimeError(f"ElevenLabs returned no word timings for {key!r}")
@@ -145,7 +154,7 @@ async def voice_lines(
         (audio / name).write_bytes(mp3)
         stored = await ctx._manager.storage.put(f"tutorials/{tid}/voice-{key}-{h}.mp3", mp3,
                                                 "audio/mpeg")  # fmt: skip
-        voice[key] = {"text": text, "file": name, "stored": stored,
+        voice[key] = {"text": text, "file": name, "stored": stored, "vid": vid,
                       "words": [w.model_dump() for w in words]}  # fmt: skip
 
     await asyncio.gather(*(one(k) for k in todo))
@@ -204,7 +213,8 @@ async def capture(
     steps = spec["steps"]
     ctx.phase("sandbox", "Starting a 1080p Linux desktop")
     async with mgr.session(ctx.id, ctx.conversation_id, "about:blank", settings=desk) as (sid, box):
-        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
+        ctx.emit("sandbox.started", {"sandbox_id": sid, **(
+            {"live_url": live_path(ctx.id)} if ctx.settings.live_view else {})})
         await planner.put_files(box, spec)
         await box.run(-1, Action(kind="terminal", command="clear", ask=False))
         t0 = await box.start_recording()
@@ -364,16 +374,30 @@ async def publish(
     spec, voice, cap = row["spec"], row["voice"], row["capture"]
     work, audio = work_dir(ctx, tid), _audio(ctx, tid)
     ctx.phase("render", "Preparing assets")
-    await _ensure(ctx, work / "public" / tid / "recording.mp4", cap["recording"])
-    for v in voice.values():
-        await _ensure(ctx, audio / v["file"], v["stored"])
-    await ensure_sfx(ctx, audio)
+    remote_ok = (ctx.settings.render_runner == "modal"
+                 and ctx._manager.storage.backend == "r2")  # fmt: skip
+    if ctx.settings.render_runner == "modal" and not remote_ok:
+        log.warning("render_runner=modal needs R2 storage; rendering on this server")
+    if remote_ok:
+        await ensure_sfx(ctx, audio)  # makes sure the assets/sfx_*.mp3 R2 keys exist
+    else:
+        await _ensure(ctx, work / "public" / tid / "recording.mp4", cap["recording"])
+        for v in voice.values():
+            await _ensure(ctx, audio / v["file"], v["stored"])
+        await ensure_sfx(ctx, audio)
     tut = build(spec, voice, cap, tid, hidden=set(spec.get("hidden", [])))
     row = store.update_tutorial(tid, status="rendering", graph=tut.model_dump(), active_job=ctx.id)
+    ctx.emit("tutorial.graph", {
+        "tutorial_id": tid, "title": spec.get("title", ""),
+        "states": [{"id": s.id, "label": s.label or s.kind} for s in tut.states],
+    })
 
-    def progress(done: int, total: int) -> None:
+    def progress(done: int, total: int, sid: str | None = None) -> None:
         label = f"Rendering steps in parallel ({done}/{total})" if total else "Nothing changed"
         ctx.progress(0.65 + 0.3 * (done / total if total else 1), label)
+        if sid:
+            ctx.emit("tutorial.step", {"tutorial_id": tid, "state_id": sid,
+                                       "done": done, "total": total})  # fmt: skip
 
     async def fetch(name: str) -> bytes | None:
         return await storage.get(storage.ref(f"tutorials/{tid}/{name}"))
@@ -381,15 +405,26 @@ async def publish(
     async def save(name: str, path: Path) -> None:
         await storage.put(f"tutorials/{tid}/{name}", path.read_bytes(), "video/mp4")
 
-    ctx.phase("render", "Rendering the video")
-    res = await render(tut, work, fetch, save, progress, on_retry=heal)
+    async def _render(force: set[str] = ()) -> dict[str, Any]:
+        if remote_ok:
+            from app.tutorial import remote
+
+            return await remote.render_modal(ctx, row, tut, work, progress, force=force)
+        return await render(tut, work, fetch, save, progress, force=force, on_retry=heal)
+
+    ctx.phase("render", "Rendering the video" + (" in a cloud sandbox" if remote_ok else ""))
+    res = await _render()
     ctx.phase("qa", "Checking the finished video")
-    issues = await qa.final(tut, res["video"], res["captions"], res["stats"]["duration"])
+    issues = res.pop("qa_issues", None)  # remote runner checks in the sandbox
+    if issues is None:
+        issues = await qa.final(tut, res["video"], res["captions"], res["stats"]["duration"])
     if issues:
         heal(f"Quality check: {'; '.join(issues)}. Rendering every step again")
-        res = await render(tut, work, fetch, save, progress,
-                           force={s.id for s in tut.states}, on_retry=heal)  # fmt: skip
-        issues = await qa.final(tut, res["video"], res["captions"], res["stats"]["duration"])
+        res = await _render(force={s.id for s in tut.states})
+        recheck = res.pop("qa_issues", None)
+        issues = (recheck if recheck is not None
+                  else await qa.final(tut, res["video"], res["captions"],
+                                      res["stats"]["duration"]))  # fmt: skip
     issues = [*(cap.get("qa") or []), *issues]
     res["video"] = await endcard.brand(ctx, res["video"])
     n = row["version"] + 1
@@ -534,6 +569,15 @@ async def make(
     tid = row["id"]
     row = ctx.store.update_tutorial(tid, active_job=ctx.id)
     ctx.emit("tutorial.created", {"tutorial_id": tid})
+    # The storyboard from the start: the plan's steps, ticked off as states render.
+    # publish() re-emits the final graph (with title/outro cards) at build time.
+    ctx.emit("tutorial.graph", {
+        "tutorial_id": tid, "title": spec["title"],
+        "states": [{"id": "title", "label": "Title"}]
+        + [{"id": s["id"], "label": s["label"]} for s in spec["steps"]
+           if s["id"] not in spec.get("hidden", [])]
+        + [{"id": "outro", "label": "Wrap-up"}],
+    })
     if recipe_id == "planned":
         row = await first_take(ctx, row, answers, heal)
     out = await produce(ctx, row, heal)

@@ -16,12 +16,12 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from app import endcard, languages
+from app import endcard, languages, proc
 from app.board import timeline
 from app.board.contracts import BoardPlan, Level, normalize, problems
 from app.jobs import JobContext, JobFailed
 from app.tutorial import formats
-from app.tutorial.voice import speak
+from app.tutorial.voice import conversation_voice, speak
 
 LEVELS: dict[str, Level] = {
     "Child (primary school)": "child",
@@ -89,20 +89,21 @@ async def clarify(ctx: JobContext, level: Level | None) -> Level:
 
 async def _sympy(plan: BoardPlan, timeout: float = 240) -> tuple[int, list[str]]:
     """Run the checks in a child process (each is bounded; the whole run is killed if
-    it still overruns)."""
-    p = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "app.board.checks", stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )  # fmt: skip
+    it still overruns). Blocking subprocess in a thread: asyncio subprocesses raise
+    NotImplementedError on uvicorn's Windows SelectorEventLoop."""
+    def _run() -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(
+            [sys.executable, "-m", "app.board.checks"], input=plan.model_dump_json().encode(),
+            capture_output=True, timeout=timeout,
+        )
+
     try:
-        out, err = await asyncio.wait_for(p.communicate(plan.model_dump_json().encode()), timeout)
-    except TimeoutError:
-        p.kill()
-        await p.wait()
+        p = await asyncio.to_thread(_run)
+    except subprocess.TimeoutExpired:
         return sum(len(s.checks) for s in plan.steps), [f"the checks took over {timeout:.0f} s"]
     if p.returncode:
-        raise RuntimeError(f"math checks crashed: {err.decode()[-500:]}")
-    res = json.loads(out)
+        raise RuntimeError(f"math checks crashed: {p.stderr.decode()[-500:]}")
+    res = json.loads(p.stdout)
     return res["checks"], res["failed"]
 
 
@@ -204,11 +205,14 @@ class Runner:
             )  # fmt: skip
             out = res.stdout
         else:
-            p = await asyncio.create_subprocess_exec(
-                sys.executable, "-m", "app.board.engine", cmd, str(self.local), *args,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            )  # fmt: skip
-            out = (await asyncio.wait_for(p.communicate(), timeout))[0].decode()
+            try:
+                _, data = await proc.raw(
+                    sys.executable, "-m", "app.board.engine", cmd, str(self.local), *args,
+                    timeout=timeout,
+                )  # fmt: skip
+            except subprocess.TimeoutExpired:
+                raise TimeoutError(f"board engine {cmd} exceeded {timeout:.0f}s") from None
+            out = data.decode()
         lines = [ln for ln in out.strip().splitlines() if ln.startswith("{")]
         if not lines:
             raise RuntimeError(f"board engine gave no result: {out[-500:]}")
@@ -371,6 +375,20 @@ async def _board(ctx: JobContext, run: Runner, p: BoardPlan, problem: str, work:
         await run.put("plan.json", p.model_dump_json().encode())
     (work / "timeline.json").write_text(json.dumps(tl))
     await run.put("timeline.json", json.dumps(tl).encode())
+    if run.box is not None:
+        # Final say in the sandbox: its pinned SymPy re-verifies the exact plan it is
+        # about to draw, so a server/sandbox version drift fails here, not mid-render.
+        ctx.phase("check", "Verifying the maths in the sandbox")
+        ver = await run.box.exec(
+            f"cd /opt/board && python -m app.board.checks < {REMOTE}/plan.json", 300
+        )
+        rows = [ln for ln in ver.stdout.splitlines() if ln.startswith("{")]
+        if ver.returncode or not rows:
+            raise RuntimeError(f"sandbox maths check crashed: {ver.stderr[-400:]}")
+        failed = json.loads(rows[-1])["failed"]
+        if failed:
+            raise JobFailed("The sandbox maths check failed: " + "; ".join(failed[:5]),
+                            {"issues": failed})  # fmt: skip
     ctx.phase("render", f"Drawing the board ({tl['seconds']:.0f} s of video)")
     res = await run.run("render", 1800, str(int(ctx.settings.board_cpu)))
     if res.get("error"):
@@ -438,7 +456,8 @@ async def deliver(ctx: JobContext, conv: dict, p: BoardPlan, problem: str, t0: f
                   validate: Callable[[BoardPlan], list[str]] | None = None,
                   fit: Fit | None = None) -> dict[str, Any]:  # fmt: skip
     """Typeset, voice and render a checked board plan, then post the video in chat."""
-    vid = languages.voice_id(language)
+    # the conversation's narrator pick wins over the per-language voice
+    vid = conversation_voice(ctx) or languages.voice_id(language)
     extra = {k: v for k, v in {"rules": rules, "validate": validate, "fit": fit}.items() if v}
     row = ctx.store.create_tutorial(conv["user_id"], conv["id"], ctx.id, recipe, p.title,
                                     {"board": p.model_dump(), "problem": problem})  # fmt: skip

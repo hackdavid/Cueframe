@@ -45,6 +45,11 @@ class Settings:
     sandbox_image: str = "desktop"  # "board": headless math-board renderer, no desktop
     board_runner: str = "sandbox"  # "local": render math boards on this server instead
     board_cpu: float = 8
+    render_runner: str = "local"  # "modal": render + stitch tutorials in a headless sandbox
+    render_cpu: float = 8
+    render_memory_mb: int = 8192
+    render_max_seconds: int = 2400
+    live_view: bool = False  # show the sandbox's live desktop in the chat
     contact_email: str = "hello@cueframe.ai"
     default_plan: str = "free"  # plan of new accounts
     admin_plan: str = "unlimited"  # plan of the CUEFRAME_ADMIN_USERNAME account
@@ -119,6 +124,11 @@ def get_settings() -> Settings:
         sandbox_term_font=_int("CUEFRAME_SANDBOX_TERM_FONT", 12),
         sandbox_apt_extra=tuple(os.environ.get("CUEFRAME_SANDBOX_APT_EXTRA", "").split()),
         board_runner=os.environ.get("CUEFRAME_BOARD_RUNNER", "sandbox"),
+        render_runner=os.environ.get("CUEFRAME_RENDER_RUNNER", "local"),
+        render_cpu=_float("CUEFRAME_RENDER_CPU", 8),
+        render_memory_mb=_int("CUEFRAME_RENDER_MEMORY_MB", 8192),
+        render_max_seconds=_int("CUEFRAME_RENDER_MAX_SECONDS", 2400),
+        live_view=os.environ.get("CUEFRAME_LIVE_VIEW", "0") == "1",
         contact_email=os.environ.get("CUEFRAME_CONTACT_EMAIL", "hello@cueframe.ai"),
         default_plan=os.environ.get("CUEFRAME_DEFAULT_PLAN", "free"),
         admin_plan=os.environ.get("CUEFRAME_ADMIN_PLAN", "unlimited"),

@@ -224,6 +224,7 @@ class Store:
             "WHERE ref_code IS NOT NULL"
         )
         self._add_columns("tutorials", {"share_slug": "TEXT", "shared_at": "TEXT"})
+        self._add_columns("conversations", {"voice_id": "TEXT"})  # the user's narrator pick
         self._conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_tutorials_share ON tutorials(share_slug) "
             "WHERE share_slug IS NOT NULL"
@@ -481,14 +482,19 @@ class Store:
             (user_id,),
         )
 
-    def update_conversation(self, cid: str, *, title: str | None = None) -> None:
+    def update_conversation(
+        self, cid: str, *, title: str | None = None, voice_id: str | None | bool = False
+    ) -> None:
+        sets, args = [], []
         if title is not None:
-            self._exec(
-                "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
-                (title, now(), cid),
-            )
-        else:
-            self._exec("UPDATE conversations SET updated_at = ? WHERE id = ?", (now(), cid))
+            sets.append("title = ?")
+            args.append(title)
+        if voice_id is not False:  # None clears the pick, a string sets it
+            sets.append("voice_id = ?")
+            args.append(voice_id)
+        sets.append("updated_at = ?")
+        args += [now(), cid]
+        self._exec(f"UPDATE conversations SET {', '.join(sets)} WHERE id = ?", tuple(args))
 
     def delete_conversation(self, cid: str) -> None:
         self._exec("DELETE FROM conversations WHERE id = ?", (cid,))

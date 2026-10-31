@@ -961,7 +961,8 @@ async def _rehearse(
     mgr = ctx._manager.sandboxes
     ctx.phase("rehearse", "Rehearsing every step in a private sandbox (not recorded)")
     async with mgr.session(ctx.id, ctx.conversation_id) as (sid, box):
-        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
+        ctx.emit("sandbox.started", {"sandbox_id": sid, **(
+            {"live_url": live_path(ctx.id)} if ctx.settings.live_view else {})})
         await put_files(box, spec)
         err, _ = await settle(ctx, spec, heal, state, sid, box, 0)
         if err:

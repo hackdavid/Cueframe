@@ -2,23 +2,19 @@
 user sees them. `recording` checks the raw desktop capture (did the screen really get
 recorded for every step?); `final` checks the published MP4 and captions."""
 
-import asyncio
 import json
 import re
 from pathlib import Path
 from typing import Any
 
+from app import proc
 from app.tutorial.contracts import Tutorial
 
 MIN_DB = -45.0  # mean loudness below this means the soundtrack is effectively silent
 
 
 async def _out(*cmd: str) -> str:
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-    )
-    out, _ = await proc.communicate()
-    return out.decode(errors="replace")
+    return await proc.out(*cmd)
 
 
 async def probe(path: Path) -> dict[str, Any]:

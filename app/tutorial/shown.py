@@ -3,13 +3,13 @@ Frames are cut from the real recording; a line about something that isn't on scr
 rewritten from what is (no longer than before), so the voice never describes a view the
 viewer can't see. The footage itself is never changed."""
 
-import asyncio
 import base64
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app import proc
 from app.heal import Healer, short
 from app.jobs import JobContext
 
@@ -56,14 +56,12 @@ class Shown(BaseModel):
 
 
 async def _frame(video: Path, t: float) -> dict[str, str] | None:
-    proc = await asyncio.create_subprocess_exec(
+    rc, data = await proc.raw(
         "ffmpeg", "-loglevel", "error", "-ss", f"{max(0.0, t):.2f}", "-i", str(video),
         "-frames:v", "1", "-vf", "scale=960:-2", "-q:v", "5", "-f", "image2pipe",
-        "-vcodec", "mjpeg", "-", stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
+        "-vcodec", "mjpeg", "-",
     )  # fmt: skip
-    data, _ = await proc.communicate()
-    if proc.returncode != 0 or not data:
+    if rc != 0 or not data:
         return None
     b64 = base64.b64encode(data).decode()
     return {"type": "input_image", "image_url": f"data:image/jpeg;base64,{b64}"}

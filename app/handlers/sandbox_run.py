@@ -44,7 +44,8 @@ async def sandbox_run(ctx: JobContext) -> dict[str, Any]:
     ctx.progress(0.05)
     records: list[ActionRecord] = []
     async with mgr.session(ctx.id, ctx.conversation_id, start) as (sid, box):
-        ctx.emit("sandbox.started", {"sandbox_id": sid, "live_url": live_path(ctx.id)})
+        ctx.emit("sandbox.started", {"sandbox_id": sid, **(
+            {"live_url": live_path(ctx.id)} if ctx.settings.live_view else {})})
         t0 = await box.start_recording()
         for i, a in enumerate(actions):
             ctx.phase("act", f"Step {i + 1}/{len(actions)}: {a.caption or a.kind}")

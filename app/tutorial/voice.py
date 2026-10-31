@@ -21,6 +21,15 @@ def _key() -> str:
     return key
 
 
+def conversation_voice(ctx: Any) -> str:
+    """The narrator this conversation picked ("" when none): callers then fall back
+    to their own default (per-language voice, then ELEVENLABS_VOICE_ID)."""
+    if not getattr(ctx, "conversation_id", None):
+        return ""
+    conv = ctx.store.get_conversation(ctx.conversation_id)
+    return (conv or {}).get("voice_id") or ""
+
+
 def words_from_alignment(al: dict[str, Any]) -> list[Word]:
     chars, starts, ends = (
         al["characters"],

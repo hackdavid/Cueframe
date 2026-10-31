@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import os
+import subprocess
 import sys
 import time
 from collections.abc import Collection
@@ -65,6 +66,51 @@ def board_image(modal: Any) -> Any:
     )
 
 
+# Chrome headless shell's shared libraries (Remotion renders with it), plus Node and ffmpeg.
+RENDER_APT = [
+    "ffmpeg", "nodejs", "npm", "ca-certificates",
+    "libnss3", "libdbus-1-3", "libatk1.0-0", "libatk-bridge2.0-0", "libcups2", "libdrm2",
+    "libxcomposite1", "libxdamage1", "libxfixes3", "libxrandr2", "libgbm1",
+    "libxkbcommon0", "libpango-1.0-0", "libcairo2", "libasound2",
+    "fonts-dejavu-core", "fonts-noto-core", "fonts-noto-color-emoji",
+]  # fmt: skip
+RENDER_PIP = ["pydantic==2.14.1", "boto3>=1.43", "httpx>=0.28"]
+REPO = Path(__file__).resolve().parents[2]
+
+
+def _no_build_junk(p: Path) -> bool:
+    """Exclude dirs that would bloat or poison the image (local installs, caches)."""
+    return any(part in ("node_modules", "__pycache__", ".git") for part in p.parts)
+
+
+def render_image(modal: Any) -> Any:
+    """Headless tutorial renderer: the app source and the Remotion project baked in,
+    Node deps installed and the headless browser downloaded at build time."""
+    return (
+        modal.Image.debian_slim(python_version="3.12")
+        .apt_install(*RENDER_APT)
+        .pip_install(*RENDER_PIP)
+        .add_local_dir(REPO / "app", "/opt/cueframe/app", copy=True, ignore=_no_build_junk)
+        .add_local_dir(REPO / "renderer", "/opt/cueframe/renderer", copy=True,
+                       ignore=_no_build_junk)
+        .run_commands("mkdir -p /work && touch /opt/cueframe/app/__init__.py")
+        .run_commands("cd /opt/cueframe/renderer && npm ci && npx remotion browser ensure")
+    )
+
+
+def _render_env(settings: Settings) -> dict[str, str]:
+    """R2 credentials for the render sandbox: it pulls assets and pushes the segment
+    cache straight to the bucket, so nothing big flows through the server."""
+    pairs = {
+        "R2_ENDPOINT_URL": settings.r2_endpoint,
+        "R2_ACCESS_KEY_ID": settings.r2_key_id,
+        "R2_SECRET_ACCESS_KEY": settings.r2_secret,
+        "R2_BUCKET_NAME": settings.r2_bucket,
+        "CUEFRAME_R2_PREFIX": settings.r2_prefix,
+    }
+    return {k: v for k, v in pairs.items() if v}
+
+
 class ModalSandbox(Sandbox):
     provider = "modal"
 
@@ -81,6 +127,13 @@ class ModalSandbox(Sandbox):
                 cpu=settings.sandbox_cpu, memory=settings.sandbox_memory_mb,
                 timeout=settings.sandbox_max_seconds, idle_timeout=settings.sandbox_idle_seconds,
             )  # fmt: skip
+        if settings.sandbox_image == "render":
+            return await modal.Sandbox.create.aio(
+                "sleep", "infinity", app=app, image=render_image(modal),
+                cpu=settings.sandbox_cpu, memory=settings.sandbox_memory_mb,
+                timeout=settings.sandbox_max_seconds, idle_timeout=settings.sandbox_idle_seconds,
+                env=_render_env(settings),
+            )  # fmt: skip
         return await modal.Sandbox.create.aio(
             "/opt/cf/start.sh",
             app=app,
@@ -89,7 +142,7 @@ class ModalSandbox(Sandbox):
             memory=settings.sandbox_memory_mb,
             timeout=settings.sandbox_max_seconds,
             idle_timeout=settings.sandbox_idle_seconds,
-            encrypted_ports=[6080],
+            encrypted_ports=[6080] if settings.live_view else [],
             env={
                 "CF_W": str(settings.sandbox_width),
                 "CF_H": str(settings.sandbox_height),
@@ -115,9 +168,15 @@ class ModalSandbox(Sandbox):
                     raise
                 log.warning("sandbox create failed; retrying with a fresh app lookup")
         box = cls(sb, settings)
-        if settings.sandbox_image == "board":
+        if settings.sandbox_image != "desktop":
             log.info(
-                "board sandbox ready",
+                f"{settings.sandbox_image} sandbox ready",
+                extra=fields(sandbox=box.provider_id, seconds=round(time.monotonic() - t0, 1)),
+            )
+            return box
+        if not settings.live_view:
+            log.info(
+                "sandbox ready (live view off)",
                 extra=fields(sandbox=box.provider_id, seconds=round(time.monotonic() - t0, 1)),
             )
             return box
@@ -175,17 +234,17 @@ class ModalSandbox(Sandbox):
         async for sb in modal.Sandbox.list.aio(app_id=app.app_id):
             if sb.object_id not in ended and await sb.poll.aio() is None:
                 return False  # another worker's, or one Modal hasn't marked ended yet
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "modal", "app", "stop", "-y", settings.modal_app,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )  # fmt: skip
-        try:
-            out, _ = await asyncio.wait_for(proc.communicate(), 60)
-        except BaseException:
-            proc.kill()
-            await proc.wait()
-            raise
-        log.info("modal app stop", extra=fields(rc=proc.returncode, out=out.decode()[-200:]))
+        # subprocess in a thread: asyncio subprocesses raise NotImplementedError on
+        # uvicorn's Windows SelectorEventLoop.
+        def _stop() -> "subprocess.CompletedProcess[bytes]":
+            return subprocess.run(
+                [sys.executable, "-m", "modal", "app", "stop", "-y", settings.modal_app],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60,
+            )  # fmt: skip
+
+        done = await asyncio.to_thread(_stop)
+        out = done.stdout or b""
+        log.info("modal app stop", extra=fields(rc=done.returncode, out=out.decode()[-200:]))
         return True
 
 

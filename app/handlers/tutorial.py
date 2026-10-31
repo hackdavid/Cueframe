@@ -11,7 +11,10 @@ from app.board import tutor
 from app.handlers.demo import demo_reply
 from app.handlers.research import docs_research
 from app.jobs import JobContext, JobManager, job_handler
+from app.log import get_logger
 from app.tutorial import formats, pipeline, recipes
+
+log = get_logger("assistant")
 
 
 @job_handler("tutorial.make")
@@ -65,7 +68,7 @@ def resume_interrupted(jobs: JobManager, interrupted: list[dict[str, Any]]) -> l
 
 
 class Route(BaseModel):
-    intent: Literal["make_tutorial", "edit_tutorial", "math_tutor", "chat"]
+    intent: Literal["make_tutorial", "edit_tutorial", "math_tutor", "chat", "off_scope"]
     recipe: str | None = None
     format: Literal["tutorial", "reel", "explainer"] | None = None
     seconds: int | None = None
@@ -73,8 +76,9 @@ class Route(BaseModel):
     level: Literal["child", "school", "undergrad"] | None = None
 
 
-ROUTER = """You route messages in Cueframe, an app that makes narrated video tutorials
-from real runs in a Linux desktop sandbox. Pick:
+ROUTER = """You route messages in Cueframe, an app that ONLY makes narrated videos:
+tutorials from real runs in a Linux desktop sandbox, reels, explainers, and maths
+board lessons. Cueframe is not a general assistant. Pick:
 - make_tutorial: the user wants a (new) tutorial/video/walkthrough of a task, or a
   video about a file they attached or a link they sent (a PDF, slides, a repo). Set
   `recipe` to the id of the matching recipe below, or null if none fits (a new
@@ -96,13 +100,58 @@ from real runs in a Linux desktop sandbox. Pick:
   a screen recording). Set `level` to "child" (primary school), "school" (high school)
   or "undergrad" when the message says or clearly implies who it's for, else null;
   `seconds` if they ask for a length.
-- chat: anything else (questions, docs lookups, small talk).
+- chat: a follow-up question about this conversation's videos or about how Cueframe
+  works ("why did step 3 fail?", "what can you make?", "how long was my video?"),
+  or a docs question about software the user wants to DO, shown as a video
+  ("how do I export in Shotcut?"). Use the conversation so far to resolve
+  references like "it", "that video", "the last one".
+- off_scope: everything else. Cueframe refuses these: writing or debugging code,
+  essays, emails or any text that is not a video script, general knowledge, small
+  talk, jokes, news, opinions, translations, homework that is not a maths lesson,
+  and questions unrelated to making videos. When torn between chat and off_scope,
+  choose off_scope unless the message clearly serves making a video.
+
+Conversation so far and its videos are below; the message to route comes last.
 
 Recipes:
 {catalog}"""
 
 
-async def route(ctx: JobContext, has_tutorial: bool) -> Route:
+OFF_SCOPE_REPLY = (
+    "I'm Cueframe — I only make videos: narrated tutorials, reels, explainers and "
+    "maths lessons, recorded or drawn for real. I can't help with general questions, "
+    "coding or writing text.\n\nTry:\n"
+    '- *"Make a tutorial: export a 9:16 video in Shotcut"*\n'
+    '- *"A 45-second reel about today\'s trending repo"*\n'
+    '- *"Solve x² − 5x + 6 = 0"* (a narrated board lesson)'
+)
+
+
+def context_brief(ctx: JobContext, conv: dict[str, Any], tuts: list[dict[str, Any]]) -> str:
+    """A compact brief of the conversation so far — recent messages and its videos
+    with their last status — so follow-ups ("make it shorter", "why did it fail?",
+    "same but for Photoshop") route and answer correctly. Capped small on purpose."""
+    lines = []
+    for m in ctx.store.list_messages(conv["id"])[-6:]:
+        who = "user" if m["role"] == "user" else "cueframe"
+        text = re.sub(r"\s+", " ", m["content"]).strip()[:200]
+        if text:
+            lines.append(f"- {who}: {text}")
+    videos = []
+    for t in tuts[:4]:
+        state = {"ready": "finished ok", "failed": "FAILED"}.get(t["status"], t["status"])
+        videos.append(f"- \"{t['title']}\" (v{t['version']}): {state}")
+    if not lines and not videos:
+        return ""
+    out = ""
+    if lines:
+        out += "Recent messages:\n" + "\n".join(lines) + "\n"
+    if videos:
+        out += "Videos in this conversation:\n" + "\n".join(videos) + "\n"
+    return out
+
+
+async def route(ctx: JobContext, has_tutorial: bool, brief: str = "") -> Route:
     text = ctx.input.get("text", "")
     names = [a.get("filename", "") for a in ctx.input.get("attachments") or []]
     files = f"Attached files: {', '.join(names)}\n" if names else ""
@@ -112,7 +161,8 @@ async def route(ctx: JobContext, has_tutorial: bool) -> Route:
             purpose="assistant.route",
             model=ctx.settings.research_model,
             instructions=ROUTER.format(catalog=recipes.catalog()),
-            input=f"Conversation already has a tutorial: {has_tutorial}\n{files}\nMessage: {text}",
+            input=f"Conversation already has a tutorial: {has_tutorial}\n{files}{brief}"
+                  f"Message: {text}",
             timeout=ROUTE_TIMEOUT,
         )
         if r.recipe not in recipes.recipes():
@@ -172,8 +222,14 @@ async def assistant_reply(ctx: JobContext) -> dict[str, Any] | None:
         if conv
         else []
     )
+    brief = context_brief(ctx, conv, tuts) if conv else ""
     ctx.thinking("Router", "Reading your message")
-    r = await route(ctx, bool(tuts))
+    r = await route(ctx, bool(tuts), brief)
+    if r.intent == "off_scope":
+        log.info("off-scope message refused",
+                 extra={"job": ctx.id, "text": ctx.input.get("text", "")[:120]})
+        ctx.reply(OFF_SCOPE_REPLY)
+        return {"ok": True, "off_scope": True}
     if r.intent == "make_tutorial":
         rid = None if r.trending else r.recipe
         mode, seconds = "tutorial", None
@@ -193,5 +249,7 @@ async def assistant_reply(ctx: JobContext) -> dict[str, Any] | None:
             return stop
         return await pipeline.edit(ctx, tuts[0]["id"], instruction=ctx.input.get("text"))
     if ctx.llm is not None and ctx.llm.configured:
+        if brief:
+            ctx.input["context"] = brief
         return await docs_research(ctx)
     return await demo_reply(ctx)

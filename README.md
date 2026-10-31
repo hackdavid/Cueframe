@@ -91,6 +91,9 @@ uv run ruff check .       # lint
 | `CUEFRAME_SANDBOX_IDLE_SECONDS` / `CUEFRAME_SANDBOX_MAX_SECONDS` | `120` / `900` | Auto-shutdown limits (also enforced by Modal) |
 | `CUEFRAME_SANDBOX_APT_EXTRA` | empty | Extra Debian packages baked into the desktop image (e.g. `gimp`) |
 | `CUEFRAME_BOARD_RUNNER` / `CUEFRAME_BOARD_CPU` | `sandbox` / `8` | Where math boards render (`sandbox` = headless Modal image, `local` = this server, needs Manim + LaTeX) and with how many CPUs (one parallel part each) |
+| `CUEFRAME_RENDER_RUNNER` | `local` | `modal` renders and stitches tutorials in a headless Modal sandbox (needs R2 for asset transfer); `local` uses this server's Node + ffmpeg |
+| `CUEFRAME_RENDER_CPU` / `CUEFRAME_RENDER_MEMORY_MB` / `CUEFRAME_RENDER_MAX_SECONDS` | `8` / `8192` / `2400` | Render sandbox sizing |
+| `CUEFRAME_LIVE_VIEW` | `0` | `1` shows the sandbox's live desktop in the chat (noVNC relay); off by default |
 | `CUEFRAME_SANDBOX_USD_PER_HOUR` | `0.11` | Used for the per-sandbox cost estimate |
 | `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | unset | Store recordings/screenshots in R2 (else `data/artifacts`) |
 | `CUEFRAME_R2_PREFIX` | `cueframe` | Key prefix inside the bucket |

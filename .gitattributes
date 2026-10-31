@@ -1,0 +1,5 @@
+# Shell scripts and the sandbox image must keep LF line endings even on Windows
+# checkouts (core.autocrlf=true would give start.sh a `#!/bin/bash\r` shebang and
+# the Modal desktop would exit on boot).
+*.sh text eol=lf
+app/sandbox/bin/** text eol=lf

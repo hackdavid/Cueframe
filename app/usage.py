@@ -101,7 +101,8 @@ def summary(store: Any, settings: Any, user: dict[str, Any]) -> dict[str, Any]:
 
 
 def refusal(plan: str, limit: str, cap: int | None, resets_at: str) -> str:
-    day = datetime.fromisoformat(resets_at).strftime("%-d %B")
+    d = datetime.fromisoformat(resets_at)
+    day = f"{d.day} {d.strftime('%B')}"  # %-d is not portable to Windows
     name = PLAN_NAMES.get(plan, plan.title())
     return (
         f"You've used all {cap} {LABELS[limit]} on the **{name}** plan this month. "

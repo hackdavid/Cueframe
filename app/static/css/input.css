@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 @layer components {
-  .md { @apply prose prose-invert max-w-none prose-pre:bg-transparent prose-pre:p-0 prose-a:text-sky-400 prose-img:rounded-xl prose-img:my-3 prose-table:text-sm prose-th:text-left prose-code:before:content-none prose-code:after:content-none; }
+  .md { @apply prose prose-invert max-w-none prose-pre:bg-transparent prose-pre:p-0 prose-a:text-sky-400 prose-img:rounded-xl prose-img:my-3 prose-table:text-sm prose-th:text-left prose-code:before:content-none prose-code:after:content-none; overflow-wrap: anywhere; }
+  #messages { overflow-x: hidden; }
   .md :not(pre) > code { @apply rounded bg-white/10 px-1.5 py-0.5 text-[0.85em]; }
   .md pre { @apply relative overflow-x-auto rounded-xl border border-white/10 bg-black/40 text-sm; }
   .md pre code.hljs { @apply bg-transparent p-4 block; }
@@ -15,3 +16,7 @@
   .md pre:hover .copy-btn { @apply opacity-100; }
   .scroll-thin { scrollbar-width: thin; scrollbar-color: rgb(63 63 70) transparent; }
 }
+
+/* Storyboard: steps still to render breathe gently; done steps get a quiet check. */
+@keyframes board-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.board-live { animation: board-breathe 2.2s ease-in-out infinite; }
